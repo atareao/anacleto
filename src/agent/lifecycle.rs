@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
@@ -74,6 +75,8 @@ pub struct SpawnAgentConfig {
     pub pending_approvals: Option<PendingApprovals>,
     pub pending_questions: Option<PendingQuestions>,
     pub history_limit_percent: f64,
+    /// The workspace directory that `apply_patch` operates on.
+    pub workspace: PathBuf,
     /// If true, emit LlmRequestDebug/LlmResponseDebug events with serialized JSON.
     /// Shared so the `/debug` toggle takes effect on running agents immediately.
     pub debug: Arc<AtomicBool>,
@@ -103,6 +106,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         pending_questions,
         history_limit_percent,
         debug,
+        workspace,
     } = config;
     let (tx, mut rx) = mpsc::channel::<AgentMessage>(256);
     let handle = AgentHandle::new(tx);
@@ -123,6 +127,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     }
     tools.push(todo_tool_definition());
     tools.push(question_tool_definition());
+    tools.push(apply_patch_tool_definition());
 
     // Clone what the task needs
     let agent_mcp_names = agent.mcps.clone();
@@ -458,6 +463,17 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                         execute_question_tool(&pending_questions, tc, &event_tx)
                                             .await
                                             .unwrap_or_else(|e| e)
+                                    } else if tc.function.name == "apply_patch" {
+                                        execute_apply_patch_tool(
+                                            &workspace,
+                                            &agent_permissions,
+                                            &pending_approvals,
+                                            &event_tx,
+                                            &agent_name,
+                                            tc,
+                                        )
+                                        .await
+                                        .unwrap_or_else(|e| e)
                                     } else if let Some(_skill) =
                                         skills.iter().find(|s| s.name == tc.function.name)
                                     {
@@ -1048,6 +1064,131 @@ async fn execute_question_tool(
         Ok(Err(_)) => Err("Question channel closed without an answer".to_string()),
         Err(_) => Err("Question timed out waiting for user answer".to_string()),
     }
+}
+
+/// Tool definition for the `apply_patch` tool: applies a batch of file
+/// operations (add/update/delete) with a single approval.
+fn apply_patch_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "apply_patch".to_string(),
+        description: "Apply a batch of file changes (add/update/delete) to the workspace \
+                       in one operation. All changes are applied together after a single \
+                       approval. Paths are relative to the workspace. Existing files keep \
+                       their original encoding (UTF-8 BOM and CRLF line endings)."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": {
+                                "type": "string",
+                                "enum": ["add", "update", "delete"],
+                                "description": "add creates a new file, update replaces an \
+                                               existing file's contents, delete removes a file."
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "File path relative to the workspace."
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "File contents (required for add/update)."
+                            }
+                        },
+                        "required": ["op", "path"]
+                    }
+                }
+            },
+            "required": ["operations"]
+        }),
+    }
+}
+
+/// Request a single human approval for an entire patch batch.
+///
+/// Reuses the same `pending_approvals` / `EngineEvent::ApprovalRequired`
+/// mechanism as single-tool approvals. Returns `true` if approved.
+async fn request_batch_approval(
+    pending_approvals: &Option<PendingApprovals>,
+    event_tx: &mpsc::Sender<EngineEvent>,
+    agent_name: &str,
+    operation_desc: String,
+) -> bool {
+    let Some(approvals) = pending_approvals else {
+        return false;
+    };
+
+    let id = Uuid::new_v4().to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+
+    {
+        let mut map = approvals.lock().await;
+        map.insert(id.clone(), tx);
+    }
+
+    let _ = event_tx
+        .send(EngineEvent::ApprovalRequired {
+            id: id.clone(),
+            operation: format!("Agent '{agent_name}' wants to apply patch: {operation_desc}"),
+        })
+        .await;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
+        Ok(Ok(true)) => true,
+        Ok(Ok(false)) => false,
+        _ => false,
+    }
+}
+
+/// Execute an `apply_patch` tool call.
+///
+/// Parses the batch, validates every path (rejecting traversal), requests a
+/// single approval for the whole batch, and only then applies the changes.
+async fn execute_apply_patch_tool(
+    workspace: &Path,
+    permissions: &Permissions,
+    pending_approvals: &Option<PendingApprovals>,
+    event_tx: &mpsc::Sender<EngineEvent>,
+    agent_name: &str,
+    tool_call: &ToolCall,
+) -> std::result::Result<String, String> {
+    let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+        .map_err(|e| format!("Failed to parse apply_patch arguments: {e}"))?;
+
+    let json = args
+        .get("operations")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| tool_call.function.arguments.clone());
+
+    let batch = crate::engine::apply_patch::parse_patch_batch(&json)?;
+
+    // Validate every path before requesting approval or touching the filesystem.
+    for op in &batch.operations {
+        crate::engine::apply_patch::resolve_within_workspace(workspace, &op.path)?;
+    }
+
+    // apply_patch only performs filesystem writes.
+    check_fs_write(permissions).map_err(|e| format!("Permission denied: {e}"))?;
+
+    // Build a human-readable summary of the batch for the approval prompt.
+    let summary = batch
+        .operations
+        .iter()
+        .map(|op| format!("{:?} {}", op.op, op.path))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // Request ONE approval for the entire batch. If denied, apply nothing.
+    if !request_batch_approval(pending_approvals, event_tx, agent_name, summary).await {
+        return Err("apply_patch was denied by the user; no changes were applied.".to_string());
+    }
+
+    let results = crate::engine::apply_patch::apply_patch_batch(workspace, &batch)?;
+    Ok(results.join("\n"))
 }
 
 /// Execute a tool call against a matching skill and return the result as a string.

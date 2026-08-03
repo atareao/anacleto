@@ -1,1 +1,2 @@
+pub mod apply_patch;
 pub mod orchestrator;

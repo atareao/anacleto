@@ -559,6 +559,7 @@ impl Engine {
                 pending_questions: Some(self.pending_questions.clone()),
                 history_limit_percent: history_limit,
                 debug: self.debug.clone(),
+                workspace: self.workspace.clone(),
             });
 
             self.agents.insert(name, id.clone());
@@ -830,6 +831,7 @@ impl Engine {
             pending_questions: Some(self.pending_questions.clone()),
             history_limit_percent: history_limit,
             debug: self.debug.clone(),
+            workspace: self.workspace.clone(),
         });
 
         self.agents.insert(name.clone(), id.clone());
