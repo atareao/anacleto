@@ -89,3 +89,22 @@ pub enum ExportFormat {
     /// Human-readable Markdown transcript.
     Markdown,
 }
+
+/// A task tracked by the `todo` tool, persisted per session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Todo {
+    /// Unique todo ID.
+    pub id: Uuid,
+    /// Session this todo belongs to.
+    pub session_id: Uuid,
+    /// Task content.
+    pub content: String,
+    /// Task status: "pending" | "in_progress" | "completed" | "cancelled".
+    pub status: String,
+    /// Optional priority ("low" | "medium" | "high").
+    pub priority: Option<String>,
+    /// When the todo was created.
+    pub created_at: DateTime<Utc>,
+    /// When the todo was last updated.
+    pub updated_at: DateTime<Utc>,
+}

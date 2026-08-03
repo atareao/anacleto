@@ -1,327 +1,733 @@
-# Slash Commands estilo OpenCode — Implementation Plan
+# Anacleto — Implementación de Features de OpenCode (v0.3.0)
 
 ## Objetivo
 
-Añadir al motor de orquestación Anacleto un conjunto de slash commands estilo OpenCode (`/undo`, `/fork`, `/export`, `/share`, `/skills`, `/themes`, etc.) que se ejecutan desde la TUI, cubriendo tanto lógica de backend (engine + SQLite) como estado puramente de frontend (TUI).
+Portar el conjunto completo de features de OpenCode al motor de orquestación de agentes Anacleto (Rust, TUI ratatui+crossterm, persistencia SQLite vía sqlx), organizado en 7 fases incrementales con tareas atómicas, cambios a nivel de archivo y criterios de aceptación verificables.
 
 ## Alcance
 
-### Comandos en alcance
+### Features por fase
 
-| Comando | Alias | Descripción | Capa |
+| # | Feature | Capa | Prioridad |
 |---|---|---|---|
-| `/undo` | — | Deshacer el último par de mensajes de la sesión activa | Backend |
-| `/redo` | — | Rehacer el último par deshecho | Backend |
-| `/fork` | — | Bifurcar la sesión activa en una nueva sesión | Backend |
-| `/export` | — | Exportar la transcripción de la sesión a un archivo (markdown/JSON) | Backend |
-| `/import` | — | Importar una transcripción desde un archivo | Backend |
-| `/share` | — | Marcar la sesión como compartida y generar un enlace | Backend |
-| `/unshare` | — | Quitar el estado compartido de la sesión | Backend |
-| `/skills` | — | Listar skills disponibles del agente activo | Backend |
-| `/mcps` | — | Listar y activar/desactivar servidores MCP | Backend |
-| `/status` | — | Mostrar estado del motor (modelo, sesión, tokens, coste, debug, workspace) | Backend |
-| `/init` | — | Setup guiado de AGENTS.md (prompts interactivos) | Backend |
-| `/review` | — | Revisar cambios de git (diff sin commit por defecto; arg opcional commit/branch) | Backend |
-| `/warp` | — | Establecer el directorio de trabajo | Backend |
-| `/workspaces` | — | Gestionar/listar workspaces | Backend |
-| `/timeline` | — | Mostrar línea temporal de mensajes de la sesión activa (saltar a un mensaje) | Backend |
-| `/themes` | — | Cambiar el tema de color | TUI |
-| `/timestamps` | — | Alternar marcas de tiempo en los mensajes | TUI |
-| `/thinking` | — | Alternar la visualización de razonamiento/thinking | TUI |
-| `/stash` | — | Guardar el prompt actual (con pop/list) | TUI |
-| `/editor` | — | Abrir editor externo para la entrada | TUI |
-| `/move` | — | Mover la sesión a otro workspace | Backend |
+| **FASE 1 — Agente y orquestación** | | | |
+| 1 | `task` tool — delegación dinámica de subagentes (foreground/background, `task_id`, `subagent_depth`, permisos derivados) | Backend | Alta |
+| 2 | Subagentes en background + notificaciones de finalización (toast) | Backend + TUI | Alta |
+| 3 | Plan Mode → Build handoff (agente solo-lectura → archivo markdown → agente build) | Backend | Media |
+| 4 | Árbol de sesiones / navegación padre-hijo (fork con parentID) | Backend + DB + TUI | Media |
+| **FASE 2 — Contexto y memoria** | | | |
+| 5 | Compaction anclada con plantilla estructurada (`## Objective / Important Details / Work State / Next Move / Relevant Files`) | Backend + LLM | Alta |
+| 6 | Truncado de salida de herramientas + tool-output store | Backend + TUI | Alta |
+| 7 | Revert/fork basado en snapshots (git-tree content-addressed por turno) | Backend + Shell | Media |
+| 8 | Contexto de sistema como fuentes tipadas refrescables (Source<A>, baseline/update delta) | Backend | Media |
+| 9 | Archivos de instrucción (AGENTS.md, CLAUDE.md, CONTEXT.md) auto-descubiertos | Backend | Media |
+| **FASE 3 — Herramientas y MCP** | | | |
+| 10 | `todo` tool + lista de tareas persistida por sesión | Backend + DB + TUI | Alta |
+| 11 | `question` tool (Q&A inline estructurado) | Backend + TUI | Media |
+| 12 | `apply_patch` tool (batch add/update/delete, aprobación en lote, BOM/CRLF-aware) | Backend + Permissions | Alta |
+| 13 | Herramientas estructuradas read/grep/glob/webfetch/websearch (schemas estrictos, paginación, ripgrep, permisos web) | Backend | Alta |
+| 14 | Autorización de directorio externo (permiso separado fuera del workspace) | Backend + Permissions | Media |
+| 15 | MCP resource tools (list/read resources & templates, mime binario) | Backend + MCP | Media |
+| 16 | Integración LSP (language servers, diagnósticos al loop + TUI) | Backend + TUI | Baja |
+| **FASE 4 — TUI/UX** | | | |
+| 17 | Diff viewer completo (árbol de archivos, hunks, split/unified, git/branch/last-turn) | TUI | Media |
+| 18 | Sistema which-key / leader-key (prefijo ctrl+x, key chording, ~100 keybindings) | TUI | Alta |
+| 19 | Keymap totalmente rebindable en config | TUI + Config | Alta |
+| 20 | Diálogos de modelo (favoritos ctrl+f, recientes f2, providers ctrl+a, ranking frecency) | TUI | Media |
+| 21 | Sidebar de sesiones con pinning + quick slots (`<leader>1..9`) | TUI | Media |
+| 22 | Gestor de prompts en cola (`<leader>q`) | TUI | Baja |
+| 23 | Sistema de toasts/notificaciones | TUI | Media |
+| 24 | Round-trip de editor externo (`<leader>e`) | TUI + Shell | Baja |
+| **FASE 5 — Sesión y workflow** | | | |
+| 25 | Mover sesión entre proyectos/directorios (re-homing) | Backend + DB | Media |
+| 26 | Copiar transcripción al portapapeles / exportar a editor | TUI + Shell | Baja |
+| 27 | Gestión de git worktrees | Backend + Shell | Baja |
+| 28 | Review con diff vs branch / VCS diffs | Backend + TUI | Media |
+| **FASE 6 — LLM y providers** | | | |
+| 29 | Política de prompt-caching / cache-control breakpoints (cache:auto, buckets TTL, provider-aware) | LLM | Alta |
+| 30 | Anthropic extended thinking (budget tokens) | LLM | Media |
+| 31 | Plantillas de system-prompt por modelo/agente | LLM + Config | Media |
+| 32 | Catálogo ampliado de providers (Bedrock, Azure, Google, etc.) | LLM | Baja |
+| **FASE 7 — Extensibilidad** | | | |
+| 33 | Sistema de plugins con hooks/transforms (agents, tools, commands) | Backend | Media |
+| 34 | Comandos slash personalizados con templating de variables (`{env:VAR}`, `{file:path}`) | Backend + TUI | Media |
+| 35 | Tools y providers personalizados en runtime | Backend | Baja |
 
-### Comandos fuera de alcance (solo cloud de OpenCode)
+### Fuera de alcance (explícitamente NO se implementa)
 
-`/connect`, `/org`, `/variants`, `/upgrade`, `/doctor`, `/login`, `/logout`, `/config`, `/permissions`, `/hooks`, `/context`, `/cost`, `/usage`, `/templates`, `/prompt`.
-
-### Comandos ya implementados (se conservan)
-
-`/help`, `/sessions`, `/new`, `/resume`, `/delete`, `/rename`, `/agents`, `/subagents`, `/copy`, `/compact`, `/debug`, `/models`, `/exit`.
+- **ACP (Agent Client Protocol)** — protocolo de cliente/servidor para agentes.
+- **Servidor HTTP / API REST** — Anacleto es TUI-only por decisión de diseño (ADR).
+- **Cloud console / dashboard web**.
+- **Integración IDE** (VS Code, JetBrains, etc.).
+- **Observabilidad / telemetría / tracing remoto**.
+- **Auto-update / auto-instalación de binarios**.
+- **Web UI o batch mode** (prohibido por AGENTS.md).
 
 ## Arquitectura / decisiones de diseño
 
-### Flujo de un comando
+Todas las features se integran en el modelo de flujo existente:
 
-Todo comando sigue el mismo pipeline de 4 etapas:
+```
+EngineCommand ──► Engine::run() (tokio::select! en command_rx + usage_rx) ──► handler ──► EngineEvent ──► TUI (app.rs)
+```
 
-1. **`COMMANDS` const** (`src/tui/app.rs`): se registra el par `("cmd", "descripción")` para que aparezca en la paleta fuzzy y en el autocompletado con Tab.
-2. **`process_input` → `handle_command`** (`src/tui/app.rs`): se añade un `match` sobre `parts[0]` que construye el `EngineCommand` correspondiente y lo envía por `command_tx`.
-3. **`Engine::run()`** (`src/engine/orchestrator.rs`): el bucle despacha el nuevo `EngineCommand` a su handler. El handler ejecuta la lógica (DB, git, config) y emite un `EngineEvent` de vuelta a la TUI.
-4. **`handle_event(EngineEvent)`** (`src/tui/app.rs`): la TUI reacciona actualizando su estado y re-renderizando.
+### 1. `task` tool — nuevo tipo de ToolCall
 
-Regla general: **toda mutación de estado persistente ocurre en el engine**; la TUI solo muestra resultados y mantiene estado efímero (temas, timestamps, stash).
+El `task` tool se modela como un **nuevo variante del enum `ToolCall`** (o un `ToolCall::Task(TaskCall)`), no como un comando slash. El handler del engine intercepta el ToolCall `task` y, en lugar de ejecutar una herramienta local, invoca `spawn_agent` con un `SpawnAgentConfig` derivado del padre:
 
-### Nuevos `EngineCommand` (src/engine/orchestrator.rs, enum líneas 163-186)
+- **Foreground**: el subagente corre en el mismo turno; el resultado se devuelve como `ToolResult` al modelo.
+- **Background**: se lanza un job async (tokio task) y se devuelve un `task_id`; al completar se emite `EngineEvent::SubagentFinished(task_id, summary)` que la TUI convierte en toast.
+- **`task_id`**: si el modelo lo provee, se reanuda una sesión de subagente existente (cargando su historial vía `LoadHistory`).
+- **`subagent_depth`**: contador en el contexto del agente; si excede el límite configurado, el `task` tool devuelve un error al modelo.
+- **Permisos derivados**: el `AgentConfig` del hijo se construye intersectando los permisos del padre (deny del padre se propaga al hijo).
 
-Se añaden variantes: `Undo`, `Redo`, `Fork`, `Export { path: Option<PathBuf>, format: Option<ExportFormat> }`, `Import { path: PathBuf }`, `Share`, `Unshare`, `ListSkills`, `ListMcps`, `ToggleMcp { name: String, enabled: bool }`, `Status`, `Init { answers: InitAnswers }`, `Review { target: Option<String> }`, `Warp { dir: PathBuf }`, `ListWorkspaces`, `MoveSession { workspace: String }`, `Timeline`.
+### 2. Background jobs
 
-Los comandos puramente TUI (`/themes`, `/timestamps`, `/thinking`, `/stash`, `/editor`) **no** generan `EngineCommand`; se manejan íntegramente en `handle_command`/`handle_event` de `app.rs`.
+Se introduce un `JobRegistry` (HashMap<task_id, JoinHandle> + canal de resultados) en el engine. Los jobs de subagente en background no bloquean el loop principal; el resultado llega por un canal dedicado que se añade al `tokio::select!`. La TUI muestra un indicador de job activo y un toast al completar.
 
-### Nuevos `EngineEvent`
+### 3. Plan Mode → Build handoff
 
-Se añaden variantes para que la TUI reaccione: `UndoApplied`, `RedoApplied`, `Forked { new_session_id: Uuid }`, `Exported { path: PathBuf }`, `Imported { session_id: Uuid }`, `ShareUpdated { shared: bool, link: Option<String> }`, `SkillsListed(Vec<SkillInfo>)`, `McpsListed(Vec<McpStatus>)`, `StatusReport(StatusInfo)`, `InitDone`, `ReviewResult(String)`, `WorkspaceChanged(PathBuf)`, `WorkspacesListed(Vec<String>)`, `Timeline(Vec<TimelineEntry>)`, `SessionMoved { session_id: Uuid, workspace: String }`.
+Un agente con `permissions.deny` que bloquea todas las herramientas de escritura opera en "plan mode". Al aprobarse el plan (comando `/build` o confirmación), el engine:
+1. Lee el archivo markdown de plan generado.
+2. Crea/transiciona a un agente build con permisos de escritura.
+3. Inyecta un mensaje sintético de ejecución (el contenido del plan) como `UserInput`/`System`.
 
-### Diseño del stack undo/redo
+### 4. Árbol de sesiones
 
-- El engine mantiene `undo_stack: Vec<Vec<StoredMessage>>` y `redo_stack: Vec<Vec<StoredMessage>>` (campos nuevos en `Engine`).
-- `/undo`: toma el último par de mensajes de la sesión activa (el `UserInput` + su `Response`), los elimina de la DB (`delete_messages`), los empuja a `undo_stack` y a `redo_stack`, y emite `UndoApplied`.
-- `/redo`: hace `pop` de `redo_stack`, reinserta los mensajes en la DB (`restore_messages`) y emite `RedoApplied`.
-- El stack se limpia al cambiar de sesión (`/new`, `/resume`, `/fork`).
-- La DB es la fuente de verdad; el stack solo guarda los mensajes eliminados para poder restaurarlos (la eliminación es destructiva).
+Se añade columna `parent_id` a la tabla `sessions` (vía `ensure_column`). `/fork` crea una sesión hija con `parent_id = sesión actual`. La TUI navega padre↔hijo con un comando `/parent` y `/children`, mostrando la jerarquía en el sidebar.
 
-### Modelo de datos para fork/share/export
+### 5. Compaction anclada
 
-- **Fork**: `create_session` con un nuevo id, luego `copy_messages(from_session, to_session)` que inserta copias de los mensajes de la sesión activa en la nueva. Se emite `Forked { new_session_id }` y se activa la nueva sesión.
-- **Share**: se añade una columna `shared INTEGER NOT NULL DEFAULT 0` y `metadata TEXT` (JSON) a la tabla `sessions`. `/share` pone `shared=1` y escribe en `metadata` un `share_link` generado (UUID). `/unshare` pone `shared=0` y limpia el enlace. Métodos `set_shared(session_id, shared, link)` y `get_session_metadata`.
-- **Export/Import**: formato JSON recomendado para fidelidad de ida y vuelta (contiene `session_id`, `title`, `created_at`, `messages[]` con `role`, `content`, `timestamp`); markdown para lectura humana. `export_session(session_id, path, format)` y `import_session(path) -> Uuid` (crea una sesión nueva y reinserta los mensajes).
+La plantilla fija se define como constante Markdown. El resumen previo se **fusiona/actualiza** (no se regenera): se parsea el resumen existente por secciones y se reemplazan las secciones `Work State`, `Next Move`, `Relevant Files`; `Objective` e `Important Details` se conservan salvo cambio explícito. Config `session.compaction = { mode: auto|manual, buffer: tokens, keep: tokens }`. Dispara cuando `context_used > window − buffer`.
 
-### Manejo de workspaces
+### 6. Truncado de salida de herramientas
 
-- `/warp <dir>`: actualiza el directorio de trabajo del engine (campo `workspace: PathBuf` en `Engine`/`Config`) y emite `WorkspaceChanged`.
-- `/workspaces`: lista los workspaces conocidos (directorios registrados en config, p. ej. `config.workspaces: Vec<PathBuf>`).
-- `/move <workspace>`: mueve la sesión activa a otro workspace actualizando su `workspace` en la DB (columna nueva `workspace TEXT`) y emite `SessionMoved`.
+En el handler de `ToolResult`, si la salida supera ~2000 chars, se trunca antes de enviarla al modelo y el contenido completo se guarda en un `ToolOutputStore` (mapa `tool_call_id → contenido`). La TUI colapsa la salida larga con un toggle para expandir.
 
-### Comandos interactivos
+### 7. Snapshots
 
-- `/init`: la TUI muestra prompts secuenciales (nombre, descripción, stack tecnológico) recogiendo respuestas en `InitAnswers`; al completarse se envía `EngineCommand::Init { answers }` y el engine escribe `AGENTS.md` en el workspace. Emite `InitDone`.
-- `/review`: el engine ejecuta `git diff` (o `git diff <target>`) vía `std::process::Command`, captura la salida y la envía al agente root con `send_to_root(AgentMessage::UserInput(...))` para su revisión. Emite `ReviewResult` con el resumen.
+Por cada turno de asistente se crea un snapshot content-addressed del árbol de archivos (hash del contenido → git-tree). Se guarda en `db` (tabla `snapshots`) con referencia al turno. `/revert` restaura archivos desde un snapshot previo; `/stage`, `/clear`, `/commit` operan sobre el snapshot actual.
 
-## Tareas de backend (backend-dev)
+### 8. System-context sources
 
-### Tarea B1: Ampliar el enum `EngineCommand`
+Trait `Source<A>` con `baseline()` y `delta()`. El engine mantiene un registro de fuentes y su estado; solo las fuentes cuyo estado cambió se reinyectan en el siguiente turno (baseline se envía una vez, deltas después).
 
-**Archivos:**
-- Modificar: `src/engine/orchestrator.rs:163-186`
+### 9. Archivos de instrucción
 
-- [ ] **Paso 1:** Añadir las variantes nuevas al enum `EngineCommand` (Undo, Redo, Fork, Export, Import, Share, Unshare, ListSkills, ListMcps, ToggleMcp, Status, Init, Review, Warp, ListWorkspaces, MoveSession, Timeline) con sus tipos de datos asociados.
-- [ ] **Paso 2:** Definir los tipos auxiliares `ExportFormat` (Markdown | Json), `InitAnswers { name, description, stack }`, `SkillInfo`, `McpStatus`, `StatusInfo`, `TimelineEntry` en el módulo de tipos del engine.
-- [ ] **Criterio:** `cargo build` compila con las nuevas variantes (aunque aún sin handlers).
+Descubrimiento automático: se buscan `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md` en el workspace y en el directorio global de config. Se inyectan como contexto de sistema por turnos (con cache-control en FASE 6).
 
-### Tarea B2: Añadir campos de estado al `Engine`
+### 10. `todo` tool
 
-**Archivos:**
-- Modificar: `src/engine/orchestrator.rs`
+Nuevo ToolCall `todo` con operaciones `add/update/delete/list`. La lista se persiste por sesión en `db` (tabla `todos` con `session_id`). La TUI muestra un sidebar en vivo que se refresca con `EngineEvent::TodosUpdated`.
 
-- [ ] **Paso 1:** Añadir `undo_stack: Vec<Vec<StoredMessage>>`, `redo_stack: Vec<Vec<StoredMessage>>` y `workspace: PathBuf` como campos de `Engine`.
-- [ ] **Paso 2:** Inicializarlos en el constructor de `Engine` (workspace desde config o directorio actual).
-- [ ] **Criterio:** `cargo build` compila; los stacks se limpian al cambiar de sesión.
+### 11. `question` tool
 
-### Tarea B3: Métodos de DB para undo/redo
+Nuevo ToolCall `question` que pausa el turno y emite `EngineEvent::Question(Question)` a la TUI. La TUI muestra un diálogo estructurado (opción múltiple, default recomendado, custom). La respuesta del usuario vuelve al engine como `EngineEvent::QuestionAnswer` y se inyecta como `ToolResult`.
 
-**Archivos:**
-- Modificar: `src/db/session.rs`, `src/db/models.rs`
+### 12. `apply_patch` tool
 
-- [ ] **Paso 1:** Añadir `delete_messages(session_id, limit) -> Vec<StoredMessage>` que borra los últimos N mensajes y devuelve los borrados.
-- [ ] **Paso 2:** Añadir `restore_messages(session_id, &[StoredMessage])` que reinserta mensajes (con sus ids originales).
-- [ ] **Criterio:** tests unitarios de `delete_messages`/`restore_messages` en `src/db/session.rs` pasan.
+Nuevo ToolCall `apply_patch` con formato de patch batch (add/update/delete). El engine agrupa los archivos y solicita **una sola aprobación de permisos en lote** antes de leer; luego aplica secuencialmente con manejo BOM/CRLF-aware (detectar y preservar encoding por archivo).
 
-### Tarea B4: Métodos de DB para fork
+### 13. Herramientas estructuradas
 
-**Archivos:**
-- Modificar: `src/db/session.rs`
+Se definen schemas JSON estrictos (serde) para `read`, `grep`, `glob`, `webfetch`, `websearch`. Paginación: read devuelve máx 2000 líneas/50KB con offset. `grep` usa ripgrep. `webfetch`/`websearch` requieren permiso `net.http` (ya existe en el modelo de permisos).
 
-- [ ] **Paso 1:** Añadir `copy_messages(from_session, to_session)` que copia todos los mensajes de una sesión a otra.
-- [ ] **Criterio:** test unitario que verifica que tras `fork` la nueva sesión tiene los mismos mensajes.
+### 14. Autorización de directorio externo
 
-### Tarea B5: Métodos de DB para share
+Nuevo permiso `fs.external` (o `dir.external`) separado del `fs.write` normal. Cualquier edición fuera del workspace requiere este permiso explícito.
 
-**Archivos:**
-- Modificar: `src/db/session.rs`, `src/db/models.rs`, migraciones SQL
+### 15. MCP resource tools
 
-- [ ] **Paso 1:** Añadir columnas `shared INTEGER NOT NULL DEFAULT 0` y `metadata TEXT` a la tabla `sessions` (migración nueva en `run_migrations`).
-- [ ] **Paso 2:** Añadir `set_shared(session_id, shared, link)` y `get_session_metadata(session_id)`.
-- [ ] **Criterio:** migración aplica sin romper sesiones existentes; test de `set_shared`/`get_session_metadata` pasa.
+Se exponen `mcp_list_resources` y `mcp_read_resource` como tools del modelo, delegando en `McpRegistry`. Manejo de mime binario: si el resource es binario, se devuelve base64 con metadatos de mime.
 
-### Tarea B6: Métodos de DB para export/import
+### 16. LSP
 
-**Archivos:**
-- Modificar: `src/db/session.rs`
+Integración opcional: se lanza un language server por lenguaje (config), se recogen diagnósticos y se emiten como `EngineEvent::Diagnostics` al loop del agente y a la TUI. Prioridad baja.
 
-- [ ] **Paso 1:** Añadir `export_session(session_id, path, format)` que serializa la transcripción a JSON o markdown y la escribe a disco.
-- [ ] **Paso 2:** Añadir `import_session(path) -> Uuid` que lee el archivo, crea una sesión nueva y reinserta los mensajes.
-- [ ] **Criterio:** round-trip export→import preserva el contenido de los mensajes (test unitario).
+### 17-24. TUI/UX
 
-### Tarea B7: Método de DB para move
+- **Diff viewer**: nuevo componente `DiffViewer` con árbol de archivos, navegación de hunks, modos split/unified y fuentes git/branch/last-turn.
+- **Which-key / leader-key**: prefijo `ctrl+x`; un `Keymap` central (HashMap<Vec<Key>, Action>) con chording descubrible; overlay which-key que muestra bindings disponibles.
+- **Keymap rebindable**: `Keymap` se serializa en config YAML; `Config` gana campo `keymap`.
+- **Diálogos de modelo**: popup con favoritos (ctrl+f), ciclo de recientes (f2), lista de providers (ctrl+a); ranking frecency (frecuencia × recencia) persistido en db.
+- **Sidebar de sesiones**: pinning + quick slots `<leader>1..9`.
+- **Gestor de prompts en cola**: cola de prompts pendientes con `<leader>q`.
+- **Toasts**: cola de notificaciones en la TUI (jobs, subagentes, errores).
+- **Editor round-trip**: `<leader>e` abre el editor externo (config `editor`), captura el buffer y lo envía como input.
 
-**Archivos:**
-- Modificar: `src/db/session.rs`, `src/db/models.rs`
+### 25-28. Sesión y workflow
 
-- [ ] **Paso 1:** Añadir columna `workspace TEXT` a `sessions` y método `set_session_workspace(session_id, workspace)`.
-- [ ] **Criterio:** test unitario de `set_session_workspace` pasa.
+- **Re-homing**: `set_session_workspace` ya existe; se añade comando `/move` mejorado que re-homea la sesión a otro directorio y re-resuelve rutas.
+- **Portapapeles/editor**: comando `/copy` (ya existe) ampliado + `/export-editor`.
+- **Worktrees**: comandos `/worktree add|list|remove` delegando en git.
+- **Review vs branch**: `/review` ampliado para diff vs branch/VCS.
 
-### Tarea B8: Handlers de undo/redo/fork en el engine
+### 29-32. LLM
 
-**Archivos:**
-- Modificar: `src/engine/orchestrator.rs`
+- **Prompt-caching**: `cache:auto` inyecta `cache_control` en el último tool/system/user; buckets con TTL; provider-aware (Anthropic `cache_control`, OpenAI, etc.).
+- **Extended thinking**: campo `thinking: { type: enabled, budget_tokens }` en la request Anthropic; se parsea el bloque thinking de la respuesta.
+- **Plantillas de system-prompt**: `AgentConfig.system_prompt` puede ser una plantilla con variables (`{model}`, `{workspace}`, `{tools}`).
+- **Catálogo de providers**: nuevos constructores en `LlmProviderRegistry` para Bedrock, Azure, Google.
 
-- [ ] **Paso 1:** Implementar el handler de `Undo`: obtener la sesión activa, `delete_messages` del último par, empujar a `undo_stack`/`redo_stack`, emitir `UndoApplied`.
-- [ ] **Paso 2:** Implementar el handler de `Redo`: `pop` de `redo_stack`, `restore_messages`, emitir `RedoApplied`.
-- [ ] **Paso 3:** Implementar el handler de `Fork`: `create_session` + `copy_messages`, activar la nueva sesión, emitir `Forked`.
-- [ ] **Criterio:** `cargo test` pasa; los stacks se limpian al cambiar de sesión.
+### 33-35. Extensibilidad
 
-### Tarea B9: Handlers de share/unshare en el engine
+- **Plugins**: trait `Plugin` con hooks (`on_agent_spawn`, `on_tool_call`, `on_command`, `on_event`) y transforms. Se cargan desde `~/.config/anacleto/plugins/`.
+- **Comandos slash personalizados**: se mueve la lógica de `COMMANDS` en `src/tui/app.rs` a un registro dinámico; los comandos personalizados se definen en config con templating de variables (`{env:VAR}`, `{file:path}`).
+- **Tools/providers personalizados**: registro en runtime vía plugins.
+
+## Tareas por fase
+
+> Convención: cada tarea es atómica y termina con `cargo fmt --check && cargo clippy && cargo test` en verde. Las dependencias entre fases se marcan explícitamente.
+
+### FASE 1 — Agente y orquestación
+
+#### Tarea 1.1: `task` tool — delegación dinámica de subagentes
 
 **Archivos:**
-- Modificar: `src/engine/orchestrator.rs`
+- Modificar: `src/agent/types.rs` (enum `ToolCall` → añadir variante `Task`)
+- Modificar: `src/agent/lifecycle.rs` (`spawn_agent`, `SpawnAgentConfig` → añadir `task_id`, `depth`, `permissions_derived`)
+- Modificar: `src/engine/orchestrator.rs` (handler de ToolCall::Task)
+- Modificar: `src/config/types.rs` (`AgentConfig` → añadir `subagent_depth`)
 
-- [ ] **Paso 1:** Implementar `Share`: generar un `share_link` (UUID), `set_shared(true, link)`, emitir `ShareUpdated`.
-- [ ] **Paso 2:** Implementar `Unshare`: `set_shared(false, None)`, emitir `ShareUpdated`.
-- [ ] **Criterio:** `cargo test` pasa; el enlace se persiste en `metadata`.
+- [ ] **Paso 1:** Añadir variante `Task(TaskCall)` al enum `ToolCall` con campos `{ task_id, description, mode: Foreground|Background, model, tools }`.
+- [ ] **Paso 2:** Extender `SpawnAgentConfig` con `task_id: Option<String>`, `depth: u32`, y `permissions: Permissions` derivadas.
+- [ ] **Paso 3:** En el handler del engine, interceptar `ToolCall::Task`; si `mode == Foreground`, spawn + esperar resultado y devolver `ToolResult`; si `Background`, registrar job y devolver `task_id`.
+- [ ] **Paso 4:** Implementar derivación de permisos: `child.permissions = parent.permissions ∩ child.permissions` (deny del padre se propaga).
+- [ ] **Paso 5:** Implementar límite `subagent_depth`: si `depth > config.subagent_depth`, devolver error al modelo.
+- [ ] **Paso 6:** Implementar reanudación por `task_id`: cargar historial de la sesión del subagente vía `LoadHistory`.
 
-### Tarea B10: Handlers de export/import en el engine
+**Criterio de aceptación:** El modelo puede invocar `task` en foreground y background; el subagente hereda permisos restringidos del padre; `task_id` reanuda sesión existente; `subagent_depth` bloquea anidación excesiva.
 
-**Archivos:**
-- Modificar: `src/engine/orchestrator.rs`
-
-- [ ] **Paso 1:** Implementar `Export`: resolver formato (por defecto JSON), llamar `export_session`, emitir `Exported`.
-- [ ] **Paso 2:** Implementar `Import`: llamar `import_session`, activar la sesión importada, emitir `Imported`.
-- [ ] **Criterio:** `cargo test` pasa; round-trip export→import funciona de extremo a extremo.
-
-### Tarea B11: Handlers de skills/mcps/status en el engine
-
-**Archivos:**
-- Modificar: `src/engine/orchestrator.rs`
-
-- [ ] **Paso 1:** Implementar `ListSkills`: recoger skills del agente activo desde `agents`/config y emitir `SkillsListed`.
-- [ ] **Paso 2:** Implementar `ListMcps`/`ToggleMcp`: consultar `mcp_registry` (Arc<Mutex<McpRegistry>>) para listar y activar/desactivar servidores; emitir `McpsListed`.
-- [ ] **Paso 3:** Implementar `Status`: componer `StatusInfo` (modelo, sesión activa, tokens/coste si se trackean, debug, workspace) y emitir `StatusReport`.
-- [ ] **Criterio:** `cargo test` pasa; los datos reflejan el estado real del engine.
-
-### Tarea B12: Handler de init en el engine
+#### Tarea 1.2: Subagentes en background + notificaciones de finalización
 
 **Archivos:**
-- Modificar: `src/engine/orchestrator.rs`
+- Crear: `src/engine/jobs.rs` (JobRegistry)
+- Modificar: `src/engine/orchestrator.rs` (registro de jobs, canal de resultados en `tokio::select!`)
+- Modificar: `src/engine/mod.rs` (exponer `jobs`)
+- Modificar: `src/tui/app.rs` (toast de finalización)
 
-- [ ] **Paso 1:** Implementar `Init`: generar `AGENTS.md` en el workspace a partir de `InitAnswers` y emitir `InitDone`.
-- [ ] **Criterio:** `cargo test` pasa; el archivo `AGENTS.md` se crea con el contenido esperado.
+- [ ] **Paso 1:** Crear `JobRegistry` con `HashMap<task_id, JoinHandle>` y canal `mpsc` de resultados.
+- [ ] **Paso 2:** Añadir el `rx` de resultados al `tokio::select!` del loop principal.
+- [ ] **Paso 3:** Al completar un job, emitir `EngineEvent::SubagentFinished(task_id, summary)`.
+- [ ] **Paso 4:** En la TUI, mostrar indicador de job activo y toast al completar.
 
-### Tarea B13: Handler de review en el engine
+**Criterio de aceptación:** Los subagentes background no bloquean el loop; la TUI muestra el estado del job y un toast al finalizar.
 
-**Archivos:**
-- Modificar: `src/engine/orchestrator.rs`
-
-- [ ] **Paso 1:** Implementar `Review`: ejecutar `git diff` (o `git diff <target>`) con `std::process::Command`, capturar stdout, enviarlo al agente root vía `send_to_root(AgentMessage::UserInput(...))` y emitir `ReviewResult`.
-- [ ] **Criterio:** `cargo test` pasa; el diff se envía al agente root correctamente.
-
-### Tarea B14: Handlers de warp/workspaces/move/timeline en el engine
-
-**Archivos:**
-- Modificar: `src/engine/orchestrator.rs`
-
-- [ ] **Paso 1:** Implementar `Warp`: actualizar `workspace` del engine y emitir `WorkspaceChanged`.
-- [ ] **Paso 2:** Implementar `ListWorkspaces`: listar desde config y emitir `WorkspacesListed`.
-- [ ] **Paso 3:** Implementar `MoveSession`: `set_session_workspace` y emitir `SessionMoved`.
-- [ ] **Paso 4:** Implementar `Timeline`: recuperar mensajes de la sesión activa y emitir `Timeline`.
-- [ ] **Criterio:** `cargo test` pasa; cada handler emite su evento correspondiente.
-
-## Tareas de frontend/TUI (frontend-dev)
-
-### Tarea T1: Registrar comandos en `COMMANDS` y `handle_command`
+#### Tarea 1.3: Plan Mode → Build handoff
 
 **Archivos:**
-- Modificar: `src/tui/app.rs`
+- Modificar: `src/engine/orchestrator.rs` (comando `/build`, transición plan→build)
+- Modificar: `src/agent/types.rs` (modo plan/build en estado del agente)
+- Modificar: `src/tui/app.rs` (comando `/build`)
 
-- [ ] **Paso 1:** Añadir a `COMMANDS: &[(&str,&str)]` las entradas de todos los comandos nuevos (backend y TUI) con su descripción.
-- [ ] **Paso 2:** En `handle_command`, añadir los `match` arms que construyen y envían los `EngineCommand` de backend por `command_tx`.
-- [ ] **Criterio:** los comandos aparecen en la paleta fuzzy y en el autocompletado con Tab.
+- [ ] **Paso 1:** Definir estado `plan`/`build` en el agente; en plan mode, todas las herramientas de escritura devuelven error.
+- [ ] **Paso 2:** Implementar `/build`: leer archivo markdown de plan, crear agente build con permisos de escritura.
+- [ ] **Paso 3:** Inyectar el contenido del plan como mensaje sintético de ejecución (`UserInput`/`System`).
 
-### Tarea T2: Manejar eventos de backend en `handle_event`
+**Criterio de aceptación:** Un agente plan solo-lectura genera un plan markdown; al aprobarse, un agente build lo ejecuta con el plan como contexto.
 
-**Archivos:**
-- Modificar: `src/tui/app.rs`
-
-- [ ] **Paso 1:** Añadir arms en `handle_event(EngineEvent)` para `UndoApplied`, `RedoApplied`, `Forked`, `Exported`, `Imported`, `ShareUpdated`, `SkillsListed`, `McpsListed`, `StatusReport`, `InitDone`, `ReviewResult`, `WorkspaceChanged`, `WorkspacesListed`, `Timeline`, `SessionMoved`.
-- [ ] **Paso 2:** Cada arm actualiza el estado de la TUI (mensajes, sesión activa, paneles de listado) y fuerza re-render.
-- [ ] **Criterio:** `cargo build` compila; los eventos actualizan la UI correctamente.
-
-### Tarea T3: Comandos TUI puros — themes/timestamps/thinking
+#### Tarea 1.4: Árbol de sesiones / navegación padre-hijo
 
 **Archivos:**
-- Modificar: `src/tui/app.rs`
+- Modificar: `src/db/models.rs` (Session → `parent_id`)
+- Modificar: `src/db/mod.rs` (`ensure_column` para `parent_id`, método `set_parent`)
+- Modificar: `src/engine/orchestrator.rs` (fork con parentID, comandos `/parent`, `/children`)
+- Modificar: `src/tui/app.rs` (comandos + navegación)
 
-- [ ] **Paso 1:** Añadir campos de estado `theme: Theme`, `show_timestamps: bool`, `show_thinking: bool` al `App`.
-- [ ] **Paso 2:** Implementar `/themes` (ciclar/escoger tema), `/timestamps` (toggle) y `/thinking` (toggle) íntegramente en `handle_command`, sin `EngineCommand`.
-- [ ] **Paso 3:** Aplicar `show_timestamps`/`show_thinking` en el renderizado de mensajes.
-- [ ] **Criterio:** los toggles cambian el render en vivo sin tocar el engine.
+- [ ] **Paso 1:** Añadir columna `parent_id` vía `ensure_column` y campo en `Session`.
+- [ ] **Paso 2:** En `/fork`, registrar `parent_id = sesión actual`.
+- [ ] **Paso 3:** Implementar `/parent` y `/children` para navegar la jerarquía.
+- [ ] **Paso 4:** Mostrar jerarquía en el sidebar de sesiones.
 
-### Tarea T4: Comando TUI puro — stash
+**Criterio de aceptación:** `/fork` crea sesión hija con parentID; se navega padre↔hijo; la jerarquía se persiste y se muestra en la TUI.
 
-**Archivos:**
-- Modificar: `src/tui/app.rs`
+**Dependencia:** FASE 1 depende de la infraestructura de `spawn_agent` y `ToolCall` existentes (ya presentes). FASE 4 (TUI) consume los `EngineEvent` de FASE 1.
 
-- [ ] **Paso 1:** Añadir `stash_stack: Vec<String>` al `App`.
-- [ ] **Paso 2:** Implementar `/stash` (guardar buffer actual), `/stash pop` (recuperar último) y `/stash list` (mostrar stack).
-- [ ] **Criterio:** el buffer se guarda/recupera correctamente entre comandos.
+### FASE 2 — Contexto y memoria
 
-### Tarea T5: Comando TUI puro — editor
-
-**Archivos:**
-- Modificar: `src/tui/app.rs`
-
-- [ ] **Paso 1:** Implementar `/editor`: leer `$EDITOR` (o fallback), escribir el buffer actual a un archivo temporal, lanzar el editor con `std::process::Command`, leer el archivo de vuelta al buffer.
-- [ ] **Criterio:** al cerrar el editor, el contenido editado se carga en el buffer de entrada.
-
-### Tarea T6: Comando interactivo — init
+#### Tarea 2.1: Compaction anclada con plantilla estructurada
 
 **Archivos:**
-- Modificar: `src/tui/app.rs`
+- Crear: `src/engine/compaction.rs` (plantilla + fusión de resumen)
+- Modificar: `src/config/types.rs` (`Config.session.compaction`)
+- Modificar: `src/engine/orchestrator.rs` (disparo por umbral de contexto)
+- Modificar: `src/llm/provider.rs` (exponer `window` del modelo)
 
-- [ ] **Paso 1:** Implementar el flujo de prompts de `/init` (nombre, descripción, stack) recogiendo respuestas en `InitAnswers`.
-- [ ] **Paso 2:** Al completar, enviar `EngineCommand::Init { answers }` y manejar `InitDone`.
-- [ ] **Criterio:** el flujo guiado recoge las respuestas y dispara la generación de `AGENTS.md`.
+- [ ] **Paso 1:** Definir plantilla Markdown fija (`## Objective / Important Details / Work State / Next Move / Relevant Files`).
+- [ ] **Paso 2:** Implementar fusión: parsear resumen previo por secciones; actualizar `Work State`, `Next Move`, `Relevant Files`; conservar `Objective`/`Important Details` salvo cambio.
+- [ ] **Paso 3:** Config `compaction = { mode: auto|manual, buffer, keep }`.
+- [ ] **Paso 4:** Disparar cuando `context_used > window − buffer`; compactar manteniendo `keep` tokens.
 
-### Tarea T7: Comando interactivo — timeline
+**Criterio de aceptación:** La compactación actualiza (no regenera) el resumen anclado; respeta `buffer`/`keep`; se dispara automáticamente en modo `auto`.
 
-**Archivos:**
-- Modificar: `src/tui/app.rs`
-
-- [ ] **Paso 1:** Implementar `/timeline`: enviar `EngineCommand::Timeline`, mostrar la lista de mensajes y permitir saltar a un mensaje seleccionado.
-- [ ] **Criterio:** el usuario puede navegar la línea temporal y saltar a un mensaje.
-
-### Tarea T8: Comando interactivo — mcps
+#### Tarea 2.2: Truncado de salida de herramientas + tool-output store
 
 **Archivos:**
-- Modificar: `src/tui/app.rs`
+- Crear: `src/engine/tool_output.rs` (ToolOutputStore)
+- Modificar: `src/engine/orchestrator.rs` (truncado en handler de ToolResult)
+- Modificar: `src/tui/app.rs` (colapso/expansión de salida larga)
 
-- [ ] **Paso 1:** Implementar `/mcps`: enviar `ListMcps`, mostrar la lista con estado on/off y permitir activar/desactivar (enviar `ToggleMcp`).
-- [ ] **Criterio:** el usuario puede listar y alternar servidores MCP desde la TUI.
+- [ ] **Paso 1:** Crear `ToolOutputStore` (mapa `tool_call_id → contenido completo`).
+- [ ] **Paso 2:** En el handler de `ToolResult`, truncar a ~2000 chars antes del modelo; guardar el completo en el store.
+- [ ] **Paso 3:** En la TUI, colapsar salidas largas con toggle para expandir (lee del store).
 
-## Orden de implementación y dependencias
+**Criterio de aceptación:** El modelo recibe salidas truncadas; el contenido completo está disponible en la TUI vía toggle.
 
-1. **B1** (enum) → base para todo el backend.
-2. **B2** (estado del engine) → necesario para undo/redo y warp.
-3. **B3–B7** (métodos de DB) → dependen de B1; pueden ir en paralelo entre sí.
-4. **B8–B14** (handlers) → dependen de B2 y de los métodos de DB correspondientes.
-5. **T1–T2** (registro + eventos) → dependen de B1 y de los handlers; son el esqueleto de la TUI.
-6. **T3–T5** (comandos TUI puros) → independientes; pueden ir en paralelo con el backend.
-7. **T6–T8** (comandos interactivos) → dependen de T1/T2 y de los handlers de init/timeline/mcps.
+#### Tarea 2.3: Revert/fork basado en snapshots
 
-**Ruta crítica:** B1 → B2 → (B3–B7) → B8–B14 → T1 → T2 → T6–T8. Los comandos TUI puros (T3–T5) se pueden implementar en cualquier momento.
+**Archivos:**
+- Crear: `src/engine/snapshot.rs` (git-tree content-addressed)
+- Modificar: `src/db/mod.rs` (tabla `snapshots`)
+- Modificar: `src/engine/orchestrator.rs` (comandos `/revert`, `/stage`, `/clear`, `/commit`)
+- Modificar: `src/tui/app.rs` (comandos)
+
+- [ ] **Paso 1:** Implementar snapshot content-addressed del árbol de archivos por turno de asistente.
+- [ ] **Paso 2:** Persistir snapshots en `db` con referencia al turno.
+- [ ] **Paso 3:** Implementar `/revert` (restaurar desde snapshot previo), `/stage`, `/clear`, `/commit`.
+
+**Criterio de aceptación:** Cada turno de asistente genera un snapshot; `/revert` restaura archivos desde un snapshot previo; stage/clear/commit operan sobre el snapshot.
+
+#### Tarea 2.4: Contexto de sistema como fuentes tipadas refrescables
+
+**Archivos:**
+- Crear: `src/engine/source.rs` (trait `Source<A>`)
+- Modificar: `src/engine/orchestrator.rs` (registro de fuentes, baseline/delta)
+
+- [ ] **Paso 1:** Definir trait `Source<A>` con `baseline()` y `delta()`.
+- [ ] **Paso 2:** Mantener registro de fuentes y su estado; reinyectar solo las cambiadas.
+- [ ] **Paso 3:** Enviar baseline una vez; deltas en turnos siguientes.
+
+**Criterio de aceptación:** Solo las fuentes cuyo estado cambió se reinyectan; el baseline se envía una vez.
+
+#### Tarea 2.5: Archivos de instrucción (AGENTS.md, CLAUDE.md, CONTEXT.md)
+
+**Archivos:**
+- Crear: `src/engine/instructions.rs` (descubrimiento)
+- Modificar: `src/engine/orchestrator.rs` (inyección por turnos)
+- Modificar: `src/config/paths.rs` (rutas global + proyecto)
+
+- [ ] **Paso 1:** Descubrir `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md` en workspace y config global.
+- [ ] **Paso 2:** Inyectar como contexto de sistema por turnos (con cache-control en FASE 6).
+
+**Criterio de aceptación:** Los archivos de instrucción se descubren automáticamente y se inyectan en el contexto.
+
+**Dependencia:** FASE 2 depende de FASE 1 (orquestación estable). La Tarea 2.1 se integra con FASE 6 (cache-control).
+
+### FASE 3 — Herramientas y MCP
+
+#### Tarea 3.1: `todo` tool + lista de tareas persistida
+
+**Archivos:**
+- Modificar: `src/agent/types.rs` (variante `Todo` en `ToolCall`)
+- Crear: `src/db/todos.rs` (tabla `todos`)
+- Modificar: `src/engine/orchestrator.rs` (handler + `EngineEvent::TodosUpdated`)
+- Modificar: `src/tui/app.rs` (sidebar en vivo)
+
+- [ ] **Paso 1:** Añadir variante `Todo` con operaciones `add/update/delete/list`.
+- [ ] **Paso 2:** Persistir lista por sesión en `db` (tabla `todos`).
+- [ ] **Paso 3:** Emitir `EngineEvent::TodosUpdated`; la TUI muestra sidebar en vivo.
+
+**Criterio de aceptación:** El modelo gestiona una lista de tareas persistida por sesión; la TUI la muestra en vivo.
+
+#### Tarea 3.2: `question` tool (Q&A inline)
+
+**Archivos:**
+- Modificar: `src/agent/types.rs` (variante `Question` en `ToolCall`)
+- Modificar: `src/engine/orchestrator.rs` (pausa de turno, `EngineEvent::Question`, `EngineEvent::QuestionAnswer`)
+- Modificar: `src/tui/app.rs` (diálogo estructurado)
+
+- [ ] **Paso 1:** Añadir variante `Question` con opciones múltiples, default recomendado, custom.
+- [ ] **Paso 2:** Pausar el turno y emitir `EngineEvent::Question` a la TUI.
+- [ ] **Paso 3:** La respuesta vuelve como `EngineEvent::QuestionAnswer` y se inyecta como `ToolResult`.
+
+**Criterio de aceptación:** El agente puede preguntar al usuario a mitad de turno; la respuesta se inyecta al modelo.
+
+#### Tarea 3.3: `apply_patch` tool
+
+**Archivos:**
+- Modificar: `src/agent/types.rs` (variante `ApplyPatch` en `ToolCall`)
+- Crear: `src/engine/apply_patch.rs` (parser + aplicación BOM/CRLF-aware)
+- Modificar: `src/permissions/checker.rs` (aprobación en lote)
+- Modificar: `src/engine/orchestrator.rs` (handler)
+
+- [ ] **Paso 1:** Definir formato de patch batch (add/update/delete).
+- [ ] **Paso 2:** Agrupar archivos y solicitar una sola aprobación de permisos en lote antes de leer.
+- [ ] **Paso 3:** Aplicar secuencialmente con detección/preservación de BOM y CRLF.
+
+**Criterio de aceptación:** `apply_patch` aplica cambios en lote con una sola aprobación; preserva BOM/CRLF por archivo.
+
+#### Tarea 3.4: Herramientas estructuradas read/grep/glob/webfetch/websearch
+
+**Archivos:**
+- Crear: `src/tools/mod.rs` (schemas estrictos serde)
+- Crear: `src/tools/read.rs`, `src/tools/grep.rs`, `src/tools/glob.rs`, `src/tools/web.rs`
+- Modificar: `src/engine/orchestrator.rs` (registro de tools)
+- Modificar: `src/permissions/checker.rs` (permiso `net.http` para web)
+
+- [ ] **Paso 1:** Definir schemas JSON estrictos para cada tool.
+- [ ] **Paso 2:** Implementar paginación en `read` (2000 líneas/50KB con offset).
+- [ ] **Paso 3:** Implementar `grep` con ripgrep.
+- [ ] **Paso 4:** Implementar `webfetch`/`websearch` con permiso `net.http`.
+
+**Criterio de aceptación:** Las tools estructuradas validan schemas, pagan resultados y respetan permisos web.
+
+#### Tarea 3.5: Autorización de directorio externo
+
+**Archivos:**
+- Modificar: `src/permissions/checker.rs` (permiso `fs.external`)
+- Modificar: `src/config/types.rs` (permiso en schema)
+- Modificar: `src/engine/orchestrator.rs` (chequeo en ediciones fuera del workspace)
+
+- [ ] **Paso 1:** Añadir permiso `fs.external` separado de `fs.write`.
+- [ ] **Paso 2:** Requerir este permiso para cualquier edición fuera del workspace.
+
+**Criterio de aceptación:** Editar fuera del workspace requiere el permiso `fs.external` explícito.
+
+#### Tarea 3.6: MCP resource tools
+
+**Archivos:**
+- Modificar: `src/mcp/client.rs` (exponer list/read resources)
+- Modificar: `src/agent/types.rs` (variantes `McpListResources`, `McpReadResource`)
+- Modificar: `src/engine/orchestrator.rs` (handler)
+
+- [ ] **Paso 1:** Exponer `mcp_list_resources` y `mcp_read_resource` como tools.
+- [ ] **Paso 2:** Manejar mime binario (base64 + metadatos).
+
+**Criterio de aceptación:** El modelo puede listar y leer resources/templates MCP; los binarios se devuelven con mime.
+
+#### Tarea 3.7: Integración LSP
+
+**Archivos:**
+- Crear: `src/lsp/mod.rs` (client LSP)
+- Modificar: `src/engine/orchestrator.rs` (diagnósticos → `EngineEvent::Diagnostics`)
+- Modificar: `src/tui/app.rs` (mostrar diagnósticos)
+
+- [ ] **Paso 1:** Lanzar language server por lenguaje (config).
+- [ ] **Paso 2:** Recoger diagnósticos y emitirlos al loop del agente y a la TUI.
+
+**Criterio de aceptación:** Los diagnósticos LSP llegan al agente y se muestran en la TUI (opcional, prioridad baja).
+
+**Dependencia:** FASE 3 depende de FASE 1 (orquestación) y de la infraestructura MCP existente. La Tarea 3.4 (web) requiere el permiso `net.http` ya presente.
+
+### FASE 4 — TUI/UX
+
+#### Tarea 4.1: Diff viewer completo
+
+**Archivos:**
+- Crear: `src/tui/diff_viewer.rs`
+- Modificar: `src/tui/app.rs` (comando `/diff`, integración)
+
+- [ ] **Paso 1:** Implementar árbol de archivos y navegación de hunks.
+- [ ] **Paso 2:** Modos split/unified y fuentes git/branch/last-turn.
+
+**Criterio de aceptación:** El diff viewer muestra árbol de archivos, hunks, split/unified y modos git/branch/last-turn.
+
+#### Tarea 4.2: Sistema which-key / leader-key
+
+**Archivos:**
+- Crear: `src/tui/keymap.rs` (Keymap central)
+- Crear: `src/tui/which_key.rs` (overlay)
+- Modificar: `src/tui/app.rs` (prefijo `ctrl+x`, chording)
+
+- [ ] **Paso 1:** Definir `Keymap` (HashMap<Vec<Key>, Action>) con chording.
+- [ ] **Paso 2:** Implementar prefijo `ctrl+x` y overlay which-key descubrible.
+- [ ] **Paso 3:** Registrar ~100 keybindings.
+
+**Criterio de aceptación:** El prefijo `ctrl+x` habilita key chording; el overlay which-key muestra bindings disponibles.
+
+#### Tarea 4.3: Keymap totalmente rebindable en config
+
+**Archivos:**
+- Modificar: `src/config/types.rs` (campo `keymap`)
+- Modificar: `src/config/loader.rs` (parseo)
+- Modificar: `src/tui/keymap.rs` (carga desde config)
+
+- [ ] **Paso 1:** Serializar `Keymap` en config YAML.
+- [ ] **Paso 2:** Cargar y aplicar el keymap desde config al arrancar la TUI.
+
+**Criterio de aceptación:** Todos los keybindings son rebindables vía config YAML.
+
+#### Tarea 4.4: Diálogos de modelo
+
+**Archivos:**
+- Crear: `src/tui/model_picker.rs`
+- Modificar: `src/db/mod.rs` (persistir frecency)
+- Modificar: `src/tui/app.rs` (ctrl+f, f2, ctrl+a)
+
+- [ ] **Paso 1:** Implementar popup con favoritos (ctrl+f), recientes (f2), providers (ctrl+a).
+- [ ] **Paso 2:** Implementar ranking frecency (frecuencia × recencia) persistido.
+
+**Criterio de aceptación:** Los diálogos de modelo muestran favoritos/recientes/providers con ranking frecency.
+
+#### Tarea 4.5: Sidebar de sesiones con pinning + quick slots
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (sidebar)
+- Modificar: `src/db/mod.rs` (persistir pin)
+
+- [ ] **Paso 1:** Implementar pinning de sesiones.
+- [ ] **Paso 2:** Implementar quick slots `<leader>1..9`.
+
+**Criterio de aceptación:** Las sesiones se pueden fijar y acceder con `<leader>1..9`.
+
+#### Tarea 4.6: Gestor de prompts en cola
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (cola de prompts, `<leader>q`)
+
+- [ ] **Paso 1:** Implementar cola de prompts pendientes y su gestión.
+
+**Criterio de aceptación:** Los prompts se pueden encolar y gestionar con `<leader>q`.
+
+#### Tarea 4.7: Sistema de toasts/notificaciones
+
+**Archivos:**
+- Crear: `src/tui/toast.rs`
+- Modificar: `src/tui/app.rs` (cola de toasts)
+
+- [ ] **Paso 1:** Implementar cola de toasts (jobs, subagentes, errores).
+
+**Criterio de aceptación:** Las notificaciones (jobs, subagentes, errores) se muestran como toasts.
+
+#### Tarea 4.8: Round-trip de editor externo
+
+**Archivos:**
+- Modificar: `src/config/types.rs` (campo `editor`)
+- Modificar: `src/tui/app.rs` (comando `<leader>e`)
+- Modificar: `src/shell/mod.rs` (lanzar editor)
+
+- [ ] **Paso 1:** Configurar editor externo.
+- [ ] **Paso 2:** Implementar `<leader>e`: abrir editor, capturar buffer, enviar como input.
+
+**Criterio de aceptación:** `<leader>e` abre el editor externo y el contenido editado se envía como input.
+
+**Dependencia:** FASE 4 depende de FASE 1 (EngineEvent) y de la infraestructura TUI existente. La Tarea 4.2/4.3 (keymap) es prerrequisito de 4.5/4.6/4.8 (que usan `<leader>`).
+
+### FASE 5 — Sesión y workflow
+
+#### Tarea 5.1: Mover sesión entre proyectos (re-homing)
+
+**Archivos:**
+- Modificar: `src/db/mod.rs` (`set_session_workspace` ampliado)
+- Modificar: `src/engine/orchestrator.rs` (comando `/move` mejorado)
+- Modificar: `src/tui/app.rs` (comando)
+
+- [ ] **Paso 1:** Ampliar re-homing: re-resolver rutas al mover la sesión a otro directorio.
+
+**Criterio de aceptación:** Una sesión se mueve a otro directorio y sus rutas se re-resuelven.
+
+#### Tarea 5.2: Copiar transcripción / exportar a editor
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (comando `/copy` ampliado, `/export-editor`)
+- Modificar: `src/shell/mod.rs` (portapapeles)
+
+- [ ] **Paso 1:** Ampliar `/copy` para copiar la transcripción al portapapeles.
+- [ ] **Paso 2:** Implementar `/export-editor` para exportar a editor externo.
+
+**Criterio de aceptación:** La transcripción se copia al portapapeles o se exporta al editor.
+
+#### Tarea 5.3: Gestión de git worktrees
+
+**Archivos:**
+- Modificar: `src/shell/mod.rs` (comandos git)
+- Modificar: `src/engine/orchestrator.rs` (comandos `/worktree add|list|remove`)
+- Modificar: `src/tui/app.rs` (comandos)
+
+- [ ] **Paso 1:** Implementar `/worktree add|list|remove` delegando en git.
+
+**Criterio de aceptación:** Los worktrees se gestionan desde la TUI.
+
+#### Tarea 5.4: Review con diff vs branch / VCS diffs
+
+**Archivos:**
+- Modificar: `src/engine/orchestrator.rs` (comando `/review` ampliado)
+- Modificar: `src/tui/diff_viewer.rs` (fuente branch/VCS)
+
+- [ ] **Paso 1:** Ampliar `/review` para diff vs branch/VCS.
+- [ ] **Paso 2:** Integrar con el diff viewer (fuente branch).
+
+**Criterio de aceptación:** `/review` muestra diffs vs branch/VCS en el diff viewer.
+
+**Dependencia:** FASE 5 depende de FASE 4 (diff viewer) y de la infraestructura de sesiones existente.
+
+### FASE 6 — LLM y providers
+
+#### Tarea 6.1: Política de prompt-caching / cache-control breakpoints
+
+**Archivos:**
+- Modificar: `src/llm/provider.rs` (inyección de `cache_control`)
+- Modificar: `src/config/types.rs` (config `cache: auto|off`)
+- Modificar: `src/engine/orchestrator.rs` (buckets TTL)
+
+- [ ] **Paso 1:** Implementar `cache:auto`: inyectar `cache_control` en el último tool/system/user.
+- [ ] **Paso 2:** Implementar buckets con TTL.
+- [ ] **Paso 3:** Hacer provider-aware (Anthropic, OpenAI, etc.).
+
+**Criterio de aceptación:** `cache:auto` inyecta cache_control en los breakpoints correctos; los buckets respetan TTL; es provider-aware.
+
+#### Tarea 6.2: Anthropic extended thinking
+
+**Archivos:**
+- Modificar: `src/llm/provider.rs` (campo `thinking` en request)
+- Modificar: `src/llm/anthropic.rs` (parseo de bloque thinking)
+
+- [ ] **Paso 1:** Añadir `thinking: { type: enabled, budget_tokens }` a la request.
+- [ ] **Paso 2:** Parsear el bloque thinking de la respuesta.
+
+**Criterio de aceptación:** El modelo Anthropic recibe budget_tokens y el bloque thinking se parsea correctamente.
+
+#### Tarea 6.3: Plantillas de system-prompt por modelo/agente
+
+**Archivos:**
+- Modificar: `src/config/types.rs` (`system_prompt` como plantilla)
+- Crear: `src/llm/template.rs` (renderizado de variables)
+
+- [ ] **Paso 1:** Permitir `system_prompt` como plantilla con variables (`{model}`, `{workspace}`, `{tools}`).
+- [ ] **Paso 2:** Renderizar la plantilla al construir el contexto.
+
+**Criterio de aceptación:** El system-prompt se renderiza con variables por modelo/agente.
+
+#### Tarea 6.4: Catálogo ampliado de providers
+
+**Archivos:**
+- Modificar: `src/llm/provider.rs` (`LlmProviderRegistry`)
+- Crear: `src/llm/bedrock.rs`, `src/llm/azure.rs`, `src/llm/google.rs`
+
+- [ ] **Paso 1:** Añadir constructores para Bedrock, Azure, Google.
+
+**Criterio de aceptación:** Los nuevos providers se registran y seleccionan desde config.
+
+**Dependencia:** FASE 6 depende de FASE 2 (compaction/contexto) para los breakpoints de cache.
+
+### FASE 7 — Extensibilidad
+
+#### Tarea 7.1: Sistema de plugins con hooks/transforms
+
+**Archivos:**
+- Crear: `src/plugin/mod.rs` (trait `Plugin`)
+- Modificar: `src/engine/orchestrator.rs` (invocación de hooks)
+- Modificar: `src/config/paths.rs` (directorio de plugins)
+
+- [ ] **Paso 1:** Definir trait `Plugin` con hooks (`on_agent_spawn`, `on_tool_call`, `on_command`, `on_event`) y transforms.
+- [ ] **Paso 2:** Cargar plugins desde `~/.config/anacleto/plugins/`.
+- [ ] **Paso 3:** Invocar hooks en los puntos del engine.
+
+**Criterio de aceptación:** Los plugins se cargan y sus hooks/transforms se invocan en los puntos definidos.
+
+#### Tarea 7.2: Comandos slash personalizados con templating
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (mover `COMMANDS` a registro dinámico)
+- Modificar: `src/config/types.rs` (comandos personalizados)
+- Crear: `src/engine/template.rs` (variables `{env:VAR}`, `{file:path}`)
+
+- [ ] **Paso 1:** Mover la lógica de `COMMANDS` a un registro dinámico.
+- [ ] **Paso 2:** Definir comandos personalizados en config con templating de variables.
+
+**Criterio de aceptación:** Los comandos slash personalizados se definen en config y expanden `{env:VAR}`/`{file:path}`.
+
+#### Tarea 7.3: Tools y providers personalizados en runtime
+
+**Archivos:**
+- Modificar: `src/plugin/mod.rs` (registro de tools/providers)
+- Modificar: `src/engine/orchestrator.rs` (registro en runtime)
+
+- [ ] **Paso 1:** Permitir que los plugins registren tools y providers en runtime.
+
+**Criterio de aceptación:** Los plugins pueden registrar tools y providers personalizados en runtime.
+
+**Dependencia:** FASE 7 depende de FASE 1 (orquestación) y de FASE 3 (tools). La Tarea 7.2 depende de la infraestructura de comandos existente.
+
+## Orden de implementación y dependencias (ruta crítica)
+
+```
+FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (tools/MCP) ──► FASE 6 (LLM)
+        │                        │                            │
+        └──────────► FASE 4 (TUI/UX) ◄────────────────────────┘
+                          │
+                          └──► FASE 5 (sesión/workflow)
+                                     │
+                                     └──► FASE 7 (extensibilidad)
+```
+
+**Ruta crítica recomendada:**
+1. **FASE 1** primero (base de orquestación: `task` tool, background jobs, plan/build, árbol de sesiones). Sin esto, nada downstream funciona.
+2. **FASE 2** (contexto/memoria) en paralelo conceptual con FASE 1, pero implementar tras estabilizar FASE 1.
+3. **FASE 3** (tools/MCP) — depende de FASE 1.
+4. **FASE 6** (LLM) — depende de FASE 2 para cache breakpoints.
+5. **FASE 4** (TUI/UX) — consume los `EngineEvent` de FASE 1/2/3; el keymap (4.2/4.3) es prerrequisito de 4.5/4.6/4.8.
+6. **FASE 5** (sesión/workflow) — depende de FASE 4 (diff viewer).
+7. **FASE 7** (extensibilidad) — al final, sobre infraestructura estable.
+
+**Prioridad de negocio (si hay que recortar):** FASE 1 (task tool, background) > FASE 3 (apply_patch, tools estructuradas) > FASE 2 (compaction, truncado) > FASE 6 (cache) > FASE 4 (keymap, toasts) > FASE 5 > FASE 7.
 
 ## Criterios de aceptación finales
 
-### Verificación estática y de tests
+### Verificación de calidad (obligatoria en cada commit)
 
-- [ ] `cargo fmt --check` pasa sin cambios pendientes.
+- [ ] `cargo fmt --check` pasa sin cambios.
 - [ ] `cargo clippy` pasa sin warnings.
-- [ ] `cargo test` pasa (incluidos los nuevos tests de DB y engine).
+- [ ] `cargo test` pasa (unit + integration).
+- [ ] No se añaden dependencias fuera de las permitidas (std, tokio, ratatui, crossterm, serde, serde_yaml, sqlx, reqwest, tower, anyhow).
+- [ ] No se introduce web UI ni batch mode (TUI-only se mantiene).
+- [ ] Los subagentes no heredan nada del padre salvo lo especificado (permisos derivados en task tool).
+- [ ] Los MCP server paths provienen de config, no hardcodeados.
 
-### Verificación manual E2E por comando
+### Verificación E2E manual por feature
 
-- [ ] `/undo` elimina el último par de mensajes; `/redo` lo restaura.
-- [ ] `/fork` crea una nueva sesión con los mensajes copiados y la activa.
-- [ ] `/export` escribe un archivo JSON/markdown; `/import` lo lee y crea una sesión con el contenido.
-- [ ] `/share` marca la sesión como compartida y muestra un enlace; `/unshare` lo revierte.
-- [ ] `/skills` lista los skills del agente activo.
-- [ ] `/mcps` lista los servidores MCP y permite activar/desactivar.
-- [ ] `/status` muestra modelo, sesión, tokens, coste, debug y workspace correctos.
-- [ ] `/init` guía la creación de `AGENTS.md` en el workspace.
-- [ ] `/review` envía el diff de git al agente root para su revisión.
-- [ ] `/warp` cambia el directorio de trabajo; `/workspaces` los lista; `/move` mueve la sesión.
-- [ ] `/timeline` muestra la línea temporal y permite saltar a un mensaje.
-- [ ] `/themes` cambia el tema; `/timestamps` y `/thinking` alternan su visualización en vivo.
-- [ ] `/stash` guarda/recupera el prompt; `/editor` abre el editor y carga el contenido editado.
-- [ ] Los comandos ya implementados (`/help`, `/sessions`, `/new`, etc.) siguen funcionando sin regresiones.
-- [ ] Los comandos cloud de OpenCode (fuera de alcance) no se registran ni se muestran.
+**FASE 1**
+- [ ] El modelo invoca `task` en foreground y background; el subagente responde.
+- [ ] Un subagente background muestra toast al completar sin bloquear el loop.
+- [ ] Un agente plan solo-lectura genera un plan; `/build` lo ejecuta.
+- [ ] `/fork` crea sesión hija; `/parent`/`/children` navegan la jerarquía.
+
+**FASE 2**
+- [ ] La compactación actualiza el resumen anclado sin regenerarlo; respeta buffer/keep.
+- [ ] Las salidas largas de herramientas se truncan para el modelo y se expanden en la TUI.
+- [ ] `/revert` restaura archivos desde un snapshot previo.
+- [ ] Solo las fuentes de sistema cambiadas se reinyectan.
+- [ ] AGENTS.md/CLAUDE.md/CONTEXT.md se descubren e inyectan.
+
+**FASE 3**
+- [ ] El modelo gestiona la lista de tareas; el sidebar se actualiza en vivo.
+- [ ] El agente pregunta al usuario a mitad de turno y usa la respuesta.
+- [ ] `apply_patch` aplica en lote con una aprobación; preserva BOM/CRLF.
+- [ ] read/grep/glob/webfetch/websearch validan schemas y pagan resultados.
+- [ ] Editar fuera del workspace requiere `fs.external`.
+- [ ] El modelo lista/lee resources MCP; binarios con mime.
+- [ ] Los diagnósticos LSP llegan al agente y a la TUI.
+
+**FASE 4**
+- [ ] El diff viewer muestra árbol, hunks, split/unified, git/branch/last-turn.
+- [ ] `ctrl+x` habilita key chording; el overlay which-key es descubrible.
+- [ ] Todos los keybindings son rebindables en config.
+- [ ] Los diálogos de modelo muestran favoritos/recientes/providers con frecency.
+- [ ] Las sesiones se fijan y se accede con `<leader>1..9`.
+- [ ] Los prompts se encolan con `<leader>q`.
+- [ ] Los toasts muestran jobs/subagentes/errores.
+- [ ] `<leader>e` hace round-trip con el editor externo.
+
+**FASE 5**
+- [ ] Una sesión se mueve a otro directorio y re-resuelve rutas.
+- [ ] La transcripción se copia al portapapeles o se exporta al editor.
+- [ ] Los worktrees se gestionan desde la TUI.
+- [ ] `/review` muestra diffs vs branch/VCS.
+
+**FASE 6**
+- [ ] `cache:auto` inyecta cache_control en los breakpoints correctos con TTL.
+- [ ] Anthropic extended thinking recibe budget_tokens y se parsea.
+- [ ] El system-prompt se renderiza con variables por modelo/agente.
+- [ ] Bedrock/Azure/Google se registran y seleccionan desde config.
+
+**FASE 7**
+- [ ] Los plugins se cargan y sus hooks/transforms se invocan.
+- [ ] Los comandos slash personalizados expanden `{env:VAR}`/`{file:path}`.
+- [ ] Los plugins registran tools/providers en runtime.
+
+### Cierre de la release v0.3.0
+
+- [ ] Todas las fases 1-7 completadas y verificadas.
+- [ ] `cargo doc --no-deps` genera sin errores.
+- [ ] Documentación de nuevas config (keymap, compaction, plugins, providers) actualizada.
+- [ ] Rama `develop` con commits atómicos por tarea, cada uno pasando fmt/clippy/test.

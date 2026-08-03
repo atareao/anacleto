@@ -88,6 +88,22 @@ struct ApprovalRequest {
     operation: String,
 }
 
+/// State for an inline question dialog (`/question` tool).
+struct QuestionState {
+    /// Question id (matches the engine's pending_questions key).
+    id: String,
+    /// The question text.
+    question: String,
+    /// Optional multiple-choice options.
+    options: Vec<String>,
+    /// Optional recommended default answer.
+    recommended: Option<String>,
+    /// Index of the currently selected option (if options present).
+    selected: usize,
+    /// Free-text answer being typed.
+    answer_input: String,
+}
+
 /// Color themes selectable via `/themes`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Theme {
@@ -183,6 +199,10 @@ pub struct App {
     /// Pending approval request (None if no pending request).
     pending_approval: Option<ApprovalRequest>,
 
+    // ── Inline question dialog (`/question` tool) ─────────────────────
+    /// Pending question from the agent (None if no pending question).
+    pending_question: Option<QuestionState>,
+
     // ── Right panel data ──────────────────────────────────────────────
     /// Total tokens consumed in the current session.
     pub total_tokens: u64,
@@ -252,6 +272,8 @@ pub struct App {
     mcps_index: usize,
     /// Active `/init` flow (None when not running).
     init_flow: Option<InitFlow>,
+    /// Todo list for the active session (from the `todo` tool).
+    todos: Vec<crate::db::models::Todo>,
 }
 
 impl App {
@@ -281,6 +303,7 @@ impl App {
             show_agents: false,
             show_subagents: false,
             pending_approval: None,
+            pending_question: None,
             total_tokens: 0,
             context_window_pct: 0.0,
             total_cost: 0.0,
@@ -314,6 +337,7 @@ impl App {
             show_mcps: false,
             mcps_index: 0,
             init_flow: None,
+            todos: Vec::new(),
         }
     }
 
@@ -457,6 +481,21 @@ impl App {
             }
             EngineEvent::ApprovalRequired { id, operation } => {
                 self.pending_approval = Some(ApprovalRequest { id, operation });
+            }
+            EngineEvent::Question {
+                id,
+                question,
+                options,
+                recommended,
+            } => {
+                self.pending_question = Some(QuestionState {
+                    id,
+                    question,
+                    options,
+                    recommended,
+                    selected: 0,
+                    answer_input: String::new(),
+                });
             }
             EngineEvent::TokenUsage {
                 total_tokens,
@@ -632,6 +671,9 @@ impl App {
                 self.push_msg(format!("\u{26a0} Error: {}", msg));
                 self.chat_scroll = 0;
             }
+            EngineEvent::TodosUpdated(todos) => {
+                self.todos = todos;
+            }
             _ => {}
         }
     }
@@ -656,6 +698,64 @@ impl App {
                             id,
                             approved: false,
                         });
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Inline question dialog (`/question` tool): capture answer.
+        if self.pending_question.is_some() {
+            match key {
+                KeyCode::Enter => {
+                    if let Some(q) = self.pending_question.take() {
+                        let answer = if !q.options.is_empty() {
+                            q.options.get(q.selected).cloned().unwrap_or_default()
+                        } else {
+                            q.answer_input.trim().to_string()
+                        };
+                        let id = q.id.clone();
+                        let _ = self
+                            .cmd_tx
+                            .try_send(EngineCommand::QuestionAnswer { id, answer });
+                    }
+                }
+                KeyCode::Esc => {
+                    if let Some(q) = self.pending_question.take() {
+                        let id = q.id.clone();
+                        let _ = self.cmd_tx.try_send(EngineCommand::QuestionAnswer {
+                            id,
+                            answer: String::new(),
+                        });
+                    }
+                }
+                KeyCode::Up => {
+                    if let Some(q) = self.pending_question.as_mut() {
+                        if !q.options.is_empty() {
+                            q.selected = q.selected.saturating_sub(1);
+                        }
+                    }
+                }
+                KeyCode::Down => {
+                    if let Some(q) = self.pending_question.as_mut() {
+                        if !q.options.is_empty() {
+                            q.selected = (q.selected + 1) % q.options.len();
+                        }
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(q) = self.pending_question.as_mut() {
+                        if q.options.is_empty() {
+                            q.answer_input.push(c);
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(q) = self.pending_question.as_mut() {
+                        if q.options.is_empty() {
+                            q.answer_input.pop();
+                        }
                     }
                 }
                 _ => {}
@@ -1374,6 +1474,11 @@ fn render(f: &mut Frame, app: &mut App) {
     // Render approval dialog on top if pending
     if app.pending_approval.is_some() {
         render_approval_dialog(f, f.area(), app);
+    }
+
+    // Render inline question dialog on top if pending
+    if app.pending_question.is_some() {
+        render_question_dialog(f, f.area(), app);
     }
 }
 
@@ -2723,6 +2828,82 @@ fn render_approval_dialog(f: &mut Frame, area: Rect, app: &App) {
                 .style(Style::default().bg(Color::Rgb(40, 30, 0))),
         )
         .alignment(ratatui::layout::Alignment::Center);
+
+    f.render_widget(dialog, dialog_area);
+}
+
+/// Render the inline question dialog (`/question` tool).
+fn render_question_dialog(f: &mut Frame, area: Rect, app: &App) {
+    let Some(ref q) = app.pending_question else {
+        return;
+    };
+
+    let dialog_width = area.width.min(70);
+    let dialog_height = 12;
+    let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+    let overlay = ratatui::widgets::Clear;
+    f.render_widget(overlay, dialog_area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            " ❓ Question ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(&q.question, Style::default().fg(Color::White))),
+        Line::from(Span::raw("")),
+    ];
+
+    if !q.options.is_empty() {
+        for (i, opt) in q.options.iter().enumerate() {
+            let marker = if i == q.selected { "▸" } else { " " };
+            let style = if i == q.selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(Span::styled(
+                format!(" {} {}", marker, opt),
+                style,
+            )));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            format!(" ❯ {}", q.answer_input),
+            Style::default().fg(Color::Green),
+        )));
+    }
+
+    if let Some(rec) = &q.recommended {
+        lines.push(Line::from(Span::styled(
+            format!(" (recomendado: {})", rec),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        " Enter: submit  |  Esc: cancel  |  ↑/↓: select option ",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Cyan))
+                .style(Style::default().bg(Color::Rgb(0, 30, 40))),
+        )
+        .alignment(ratatui::layout::Alignment::Left);
 
     f.render_widget(dialog, dialog_area);
 }

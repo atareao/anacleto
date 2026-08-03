@@ -160,6 +160,15 @@ pub enum EngineEvent {
     Timeline(Vec<TimelineEntry>),
     /// The active session was moved to another workspace (via `/move`).
     SessionMoved { session_id: Uuid, workspace: String },
+    /// The todo list for the active session changed (via the `todo` tool).
+    TodosUpdated(Vec<crate::db::models::Todo>),
+    /// The agent asked the user a structured question (via the `question` tool).
+    Question {
+        id: String,
+        question: String,
+        options: Vec<String>,
+        recommended: Option<String>,
+    },
     /// A command handler failed; the engine loop continues.
     CommandError(String),
 }
@@ -266,6 +275,9 @@ pub struct Engine {
     usage_tx: mpsc::Sender<UsageEvent>,
     /// Pending human approvals (id -> oneshot sender).
     pending_approvals: Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+    /// Pending inline questions (id -> oneshot sender) for the `question` tool.
+    pending_questions:
+        Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>,
     /// Debug mode flag (shows LLM request/response payloads).
     /// Shared with agent tasks so the `/debug` toggle takes effect immediately.
     debug: Arc<AtomicBool>,
@@ -348,6 +360,8 @@ pub enum EngineCommand {
     MoveSession { workspace: String },
     /// Produce the timeline of the active session.
     Timeline,
+    /// Respond to an inline question asked by the agent (via the `question` tool).
+    QuestionAnswer { id: String, answer: String },
     /// Shutdown the engine.
     Shutdown,
 }
@@ -367,6 +381,7 @@ impl Engine {
             llm_registry: LlmProviderRegistry::new(),
             mcp_registry: Arc::new(tokio::sync::Mutex::new(McpRegistry::new())),
             pending_approvals: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            pending_questions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             debug: Arc::new(AtomicBool::new(false)),
             current_model: config
                 .agents
@@ -541,6 +556,7 @@ impl Engine {
                 db: self.database.clone(),
                 session_id: self.active_session_id,
                 pending_approvals: Some(self.pending_approvals.clone()),
+                pending_questions: Some(self.pending_questions.clone()),
                 history_limit_percent: history_limit,
                 debug: self.debug.clone(),
             });
@@ -619,6 +635,9 @@ impl Engine {
                             }
                             EngineCommand::ApprovalResponse { id, approved } => {
                                 self.handle_approval_response(&id, approved).await;
+                            }
+                            EngineCommand::QuestionAnswer { id, answer } => {
+                                self.handle_question_answer(&id, answer).await;
                             }
                             EngineCommand::SetDebug(debug) => {
                                 self.debug.store(debug, Ordering::Relaxed);
@@ -808,6 +827,7 @@ impl Engine {
             db: self.database.clone(),
             session_id: self.active_session_id,
             pending_approvals: Some(self.pending_approvals.clone()),
+            pending_questions: Some(self.pending_questions.clone()),
             history_limit_percent: history_limit,
             debug: self.debug.clone(),
         });
@@ -1383,6 +1403,14 @@ impl Engine {
         let mut pending = self.pending_approvals.lock().await;
         if let Some(sender) = pending.remove(id) {
             let _ = sender.send(approved);
+        }
+    }
+
+    /// Deliver an inline question answer to the waiting agent task.
+    async fn handle_question_answer(&self, id: &str, answer: String) {
+        let mut pending = self.pending_questions.lock().await;
+        if let Some(sender) = pending.remove(id) {
+            let _ = sender.send(answer);
         }
     }
 

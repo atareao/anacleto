@@ -27,6 +27,10 @@ use crate::skill::types::Skill;
 type PendingApprovals =
     Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>;
 
+/// Shared state for tracking pending inline questions awaiting a user answer.
+type PendingQuestions =
+    Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>;
+
 /// Handle for communicating with a running agent task.
 #[derive(Debug)]
 pub struct AgentHandle {
@@ -68,6 +72,7 @@ pub struct SpawnAgentConfig {
     pub db: Option<Database>,
     pub session_id: Option<Uuid>,
     pub pending_approvals: Option<PendingApprovals>,
+    pub pending_questions: Option<PendingQuestions>,
     pub history_limit_percent: f64,
     /// If true, emit LlmRequestDebug/LlmResponseDebug events with serialized JSON.
     /// Shared so the `/debug` toggle takes effect on running agents immediately.
@@ -95,6 +100,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         db,
         session_id,
         pending_approvals,
+        pending_questions,
         history_limit_percent,
         debug,
     } = config;
@@ -110,11 +116,13 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     // Load agent description as system prompt
     let system_prompt = agent.description.clone();
 
-    // Build tool list: skills + subagents
+    // Build tool list: skills + subagents + built-in todo tool
     let mut tools: Vec<ToolDefinition> = skills.iter().map(skill_to_tool_definition).collect();
     for sc in &subagent_configs {
         tools.push(subagent_config_to_tool_definition(sc));
     }
+    tools.push(todo_tool_definition());
+    tools.push(question_tool_definition());
 
     // Clone what the task needs
     let agent_mcp_names = agent.mcps.clone();
@@ -442,6 +450,14 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             "Operation '{}' was denied by user or permissions.",
                                             tc.function.name
                                         )
+                                    } else if tc.function.name == "todo" {
+                                        execute_todo_tool(&db, session_id, tc, &event_tx)
+                                            .await
+                                            .unwrap_or_else(|e| e)
+                                    } else if tc.function.name == "question" {
+                                        execute_question_tool(&pending_questions, tc, &event_tx)
+                                            .await
+                                            .unwrap_or_else(|e| e)
                                     } else if let Some(_skill) =
                                         skills.iter().find(|s| s.name == tc.function.name)
                                     {
@@ -830,6 +846,209 @@ Rules:
 - Always provide the `task` argument as a JSON object string.
 - Use read before edit to confirm the file's current contents.
 - edit replaces ALL occurrences of `old` with `new`."#;
+
+/// Built-in `todo` tool definition: lets the model manage a persisted task list.
+fn todo_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "todo".to_string(),
+        description: "Manage a persistent task list for the current session. \
+                       Actions: add (create a task), update (change status/priority/content), \
+                       delete (remove a task), list (show all tasks). \
+                       Status values: pending, in_progress, completed, cancelled."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "update", "delete", "list"],
+                    "description": "The todo operation to perform."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Task text (required for add, optional for update)."
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Task id (required for update/delete)."
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "in_progress", "completed", "cancelled"],
+                    "description": "New status (optional for update)."
+                },
+                "priority": {
+                    "type": "string",
+                    "description": "Optional priority label (e.g. high, medium, low)."
+                }
+            },
+            "required": ["action"]
+        }),
+    }
+}
+
+/// Execute a `todo` tool call against the database.
+async fn execute_todo_tool(
+    db: &Option<crate::db::Database>,
+    session_id: Option<Uuid>,
+    tool_call: &ToolCall,
+    event_tx: &mpsc::Sender<EngineEvent>,
+) -> std::result::Result<String, String> {
+    let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+        .map_err(|e| format!("Failed to parse todo arguments: {e}"))?;
+    let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
+
+    let Some(db) = db else {
+        return Err("No database available for todo tool".to_string());
+    };
+    let Some(session_id) = session_id else {
+        return Err("No active session for todo tool".to_string());
+    };
+
+    let result = match action {
+        "add" => {
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "todo add requires 'content'".to_string())?;
+            let priority = args.get("priority").and_then(|v| v.as_str());
+            let todo = db
+                .add_todo(session_id, content, "pending", priority)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Added todo [{}]: {}", todo.id, todo.content))
+        }
+        "update" => {
+            let id = args
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "todo update requires 'id'".to_string())?;
+            let id = Uuid::parse_str(id).map_err(|e| format!("Invalid todo id: {e}"))?;
+            let content = args.get("content").and_then(|v| v.as_str());
+            let status = args.get("status").and_then(|v| v.as_str());
+            let priority = args.get("priority").and_then(|v| v.as_str());
+            db.update_todo(id, content, status, priority)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Updated todo {id}"))
+        }
+        "delete" => {
+            let id = args
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "todo delete requires 'id'".to_string())?;
+            let id = Uuid::parse_str(id).map_err(|e| format!("Invalid todo id: {e}"))?;
+            db.delete_todo(id).await.map_err(|e| e.to_string())?;
+            Ok(format!("Deleted todo {id}"))
+        }
+        "list" => {
+            let todos = db.list_todos(session_id).await.map_err(|e| e.to_string())?;
+            if todos.is_empty() {
+                Ok("No todos for this session.".to_string())
+            } else {
+                let mut out = String::from("Todos:\n");
+                for t in &todos {
+                    let prio = t.priority.as_deref().unwrap_or("-");
+                    out.push_str(&format!(
+                        "- [{}] ({}) {} — {}\n",
+                        t.status, prio, t.id, t.content
+                    ));
+                }
+                Ok(out)
+            }
+        }
+        _ => Err(format!("Unknown todo action: {action}")),
+    };
+
+    // Emit the updated todo list so the TUI can refresh its sidebar.
+    if let Ok(list) = db.list_todos(session_id).await {
+        let _ = event_tx.send(EngineEvent::TodosUpdated(list)).await;
+    }
+
+    result
+}
+
+/// Tool definition for the inline `question` tool.
+fn question_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "question".to_string(),
+        description: "Ask the user a structured question mid-turn to resolve ambiguity. \
+                       Provide a clear question, an optional list of options, and an optional \
+                       recommended default. The user's answer is returned as the tool result."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question to ask the user."
+                },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional multiple-choice options."
+                },
+                "recommended": {
+                    "type": "string",
+                    "description": "Optional recommended default answer."
+                }
+            },
+            "required": ["question"]
+        }),
+    }
+}
+
+/// Execute a `question` tool call: register a pending question, emit an event
+/// for the TUI to display, and await the user's answer.
+async fn execute_question_tool(
+    pending_questions: &Option<PendingQuestions>,
+    tool_call: &ToolCall,
+    event_tx: &mpsc::Sender<EngineEvent>,
+) -> std::result::Result<String, String> {
+    let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+        .map_err(|e| format!("Failed to parse question arguments: {e}"))?;
+    let question = args
+        .get("question")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "question requires 'question'".to_string())?;
+    let options: Vec<String> = args
+        .get("options")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let recommended = args
+        .get("recommended")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let Some(pending) = pending_questions else {
+        return Err("No question handler available".to_string());
+    };
+
+    let id = Uuid::new_v4().to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    pending.lock().await.insert(id.clone(), tx);
+
+    let _ = event_tx
+        .send(EngineEvent::Question {
+            id: id.clone(),
+            question: question.to_string(),
+            options,
+            recommended,
+        })
+        .await;
+
+    // Await the user's answer (with a generous timeout so the turn can resume).
+    match tokio::time::timeout(std::time::Duration::from_secs(600), rx).await {
+        Ok(Ok(answer)) => Ok(format!("User answered: {answer}")),
+        Ok(Err(_)) => Err("Question channel closed without an answer".to_string()),
+        Err(_) => Err("Question timed out waiting for user answer".to_string()),
+    }
+}
 
 /// Execute a tool call against a matching skill and return the result as a string.
 async fn execute_skill_tool(
