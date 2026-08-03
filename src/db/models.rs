@@ -17,6 +17,10 @@ pub struct Session {
     pub is_active: bool,
     /// Session metadata.
     pub metadata: Option<serde_json::Value>,
+    /// Whether the session is marked as shared.
+    pub shared: bool,
+    /// Workspace this session belongs to (if any).
+    pub workspace: Option<String>,
 }
 
 /// A message stored in a session.
@@ -47,4 +51,41 @@ pub struct SessionSummary {
     pub updated_at: DateTime<Utc>,
     pub message_count: i64,
     pub is_active: bool,
+}
+
+/// A single message in an exported session transcript.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportMessage {
+    /// Message role ("user", "assistant", "system", "tool").
+    pub role: String,
+    /// Message content.
+    pub content: String,
+    /// When the message was created.
+    pub timestamp: DateTime<Utc>,
+}
+
+/// A serializable session transcript used for JSON export/import.
+///
+/// This is the recommended format for lossless round-trips: it preserves the
+/// session id, title, creation time and the full ordered message list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportData {
+    /// Session ID.
+    pub session_id: Uuid,
+    /// Session title.
+    pub title: String,
+    /// When the session was created.
+    pub created_at: DateTime<Utc>,
+    /// Ordered messages in the session.
+    pub messages: Vec<ExportMessage>,
+}
+
+/// Output format for a session export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    /// JSON transcript (lossless, recommended for round-trips).
+    Json,
+    /// Human-readable Markdown transcript.
+    Markdown,
 }

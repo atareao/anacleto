@@ -345,6 +345,11 @@ impl McpRegistry {
         self.clients.get(name)
     }
 
+    /// List the names of all registered MCP servers.
+    pub fn names(&self) -> Vec<String> {
+        self.clients.keys().cloned().collect()
+    }
+
     /// Collect tools from specific MCP servers and convert to ToolDefinitions.
     /// Returns a list of (server_name, original_tool_name, ToolDefinition) tuples.
     pub async fn collect_tools(
