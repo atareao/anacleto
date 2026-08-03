@@ -3,6 +3,13 @@ name = "anacleto"
 version = "0.1.0"
 edition = "2024"
 description = "Agent orchestration engine in Rust — agents, subagents, skills, and MCPs"
+license = "MIT"
+repository = "https://github.com/atareao/anacleto"
+homepage = "https://github.com/atareao/anacleto"
+readme = "README.md"
+keywords = ["agent", "orchestration", "tui", "llm", "mcp"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.85"
 
 [dependencies]
 # Async runtime
