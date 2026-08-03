@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["EngineCommand","EngineEvent"],"struct":["Engine"]};
+window.SIDEBAR_ITEMS = {"enum":["EngineCommand","EngineEvent"],"struct":["Engine","InitAnswers","McpStatus","SkillInfo","StatusInfo","TimelineEntry","UsageEvent"]};
