@@ -19,6 +19,10 @@ pub struct Config {
     #[serde(default)]
     pub session: SessionConfig,
 
+    /// Known workspaces (directories) for the `/workspaces` command.
+    #[serde(default)]
+    pub workspaces: Vec<PathBuf>,
+
     /// Shell tool inventory overrides.
     #[serde(default)]
     pub shell: ShellConfig,

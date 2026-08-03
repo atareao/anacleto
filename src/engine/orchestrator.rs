@@ -1,14 +1,17 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use chrono::{DateTime, Utc};
+
 use crate::agent::lifecycle::{AgentHandle, SpawnAgentConfig, spawn_agent};
 use crate::agent::types::{Agent, AgentId, AgentMessage, AgentRole, AgentStatus};
 use crate::config::Config;
 use crate::config::types::{OllamaConfig, ProviderConfig};
-use crate::db::models::SessionSummary;
+use crate::db::models::{SessionSummary, StoredMessage};
 use crate::db::session::Database;
 use crate::error::{Error, Result};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry, create_provider};
@@ -127,6 +130,114 @@ pub enum EngineEvent {
         agent_id: AgentId,
         agent_name: String,
     },
+    /// The last message pair was undone (via `/undo`).
+    UndoApplied { removed: Vec<String> },
+    /// The last undone message pair was restored (via `/redo`).
+    RedoApplied { restored: Vec<String> },
+    /// The active session was forked into a new session (via `/fork`).
+    Forked { new_session_id: Uuid },
+    /// A session was exported to a file (via `/export`).
+    Exported { path: PathBuf },
+    /// A session was imported from a file (via `/import`).
+    Imported { session_id: Uuid },
+    /// The share state of the active session changed (via `/share`/`/unshare`).
+    ShareUpdated { shared: bool, link: Option<String> },
+    /// The skills of the active agent were listed (via `/skills`).
+    SkillsListed(Vec<SkillInfo>),
+    /// The MCP servers were listed (via `/mcps`).
+    McpsListed(Vec<McpStatus>),
+    /// A status report was produced (via `/status`).
+    StatusReport(StatusInfo),
+    /// `AGENTS.md` was generated (via `/init`).
+    InitDone,
+    /// A git review was dispatched to the root agent (via `/review`).
+    ReviewResult(String),
+    /// The engine workspace changed (via `/warp`).
+    WorkspaceChanged(PathBuf),
+    /// The known workspaces were listed (via `/workspaces`).
+    WorkspacesListed(Vec<String>),
+    /// The session timeline was produced (via `/timeline`).
+    Timeline(Vec<TimelineEntry>),
+    /// The active session was moved to another workspace (via `/move`).
+    SessionMoved { session_id: Uuid, workspace: String },
+    /// A command handler failed; the engine loop continues.
+    CommandError(String),
+}
+
+/// Output format for a session export.
+pub use crate::db::models::ExportFormat;
+
+/// Answers collected by the interactive `/init` flow.
+#[derive(Debug, Clone)]
+pub struct InitAnswers {
+    /// Project/agent name.
+    pub name: String,
+    /// Short description.
+    pub description: String,
+    /// Technology stack.
+    pub stack: String,
+}
+
+/// Information about a skill, reported by `/skills`.
+#[derive(Debug, Clone)]
+pub struct SkillInfo {
+    /// Skill name.
+    pub name: String,
+    /// Skill description.
+    pub description: String,
+}
+
+/// Status of an MCP server, reported by `/mcps`.
+#[derive(Debug, Clone)]
+pub struct McpStatus {
+    /// Server name.
+    pub name: String,
+    /// Whether the server is enabled.
+    pub enabled: bool,
+}
+
+/// Engine status report, produced by `/status`.
+#[derive(Debug, Clone)]
+pub struct StatusInfo {
+    /// Active model for the root agent.
+    pub model: String,
+    /// Active session id (if any).
+    pub session_id: Option<Uuid>,
+    /// Active session name.
+    pub session_name: String,
+    /// Total tokens consumed.
+    pub total_tokens: u32,
+    /// Context window size of the active model.
+    pub context_window: u32,
+    /// Total cost in dollars.
+    pub cost: f64,
+    /// Whether debug mode is on.
+    pub debug: bool,
+    /// Current engine workspace.
+    pub workspace: PathBuf,
+}
+
+/// A timeline entry, produced by `/timeline`.
+#[derive(Debug, Clone)]
+pub struct TimelineEntry {
+    /// Message id.
+    pub id: Uuid,
+    /// Message role.
+    pub role: String,
+    /// Message content.
+    pub content: String,
+    /// When the message was created.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Token/cost usage reported by an agent task, accumulated by the engine
+/// for `/status`.
+#[derive(Debug, Clone)]
+pub struct UsageEvent {
+    /// Total tokens consumed.
+    pub total_tokens: u32,
+    /// Cost in dollars.
+    pub cost: f64,
 }
 
 /// The core orchestration engine.
@@ -149,6 +260,10 @@ pub struct Engine {
     event_tx: mpsc::Sender<EngineEvent>,
     /// Channel to receive commands from the TUI.
     command_rx: mpsc::Receiver<EngineCommand>,
+    /// Channel to receive usage reports from agent tasks (for `/status`).
+    usage_rx: mpsc::Receiver<UsageEvent>,
+    /// Sender half of the usage channel, cloned into agent tasks.
+    usage_tx: mpsc::Sender<UsageEvent>,
     /// Pending human approvals (id -> oneshot sender).
     pending_approvals: Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
     /// Debug mode flag (shows LLM request/response payloads).
@@ -156,6 +271,19 @@ pub struct Engine {
     debug: Arc<AtomicBool>,
     /// Current model for the root agent.
     current_model: String,
+    /// Stack of undone message pairs (for `/undo`).
+    undo_stack: Vec<Vec<StoredMessage>>,
+    /// Stack of undone message pairs available for `/redo`.
+    redo_stack: Vec<Vec<StoredMessage>>,
+    /// Current engine workspace directory.
+    workspace: PathBuf,
+    /// Per-server MCP enabled state (for `/mcps` toggling). Shared with agents
+    /// so they can gate tool collection.
+    mcp_enabled: Arc<tokio::sync::Mutex<HashMap<String, bool>>>,
+    /// Total tokens consumed (tracked for `/status`).
+    total_tokens: u32,
+    /// Total cost in dollars (tracked for `/status`).
+    total_cost: f64,
 }
 
 /// Commands from the TUI to the engine.
@@ -181,6 +309,45 @@ pub enum EngineCommand {
     SetModel(String),
     /// Force compaction of the root agent's conversation context.
     Compact,
+    /// Undo the last message pair in the active session.
+    Undo,
+    /// Redo the last undone message pair.
+    Redo,
+    /// Fork the active session into a new session.
+    Fork,
+    /// Export the active session transcript to a file.
+    Export {
+        /// Optional output path; defaults to a generated name.
+        path: Option<PathBuf>,
+        /// Output format (defaults to JSON).
+        format: Option<ExportFormat>,
+    },
+    /// Import a session transcript from a file.
+    Import { path: PathBuf },
+    /// Mark the active session as shared and generate a link.
+    Share,
+    /// Remove the shared state from the active session.
+    Unshare,
+    /// List the skills of the active agent.
+    ListSkills,
+    /// List the MCP servers and their enabled state.
+    ListMcps,
+    /// Enable or disable an MCP server.
+    ToggleMcp { name: String, enabled: bool },
+    /// Produce an engine status report.
+    Status,
+    /// Generate AGENTS.md from collected answers.
+    Init { answers: InitAnswers },
+    /// Review git changes (optionally a specific commit/branch).
+    Review { target: Option<String> },
+    /// Set the engine workspace directory.
+    Warp { dir: PathBuf },
+    /// List the known workspaces.
+    ListWorkspaces,
+    /// Move the active session to another workspace.
+    MoveSession { workspace: String },
+    /// Produce the timeline of the active session.
+    Timeline,
     /// Shutdown the engine.
     Shutdown,
 }
@@ -192,6 +359,7 @@ impl Engine {
         event_tx: mpsc::Sender<EngineEvent>,
         command_rx: mpsc::Receiver<EngineCommand>,
     ) -> Self {
+        let (usage_tx, usage_rx) = mpsc::channel(64);
         Self {
             config: config.clone(),
             agents: HashMap::new(),
@@ -210,6 +378,14 @@ impl Engine {
             active_session_id: None,
             event_tx,
             command_rx,
+            usage_rx,
+            usage_tx,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            mcp_enabled: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            total_tokens: 0,
+            total_cost: 0.0,
         }
     }
 
@@ -358,7 +534,9 @@ impl Engine {
                 subagent_configs: my_subagent_configs,
                 llm_registry: self.llm_registry.clone(),
                 mcp_registry: Some(self.mcp_registry.clone()),
+                mcp_enabled: Some(self.mcp_enabled.clone()),
                 event_tx: self.event_tx.clone(),
+                usage_tx: Some(self.usage_tx.clone()),
                 retry_config: retry_cfg,
                 db: self.database.clone(),
                 session_id: self.active_session_id,
@@ -406,41 +584,120 @@ impl Engine {
 
     /// Run the main event loop.
     pub async fn run(&mut self) -> Result<()> {
-        while let Some(command) = self.command_rx.recv().await {
-            match command {
-                EngineCommand::UserInput(input) => {
-                    self.handle_user_input(input).await?;
+        loop {
+            tokio::select! {
+                command = self.command_rx.recv() => {
+                    let Some(command) = command else { break; };
+                    // Shutdown is handled outside the error-catching block so it always
+                    // terminates the loop even if a prior handler failed.
+                    if matches!(command, EngineCommand::Shutdown) {
+                        self.event_tx.send(EngineEvent::ShuttingDown).await.ok();
+                        break;
+                    }
+
+                    // Dispatch the command inside an async block so a handler error is
+                    // reported to the TUI instead of killing the engine event loop.
+                    let result: Result<()> = async {
+                        match command {
+                            EngineCommand::UserInput(input) => {
+                                self.handle_user_input(input).await?;
+                            }
+                            EngineCommand::NewSession(name) => {
+                                self.handle_new_session(&name).await?;
+                            }
+                            EngineCommand::ResumeSession(id) => {
+                                self.handle_resume_session(&id).await?;
+                            }
+                            EngineCommand::ListSessions => {
+                                self.handle_list_sessions().await?;
+                            }
+                            EngineCommand::DeleteSession(id) => {
+                                self.handle_delete_session(&id).await?;
+                            }
+                            EngineCommand::RenameSession(id, name) => {
+                                self.handle_rename_session(&id, &name).await?;
+                            }
+                            EngineCommand::ApprovalResponse { id, approved } => {
+                                self.handle_approval_response(&id, approved).await;
+                            }
+                            EngineCommand::SetDebug(debug) => {
+                                self.debug.store(debug, Ordering::Relaxed);
+                            }
+                            EngineCommand::SetModel(model) => {
+                                self.handle_set_model(model).await?;
+                            }
+                            EngineCommand::Compact => {
+                                self.send_to_root(AgentMessage::Compact).await?;
+                            }
+                            EngineCommand::Undo => {
+                                self.handle_undo().await?;
+                            }
+                            EngineCommand::Redo => {
+                                self.handle_redo().await?;
+                            }
+                            EngineCommand::Fork => {
+                                self.handle_fork().await?;
+                            }
+                            EngineCommand::Export { path, format } => {
+                                self.handle_export(path, format).await?;
+                            }
+                            EngineCommand::Import { path } => {
+                                self.handle_import(path).await?;
+                            }
+                            EngineCommand::Share => {
+                                self.handle_share().await?;
+                            }
+                            EngineCommand::Unshare => {
+                                self.handle_unshare().await?;
+                            }
+                            EngineCommand::ListSkills => {
+                                self.handle_list_skills().await?;
+                            }
+                            EngineCommand::ListMcps => {
+                                self.handle_list_mcps().await?;
+                            }
+                            EngineCommand::ToggleMcp { name, enabled } => {
+                                self.handle_toggle_mcp(&name, enabled).await?;
+                            }
+                            EngineCommand::Status => {
+                                self.handle_status().await?;
+                            }
+                            EngineCommand::Init { answers } => {
+                                self.handle_init(answers).await?;
+                            }
+                            EngineCommand::Review { target } => {
+                                self.handle_review(target).await?;
+                            }
+                            EngineCommand::Warp { dir } => {
+                                self.handle_warp(dir).await?;
+                            }
+                            EngineCommand::ListWorkspaces => {
+                                self.handle_list_workspaces().await?;
+                            }
+                            EngineCommand::MoveSession { workspace } => {
+                                self.handle_move_session(&workspace).await?;
+                            }
+                            EngineCommand::Timeline => {
+                                self.handle_timeline().await?;
+                            }
+                            EngineCommand::Shutdown => unreachable!(),
+                        }
+                        Ok(())
+                    }
+                    .await;
+
+                    if let Err(e) = result {
+                        self.event_tx
+                            .send(EngineEvent::CommandError(e.to_string()))
+                            .await
+                            .ok();
+                    }
                 }
-                EngineCommand::NewSession(name) => {
-                    self.handle_new_session(&name).await?;
-                }
-                EngineCommand::ResumeSession(id) => {
-                    self.handle_resume_session(&id).await?;
-                }
-                EngineCommand::ListSessions => {
-                    self.handle_list_sessions().await?;
-                }
-                EngineCommand::DeleteSession(id) => {
-                    self.handle_delete_session(&id).await?;
-                }
-                EngineCommand::RenameSession(id, name) => {
-                    self.handle_rename_session(&id, &name).await?;
-                }
-                EngineCommand::ApprovalResponse { id, approved } => {
-                    self.handle_approval_response(&id, approved).await;
-                }
-                EngineCommand::SetDebug(debug) => {
-                    self.debug.store(debug, Ordering::Relaxed);
-                }
-                EngineCommand::SetModel(model) => {
-                    self.handle_set_model(model).await?;
-                }
-                EngineCommand::Compact => {
-                    self.send_to_root(AgentMessage::Compact).await?;
-                }
-                EngineCommand::Shutdown => {
-                    self.event_tx.send(EngineEvent::ShuttingDown).await.ok();
-                    break;
+                usage = self.usage_rx.recv() => {
+                    if let Some(usage) = usage {
+                        self.total_tokens = self.total_tokens.saturating_add(usage.total_tokens);
+                        self.total_cost += usage.cost;
+                    }
                 }
             }
         }
@@ -448,7 +705,9 @@ impl Engine {
     }
 
     /// Handle user input: route to the root agent.
-    async fn handle_user_input(&self, input: String) -> Result<()> {
+    async fn handle_user_input(&mut self, input: String) -> Result<()> {
+        // A new turn invalidates any pending redo history.
+        self.redo_stack.clear();
         // Find the root agent (the one with role == Root)
         let root_name = &self.root_agent_config()?.name;
 
@@ -542,7 +801,9 @@ impl Engine {
             subagent_configs: my_subagent_configs,
             llm_registry: self.llm_registry.clone(),
             mcp_registry: Some(self.mcp_registry.clone()),
+            mcp_enabled: Some(self.mcp_enabled.clone()),
             event_tx: self.event_tx.clone(),
+            usage_tx: Some(self.usage_tx.clone()),
             retry_config: retry_cfg,
             db: self.database.clone(),
             session_id: self.active_session_id,
@@ -563,6 +824,7 @@ impl Engine {
             let session = db.create_session(name).await?;
             let session_id = session.id;
             self.active_session_id = Some(session_id);
+            self.clear_undo_redo();
 
             // Clear root agent's conversation
             self.send_to_root(AgentMessage::ClearHistory).await?;
@@ -583,7 +845,7 @@ impl Engine {
         let session_id = Uuid::parse_str(id_str)
             .map_err(|e| Error::Session(format!("Invalid session ID: {e}")))?;
 
-        if let Some(ref db) = self.database {
+        if let Some(db) = self.database.clone() {
             // Load messages from DB
             let messages = db.get_session_messages(session_id).await?;
 
@@ -608,6 +870,7 @@ impl Engine {
                 .collect();
 
             self.active_session_id = Some(session_id);
+            self.clear_undo_redo();
 
             // Send history to root agent
             self.send_to_root(AgentMessage::LoadHistory(history))
@@ -676,6 +939,442 @@ impl Engine {
                 .await
                 .ok();
         }
+        Ok(())
+    }
+
+    /// Clear the undo/redo stacks (called on session change).
+    fn clear_undo_redo(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
+    /// Reload the session's messages into the root agent's context.
+    async fn reload_history_to_root(&self, session_id: Uuid) -> Result<()> {
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        let history: Vec<LlmMessage> = db
+            .get_session_messages(session_id)
+            .await?
+            .iter()
+            .map(|m| LlmMessage {
+                role: match m.role.as_str() {
+                    "user" => MessageRole::User,
+                    "assistant" => MessageRole::Assistant,
+                    "system" => MessageRole::System,
+                    "tool" => MessageRole::Tool,
+                    _ => MessageRole::User,
+                },
+                content: m.content.clone(),
+                tool_calls: None,
+                tool_call_id: None,
+            })
+            .collect();
+        // Only sync the agent context if a root agent is actually running;
+        // otherwise (e.g. headless tests) skip without failing the operation.
+        if self.root_agent_config().is_err() {
+            return Ok(());
+        }
+        self.send_to_root(AgentMessage::LoadHistory(history))
+            .await?;
+        Ok(())
+    }
+
+    /// Handle `/undo`: remove the last message pair and push it onto the stacks.
+    async fn handle_undo(&mut self) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        let removed = db.delete_messages(session_id, 2).await?;
+        if removed.is_empty() {
+            return Ok(());
+        }
+        self.undo_stack.push(removed.clone());
+        self.redo_stack.push(removed.clone());
+        // Sync the root agent's context to the post-undo state.
+        self.reload_history_to_root(session_id).await?;
+        let removed_contents: Vec<String> = removed.iter().map(|m| m.content.clone()).collect();
+        self.event_tx
+            .send(EngineEvent::UndoApplied {
+                removed: removed_contents,
+            })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/redo`: restore the last undone message pair.
+    async fn handle_redo(&mut self) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        if let Some(messages) = self.redo_stack.pop() {
+            db.restore_messages(session_id, &messages).await?;
+            self.undo_stack.push(messages.clone());
+            // Sync the root agent's context to the post-redo state.
+            self.reload_history_to_root(session_id).await?;
+            let restored_contents: Vec<String> =
+                messages.iter().map(|m| m.content.clone()).collect();
+            self.event_tx
+                .send(EngineEvent::RedoApplied {
+                    restored: restored_contents,
+                })
+                .await
+                .ok();
+        }
+        Ok(())
+    }
+
+    /// Handle `/fork`: create a new session copying the active session's messages.
+    async fn handle_fork(&mut self) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(db) = self.database.clone() else {
+            return Ok(());
+        };
+        let name = db
+            .get_session_name(session_id)
+            .await?
+            .unwrap_or_else(|| "fork".into());
+        let new_session = db.create_session(&format!("{name} (fork)")).await?;
+        db.copy_messages(session_id, new_session.id).await?;
+        self.active_session_id = Some(new_session.id);
+        self.clear_undo_redo();
+
+        // Load the copied history into the root agent so it has context.
+        self.reload_history_to_root(new_session.id).await?;
+
+        self.event_tx
+            .send(EngineEvent::Forked {
+                new_session_id: new_session.id,
+            })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/export`: write the active session transcript to a file.
+    async fn handle_export(
+        &mut self,
+        path: Option<PathBuf>,
+        format: Option<ExportFormat>,
+    ) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        let format = format.unwrap_or(ExportFormat::Json);
+        let path = match path {
+            Some(p) => {
+                if p.is_relative() {
+                    self.workspace.join(p)
+                } else {
+                    p
+                }
+            }
+            None => {
+                let name = db
+                    .get_session_name(session_id)
+                    .await?
+                    .unwrap_or_else(|| "session".into());
+                let ext = match format {
+                    ExportFormat::Json => "json",
+                    ExportFormat::Markdown => "md",
+                };
+                self.workspace.join(format!("{name}.{ext}"))
+            }
+        };
+        db.export_session(session_id, &path, format).await?;
+        self.event_tx
+            .send(EngineEvent::Exported { path })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/import`: import a session transcript from a file.
+    async fn handle_import(&mut self, path: PathBuf) -> Result<()> {
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        let path = if path.is_relative() {
+            self.workspace.join(path)
+        } else {
+            path
+        };
+        let new_id = db.import_session(&path).await?;
+        self.active_session_id = Some(new_id);
+        self.clear_undo_redo();
+        // Load the imported conversation into the root agent so it has context.
+        self.reload_history_to_root(new_id).await?;
+        self.event_tx
+            .send(EngineEvent::Imported { session_id: new_id })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/share`: mark the active session as shared and generate a link.
+    async fn handle_share(&mut self) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        let link = format!("anacleto://share/{}", Uuid::new_v4());
+        db.set_shared(session_id, true, Some(&link)).await?;
+        self.event_tx
+            .send(EngineEvent::ShareUpdated {
+                shared: true,
+                link: Some(link),
+            })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/unshare`: remove the shared state from the active session.
+    async fn handle_unshare(&mut self) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        db.set_shared(session_id, false, None).await?;
+        self.event_tx
+            .send(EngineEvent::ShareUpdated {
+                shared: false,
+                link: None,
+            })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/skills`: list the skills of the root agent.
+    async fn handle_list_skills(&self) -> Result<()> {
+        let skills = self
+            .config
+            .agents
+            .iter()
+            .find(|a| a.role == AgentRole::Root)
+            .map(|c| load_agent_skills(&c.skills))
+            .unwrap_or_default();
+        let infos: Vec<SkillInfo> = skills
+            .iter()
+            .map(|s| SkillInfo {
+                name: s.name.clone(),
+                description: s.description.clone(),
+            })
+            .collect();
+        self.event_tx
+            .send(EngineEvent::SkillsListed(infos))
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/mcps`: list the MCP servers and their enabled state.
+    async fn handle_list_mcps(&self) -> Result<()> {
+        let enabled_map = self.mcp_enabled.lock().await;
+        let statuses: Vec<McpStatus> = self
+            .mcp_registry
+            .lock()
+            .await
+            .names()
+            .iter()
+            .map(|n| McpStatus {
+                name: n.clone(),
+                enabled: *enabled_map.get(n).unwrap_or(&true),
+            })
+            .collect();
+        drop(enabled_map);
+        self.event_tx
+            .send(EngineEvent::McpsListed(statuses))
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/mcps <name> on|off`: enable or disable an MCP server.
+    async fn handle_toggle_mcp(&mut self, name: &str, enabled: bool) -> Result<()> {
+        self.mcp_enabled
+            .lock()
+            .await
+            .insert(name.to_string(), enabled);
+        // Re-list so the TUI reflects the new state.
+        self.handle_list_mcps().await?;
+        Ok(())
+    }
+
+    /// Handle `/status`: produce an engine status report.
+    async fn handle_status(&self) -> Result<()> {
+        let session_id = self.active_session_id;
+        let session_name = match (session_id, &self.database) {
+            (Some(id), Some(db)) => db
+                .get_session_name(id)
+                .await?
+                .unwrap_or_else(|| "unknown".into()),
+            _ => "none".into(),
+        };
+        let provider_name = if self.current_model.contains('/') {
+            "openrouter"
+        } else if self.current_model.starts_with("claude") {
+            "anthropic"
+        } else if self.current_model.starts_with("gpt")
+            || self.current_model.starts_with("o1")
+            || self.current_model.starts_with("o3")
+        {
+            "openai"
+        } else {
+            "ollama"
+        };
+        let context_window = self
+            .llm_registry
+            .get(provider_name)
+            .map(|p| p.context_window() as u32)
+            .unwrap_or(0);
+        let info = StatusInfo {
+            model: self.current_model.clone(),
+            session_id,
+            session_name,
+            total_tokens: self.total_tokens,
+            context_window,
+            cost: self.total_cost,
+            debug: self.debug.load(Ordering::Relaxed),
+            workspace: self.workspace.clone(),
+        };
+        self.event_tx
+            .send(EngineEvent::StatusReport(info))
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/init`: generate AGENTS.md in the workspace from collected answers.
+    async fn handle_init(&mut self, answers: InitAnswers) -> Result<()> {
+        let mut content = format!(
+            "# {}\n\n{}",
+            answers.name,
+            if answers.description.is_empty() {
+                "# Anacleto agent".to_string()
+            } else {
+                answers.description
+            }
+        );
+        if !answers.stack.trim().is_empty() {
+            content.push_str(&format!("\n\n## Tech stack\n\n{}", answers.stack));
+        }
+        let path = self.workspace.join("AGENTS.md");
+        tokio::fs::write(&path, content).await.map_err(Error::Io)?;
+        self.event_tx.send(EngineEvent::InitDone).await.ok();
+        Ok(())
+    }
+
+    /// Handle `/review`: run git diff and send it to the root agent for review.
+    async fn handle_review(&mut self, target: Option<String>) -> Result<()> {
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("diff");
+        if let Some(t) = target {
+            cmd.arg(t);
+        }
+        cmd.current_dir(&self.workspace);
+        let output = cmd.output().map_err(Error::Io)?;
+        let diff = String::from_utf8_lossy(&output.stdout).to_string();
+        let prompt = if diff.trim().is_empty() {
+            "No hay cambios sin commitear para revisar.".to_string()
+        } else {
+            format!(
+                "Revisa los siguientes cambios de git:\n\n```diff\n{}\n```",
+                diff
+            )
+        };
+        self.send_to_root(AgentMessage::UserInput { content: prompt })
+            .await?;
+        self.event_tx
+            .send(EngineEvent::ReviewResult(diff))
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/warp`: set the engine workspace directory.
+    async fn handle_warp(&mut self, dir: PathBuf) -> Result<()> {
+        self.workspace = dir.clone();
+        self.event_tx
+            .send(EngineEvent::WorkspaceChanged(dir))
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/workspaces`: list the known workspaces.
+    async fn handle_list_workspaces(&self) -> Result<()> {
+        let workspaces: Vec<String> = self
+            .config
+            .workspaces
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        self.event_tx
+            .send(EngineEvent::WorkspacesListed(workspaces))
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/move`: move the active session to another workspace.
+    async fn handle_move_session(&mut self, workspace: &str) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        db.set_session_workspace(session_id, workspace).await?;
+        self.event_tx
+            .send(EngineEvent::SessionMoved {
+                session_id,
+                workspace: workspace.to_string(),
+            })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/timeline`: produce the timeline of the active session.
+    async fn handle_timeline(&self) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        let messages = db.get_session_messages(session_id).await?;
+        let entries: Vec<TimelineEntry> = messages
+            .iter()
+            .map(|m| TimelineEntry {
+                id: m.id,
+                role: m.role.clone(),
+                content: m.content.clone(),
+                created_at: m.created_at,
+            })
+            .collect();
+        self.event_tx
+            .send(EngineEvent::Timeline(entries))
+            .await
+            .ok();
         Ok(())
     }
 
@@ -827,5 +1526,166 @@ mod tests {
         );
         let result = engine.resolve_agent_provider(&agent);
         assert!(result.is_ok());
+    }
+
+    /// Build an engine with a temp DB and an active session.
+    async fn test_engine_with_session()
+    -> (Engine, Uuid, mpsc::Receiver<EngineEvent>, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Database::open(&db_path).await.unwrap();
+        let session = db.create_session("test-session").await.unwrap();
+        let (event_tx, event_rx) = mpsc::channel(64);
+        let (_cmd_tx, cmd_rx) = mpsc::channel(64);
+        let mut config = Config::default();
+        config.session.database_path = db_path;
+        let mut engine = Engine::new(config, event_tx, cmd_rx);
+        engine.database = Some(db.clone());
+        engine.active_session_id = Some(session.id);
+        (engine, session.id, event_rx, dir)
+    }
+
+    #[tokio::test]
+    async fn test_handle_undo_redo() {
+        let (mut engine, session_id, _rx, _dir) = test_engine_with_session().await;
+        let db = engine.database.clone().unwrap();
+        db.store_message(session_id, "user", "user", "Hello", None)
+            .await
+            .unwrap();
+        db.store_message(session_id, "assistant", "assistant", "Hi", None)
+            .await
+            .unwrap();
+
+        engine.handle_undo().await.unwrap();
+        assert_eq!(db.get_session_messages(session_id).await.unwrap().len(), 0);
+        assert_eq!(engine.undo_stack.len(), 1);
+        assert_eq!(engine.redo_stack.len(), 1);
+
+        engine.handle_redo().await.unwrap();
+        let msgs = db.get_session_messages(session_id).await.unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].content, "Hello");
+        assert_eq!(msgs[1].content, "Hi");
+    }
+
+    #[tokio::test]
+    async fn test_handle_fork() {
+        let (mut engine, session_id, _rx, _dir) = test_engine_with_session().await;
+        let db = engine.database.clone().unwrap();
+        db.store_message(session_id, "user", "user", "Hello", None)
+            .await
+            .unwrap();
+
+        engine.handle_fork().await.unwrap();
+        let new_id = engine.active_session_id.unwrap();
+        assert_ne!(new_id, session_id);
+        let msgs = db.get_session_messages(new_id).await.unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "Hello");
+    }
+
+    #[tokio::test]
+    async fn test_handle_share_unshare() {
+        let (mut engine, session_id, _rx, _dir) = test_engine_with_session().await;
+        let db = engine.database.clone().unwrap();
+
+        engine.handle_share().await.unwrap();
+        let meta = db.get_session_metadata(session_id).await.unwrap();
+        assert!(
+            meta.as_ref()
+                .and_then(|v| v.get("share_link"))
+                .and_then(|v| v.as_str())
+                .is_some()
+        );
+
+        engine.handle_unshare().await.unwrap();
+        let meta = db.get_session_metadata(session_id).await.unwrap();
+        assert!(meta.as_ref().and_then(|v| v.get("share_link")).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_handle_export_import() {
+        let (mut engine, session_id, _rx, dir) = test_engine_with_session().await;
+        let db = engine.database.clone().unwrap();
+        db.store_message(session_id, "user", "user", "Hello", None)
+            .await
+            .unwrap();
+        db.store_message(session_id, "assistant", "assistant", "Hi", None)
+            .await
+            .unwrap();
+
+        let out = dir.path().join("export.json");
+        engine
+            .handle_export(Some(out.clone()), Some(ExportFormat::Json))
+            .await
+            .unwrap();
+        assert!(out.exists());
+
+        engine.handle_import(out).await.unwrap();
+        let new_id = engine.active_session_id.unwrap();
+        let msgs = db.get_session_messages(new_id).await.unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].content, "Hello");
+        assert_eq!(msgs[1].content, "Hi");
+    }
+
+    #[tokio::test]
+    async fn test_handle_init_writes_agents_md() {
+        let (mut engine, _session_id, _rx, _dir) = test_engine_with_session().await;
+        engine.workspace = tempfile::TempDir::new().unwrap().into_path();
+        let answers = InitAnswers {
+            name: "My Project".into(),
+            description: "A test project".into(),
+            stack: "Rust, React".into(),
+        };
+        engine.handle_init(answers).await.unwrap();
+        let content = std::fs::read_to_string(engine.workspace.join("AGENTS.md")).unwrap();
+        assert!(content.contains("# My Project"));
+        assert!(content.contains("Rust, React"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_warp() {
+        let (mut engine, _session_id, mut rx, _dir) = test_engine_with_session().await;
+        let new_dir = tempfile::TempDir::new().unwrap().into_path();
+        engine.handle_warp(new_dir.clone()).await.unwrap();
+        assert_eq!(engine.workspace, new_dir);
+        let ev = rx.try_recv().unwrap();
+        assert!(matches!(ev, EngineEvent::WorkspaceChanged(_)));
+    }
+
+    #[tokio::test]
+    async fn test_handle_timeline() {
+        let (mut engine, session_id, mut rx, _dir) = test_engine_with_session().await;
+        let db = engine.database.clone().unwrap();
+        db.store_message(session_id, "user", "user", "Hello", None)
+            .await
+            .unwrap();
+        engine.handle_timeline().await.unwrap();
+        let ev = rx.try_recv().unwrap();
+        match ev {
+            EngineEvent::Timeline(entries) => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].content, "Hello");
+            }
+            _ => panic!("expected Timeline event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_move_session() {
+        let (mut engine, session_id, mut rx, _dir) = test_engine_with_session().await;
+        engine.handle_move_session("other-ws").await.unwrap();
+        let ev = rx.try_recv().unwrap();
+        match ev {
+            EngineEvent::SessionMoved {
+                session_id: sid,
+                workspace,
+            } => {
+                assert_eq!(sid, session_id);
+                assert_eq!(workspace, "other-ws");
+            }
+            _ => panic!("expected SessionMoved event"),
+        }
     }
 }
