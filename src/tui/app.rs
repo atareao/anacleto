@@ -735,7 +735,7 @@ impl App {
 }
 
 /// Run the TUI event loop.
-pub async fn run_tui<B: ratatui::backend::Backend>(
+pub async fn run_tui<B: ratatui::backend::Backend<Error = std::io::Error>>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> std::io::Result<()> {
