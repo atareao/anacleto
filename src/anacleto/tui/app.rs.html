@@ -735,7 +735,7 @@
 <a href=#735 id=735 data-nosnippet>735</a>}
 <a href=#736 id=736 data-nosnippet>736</a>
 <a href=#737 id=737 data-nosnippet>737</a><span class="doccomment">/// Run the TUI event loop.
-<a href=#738 id=738 data-nosnippet>738</a></span><span class="kw">pub async fn </span>run_tui&lt;B: ratatui::backend::Backend&gt;(
+<a href=#738 id=738 data-nosnippet>738</a></span><span class="kw">pub async fn </span>run_tui&lt;B: ratatui::backend::Backend&lt;Error = std::io::Error&gt;&gt;(
 <a href=#739 id=739 data-nosnippet>739</a>    terminal: <span class="kw-2">&amp;mut </span>Terminal&lt;B&gt;,
 <a href=#740 id=740 data-nosnippet>740</a>    app: <span class="kw-2">&amp;mut </span>App,
 <a href=#741 id=741 data-nosnippet>741</a>) -&gt; std::io::Result&lt;()&gt; {
