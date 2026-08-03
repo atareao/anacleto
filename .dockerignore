@@ -1,0 +1,19 @@
+# Build artifacts
+target/
+
+# Version control
+.git/
+.gitignore
+
+# Project-local config (user-specific)
+.anacleto/
+
+# Documentation (not needed at runtime)
+docs/
+
+# Tests (not shipped in the image)
+tests/
+
+# Markdown files — keep README.md for provenance
+*.md
+!README.md

@@ -1,0 +1,64 @@
+[package]
+name = "anacleto"
+version = "0.1.0"
+edition = "2024"
+description = "Agent orchestration engine in Rust — agents, subagents, skills, and MCPs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+unicode-width = "0.2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Middleware (retries, rate limiting)
+tower = "0.5"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Async streams
+futures = "0.3"
+tokio-stream = "0.1"
+
+# UUID for session/agent IDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Tracing/logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# JSON-RPC for MCP protocol
+serde_json = "1"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Async trait support
+async-trait = "0.1"
+
+# User's config/data directories
+dirs = "6"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Random number generation (jitter for retry backoff)
+rand = "0.8"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"

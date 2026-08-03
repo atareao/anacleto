@@ -1,0 +1,16 @@
+# Build artifacts
+/target
+
+# Logs
+anacleto.log
+*.log
+
+# Runtime user data (directorio "~" accidental en la raíz)
+~/
+
+# Local tool indexes / caches
+.codegraph/
+.ruff_cache/
+
+# Backup files
+*.bak

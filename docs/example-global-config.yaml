@@ -1,0 +1,76 @@
+# =============================================================================
+# Anacleto — Global configuration (~/.config/anacleto/config.yaml)
+# =============================================================================
+# This file defines machine-wide defaults for all projects. Project-level
+# config at .anacleto/config.yaml merges on top of this.
+#
+# You can have a minimal global config with just API keys and defaults,
+# then override per-project with specific agents and skills.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# LLM models — configure the providers you use
+# ---------------------------------------------------------------------------
+# API keys are resolved from environment variables at runtime using ${VAR}
+# syntax. You can also hardcode keys (not recommended for shared machines).
+# ---------------------------------------------------------------------------
+models:
+  # At minimum, configure one provider. Ollama always has a default.
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: "claude-sonnet-4-20250514"
+    context_window: 200000
+
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    model: "gpt-4o"
+    context_window: 128000
+
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+    model: "openai/gpt-4o"
+    context_window: 128000
+
+  # Ollama defaults are shown below — you only need this if overriding.
+  # ollama:
+  #   base_url: "http://localhost:11434"
+  #   model: "llama3.2"
+  #   context_window: 8192
+
+# ---------------------------------------------------------------------------
+# Session configuration
+# ---------------------------------------------------------------------------
+session:
+  history_limit_percent: 50
+  # database_path overrides the default. Typically left at default.
+
+  # Retry configuration with exponential backoff + jitter.
+  # Retries apply to LLM calls, MCP tool calls, and subagent delegation.
+  retry:
+    max_retries: 3
+    base_delay_ms: 1000
+    max_delay_ms: 30000
+
+# ---------------------------------------------------------------------------
+# Global MCP servers
+# ---------------------------------------------------------------------------
+# These are available to all projects. Add project-specific MCPs in the
+# project-level .anacleto/config.yaml instead.
+mcps: {}
+
+# ---------------------------------------------------------------------------
+# Global agents
+# ---------------------------------------------------------------------------
+# You can define default agents here. They serve as the base; project-level
+# agents with the same name override these.
+# agents:
+#   - name: root
+#     description: "~/.config/anacleto/agents/root.md"
+#     model: "claude-sonnet-4"
+#     skills:
+#       - "~/.config/anacleto/skills/shell/"
+#     mcps: []
+#     permissions:
+#       deny: []
+#     subagents: [reviewer]
+agents: []

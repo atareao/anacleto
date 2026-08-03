@@ -1,0 +1,139 @@
+# =============================================================================
+# Anacleto — Project-level configuration
+# =============================================================================
+# This file lives at .anacleto/config.yaml in your project root. It merges
+# on top of the global config at ~/.config/anacleto/config.yaml.
+#
+# See https://github.com/your-org/anacleto for full documentation.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# LLM model definitions
+# ---------------------------------------------------------------------------
+# Each provider you configure becomes available for agents. An agent's model
+# name (e.g. "claude-sonnet-4", "gpt-4o", "llama3.2") determines which
+# provider serves it via prefix matching in Engine::resolve_agent_provider:
+#
+#   starts with "claude"  → anthropic
+#   starts with "gpt"/"o1"/"o3" → openai
+#   contains "/"          → openrouter (OpenAI-compatible)
+#   anything else         → ollama
+# ---------------------------------------------------------------------------
+models:
+  # Anthropic (Claude models)
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"     # Resolved from env var at runtime
+    model: "claude-sonnet-4-20250514"
+    context_window: 200000
+
+  # OpenAI (GPT models)
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    model: "gpt-4o"
+    context_window: 128000
+
+  # OpenRouter (unified API for many models)
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+    model: "deepseek/deepseek-v4-flash-0731"    # OpenRouter model paths contain "/"
+    context_window: 1048576
+    base_url: "https://openrouter.ai/api/v1"
+
+  # Ollama (local models — always configured by default)
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "llama3.2"
+    context_window: 8192
+
+# ---------------------------------------------------------------------------
+# MCP (Model Context Protocol) server definitions
+# ---------------------------------------------------------------------------
+# Each MCP server is referenced by name in agent config. Supported
+# transports: stdio (command + args) and tcp (host + port).
+# ---------------------------------------------------------------------------
+mcps: {}
+  # MCP servers are optional. Add servers here when you have them installed.
+  # Example:
+  #   filesystem:
+  #     transport: stdio
+  #     command: "/usr/local/bin/mcp-filesystem"
+  #     args: []
+
+# ---------------------------------------------------------------------------
+# Session configuration
+# ---------------------------------------------------------------------------
+session:
+  # Percentage of the model's context window to reserve for conversation
+  # history. The rest is available for system prompts, tool results, etc.
+  history_limit_percent: 50
+
+  # SQLite database path for persisting sessions and messages.
+  # Default: ~/Library/Application Support/anacleto/sessions.db (macOS)
+  #          ~/.local/share/anacleto/sessions.db          (Linux)
+  database_path: "~/.local/share/anacleto/sessions.db"
+
+  # Retry configuration for LLM, MCP, and subagent calls.
+  # Retries use exponential backoff: base_delay × 2^attempt + jitter
+  # (random delay between 0.75× and 1.25× of calculated delay).
+  retry:
+    # Maximum retry attempts before giving up.
+    max_retries: 3
+    # Base delay in milliseconds (first retry waits ~1s).
+    base_delay_ms: 1000
+    # Maximum delay cap in milliseconds.
+    max_delay_ms: 30000
+
+  # Default maximum number of turns (LLM + tool iterations) an agent may run
+  # per task before being forced to stop and mark the task as incomplete.
+  # Agents can override this per-agent in their Markdown frontmatter.
+  max_steps: 90
+
+# ---------------------------------------------------------------------------
+# Shell tool inventory
+# ---------------------------------------------------------------------------
+# Overrides or extends the built-in catalog of modern CLI tools that the agent
+# is told to prefer over classic GNU tools. Each entry replaces the built-in
+# tool with the same `name`, or is appended as a new tool if no built-in
+# matches. Availability is still auto-detected at runtime (`command -v`).
+#
+# Example — prefer `lsd` over `ls` (already the default) or add a custom tool:
+#   shell:
+#     tools:
+#       - name: lsd
+#         classic: ls
+#         description: modern directory listing with icons and git status
+#       - name: delta
+#         classic: diff
+#         description: modern diff viewer
+# ---------------------------------------------------------------------------
+shell:
+  tools: []
+
+# ---------------------------------------------------------------------------
+# Agent definitions
+# ---------------------------------------------------------------------------
+# Agents are NO LONGER defined here. Each agent is a self-contained Markdown
+# file with YAML frontmatter, located in the `agents/` directory:
+#
+#   global:  ~/.config/anacleto/agents/*.md
+#   project: .anacleto/agents/*.md
+#
+# The frontmatter holds the structural config (name, role, model, skills,
+# mcps, permissions, subagents) and the Markdown body is the system prompt.
+# Project agents override global agents with the same name. Exactly one agent
+# must declare `role: root`.
+#
+# Example (.anacleto/agents/root.md):
+#   ---
+#   name: root
+#   description: Senior engineering agent
+#   role: root
+#   model: deepseek/deepseek-v4-flash
+#   skills:
+#     - .anacleto/skills/shell/
+#   subagents:
+#     - reviewer
+#   ---
+#
+#   You are **Anacleto**...
+# ---------------------------------------------------------------------------
