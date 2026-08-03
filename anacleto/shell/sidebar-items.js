@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["default_tools","detect_shell","init","inventory","merge_tools"],"struct":["ShellInfo","ToolInfo","ToolInventory"]};

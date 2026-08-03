@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AgentMessage","AgentRole","AgentStatus","MessageRole"],"struct":["Agent","AgentId","MessageEntry"]};

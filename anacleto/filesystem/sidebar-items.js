@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["FsOp"],"fn":["execute","is_write_op","parse_request"],"struct":["FsRequest"]};

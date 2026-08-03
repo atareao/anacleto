@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["AgentConfig","Config","McpDefinition","ModelsConfig","OllamaConfig","PermissionConfig","ProviderConfig","RetryConfig","SessionConfig","ShellConfig","ShellToolConfig"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["JsonRpcMessage","McpTransport"],"struct":["JsonRpcError","McpCapabilities","McpResource","McpServerInfo","McpTool","McpToolCall","McpToolResult"],"type":["McpName"]};
