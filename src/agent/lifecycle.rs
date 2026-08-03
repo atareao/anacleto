@@ -9,7 +9,7 @@ use crate::agent::types::{Agent, AgentId, AgentMessage, AgentRole, AgentStatus};
 use crate::config::types::AgentConfig;
 use crate::config::types::RetryConfig;
 use crate::db::session::Database;
-use crate::engine::orchestrator::EngineEvent;
+use crate::engine::orchestrator::{EngineEvent, UsageEvent};
 use crate::error::{Error, Result};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry};
 use crate::llm::types::{
@@ -61,7 +61,9 @@ pub struct SpawnAgentConfig {
     pub subagent_configs: Vec<AgentConfig>,
     pub llm_registry: LlmProviderRegistry,
     pub mcp_registry: Option<Arc<tokio::sync::Mutex<McpRegistry>>>,
+    pub mcp_enabled: Option<Arc<tokio::sync::Mutex<HashMap<String, bool>>>>,
     pub event_tx: mpsc::Sender<EngineEvent>,
+    pub usage_tx: Option<mpsc::Sender<UsageEvent>>,
     pub retry_config: RetryConfig,
     pub db: Option<Database>,
     pub session_id: Option<Uuid>,
@@ -86,7 +88,9 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         subagent_configs,
         llm_registry,
         mcp_registry,
+        mcp_enabled,
         event_tx,
+        usage_tx,
         retry_config,
         db,
         session_id,
@@ -130,6 +134,12 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                 let reg = mcp_reg.lock().await;
                 let collected = reg.collect_tools(&agent_mcp_names).await;
                 for (server_name, original_name, tool_def) in collected {
+                    // Skip servers that have been disabled via `/mcps`.
+                    if let Some(ref enabled_map) = mcp_enabled {
+                        if !*enabled_map.lock().await.get(&server_name).unwrap_or(&true) {
+                            continue;
+                        }
+                    }
                     let prefixed_name = tool_def.name.clone();
                     map.insert(prefixed_name, (server_name, original_name));
                     tools.push(tool_def);
@@ -302,6 +312,14 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                                     cost,
                                                 })
                                                 .await;
+                                            if let Some(ref utx) = usage_tx {
+                                                let _ = utx
+                                                    .send(UsageEvent {
+                                                        total_tokens: usage.total_tokens,
+                                                        cost,
+                                                    })
+                                                    .await;
+                                            }
                                             break;
                                         }
                                         Ok(LlmStreamChunk::Error(e)) => {
@@ -463,6 +481,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             db: db.clone(),
                                             session_id,
                                             event_tx: event_tx.clone(),
+                                            usage_tx: usage_tx.clone(),
                                             history_limit_percent,
                                             retry_config: retry_config.clone(),
                                             debug: debug_mode.clone(),
@@ -1211,6 +1230,7 @@ pub struct SpawnSubagentConfig<'a> {
     pub db: Option<Database>,
     pub session_id: Option<Uuid>,
     pub event_tx: mpsc::Sender<EngineEvent>,
+    pub usage_tx: Option<mpsc::Sender<UsageEvent>>,
     pub history_limit_percent: f64,
     pub retry_config: RetryConfig,
     pub debug: Arc<AtomicBool>,
@@ -1231,6 +1251,7 @@ async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig<'_>) -> Result<Str
         db: _db,
         session_id: _session_id,
         event_tx,
+        usage_tx,
         history_limit_percent,
         retry_config,
         debug,
@@ -1378,6 +1399,14 @@ async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig<'_>) -> Result<Str
                                 cost,
                             })
                             .await;
+                        if let Some(ref utx) = usage_tx {
+                            let _ = utx
+                                .send(UsageEvent {
+                                    total_tokens: usage.total_tokens,
+                                    cost,
+                                })
+                                .await;
+                        }
                     }
 
                     // Emit debug event for subagent LLM response

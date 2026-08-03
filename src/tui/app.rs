@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+
+use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame, Terminal,
@@ -11,7 +14,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::agent::types::{AgentId, AgentRole, AgentStatus};
 use crate::db::models::SessionSummary;
-use crate::engine::orchestrator::{EngineCommand, EngineEvent};
+use crate::engine::orchestrator::{
+    EngineCommand, EngineEvent, ExportFormat, InitAnswers, McpStatus, SkillInfo, StatusInfo,
+    TimelineEntry,
+};
 
 /// All slash commands with a short description, used by the fuzzy command
 /// palette and Tab autocomplete.
@@ -37,6 +43,28 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/models", "List models"),
     ("/exit", "Exit"),
     ("/quit", "Exit (alias)"),
+    // ── OpenCode-style slash commands ────────────────────────────────
+    ("/undo", "Undo last message pair"),
+    ("/redo", "Redo last undone message pair"),
+    ("/fork", "Fork the active session"),
+    ("/export", "Export session transcript to file"),
+    ("/import", "Import a session transcript from file"),
+    ("/share", "Share the active session"),
+    ("/unshare", "Unshare the active session"),
+    ("/skills", "List skills of the active agent"),
+    ("/mcps", "List and toggle MCP servers"),
+    ("/status", "Show engine status"),
+    ("/init", "Guided AGENTS.md setup"),
+    ("/review", "Review git changes"),
+    ("/warp", "Set the working directory"),
+    ("/workspaces", "List workspaces"),
+    ("/move", "Move session to another workspace"),
+    ("/timeline", "Show session timeline"),
+    ("/themes", "Change color theme"),
+    ("/timestamps", "Toggle timestamps"),
+    ("/thinking", "Toggle thinking display"),
+    ("/stash", "Stash the current prompt"),
+    ("/editor", "Open external editor"),
 ];
 
 #[derive(Debug, Clone)]
@@ -58,6 +86,64 @@ struct AgentInfo {
 struct ApprovalRequest {
     id: String,
     operation: String,
+}
+
+/// Color themes selectable via `/themes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Theme {
+    Default,
+    Nord,
+    Dracula,
+    Solarized,
+}
+
+impl Theme {
+    fn name(&self) -> &'static str {
+        match self {
+            Theme::Default => "default",
+            Theme::Nord => "nord",
+            Theme::Dracula => "dracula",
+            Theme::Solarized => "solarized",
+        }
+    }
+
+    fn next(&self) -> Theme {
+        match self {
+            Theme::Default => Theme::Nord,
+            Theme::Nord => Theme::Dracula,
+            Theme::Dracula => Theme::Solarized,
+            Theme::Solarized => Theme::Default,
+        }
+    }
+
+    /// Accent color used in the status bar and chat border.
+    fn accent(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(255, 107, 107),
+            Theme::Nord => Color::Rgb(136, 192, 208),
+            Theme::Dracula => Color::Rgb(255, 121, 198),
+            Theme::Solarized => Color::Rgb(38, 139, 210),
+        }
+    }
+}
+
+/// State for the interactive `/init` flow (sequential prompts).
+struct InitFlow {
+    /// Current prompt step: 0 = name, 1 = description, 2 = stack.
+    step: usize,
+    name: String,
+    description: String,
+    stack: String,
+}
+
+impl InitFlow {
+    fn prompt(&self) -> &'static str {
+        match self.step {
+            0 => "Project name: ",
+            1 => "Project description: ",
+            _ => "Tech stack (comma separated): ",
+        }
+    }
 }
 
 /// Application state for the TUI.
@@ -134,6 +220,38 @@ pub struct App {
     pub chat_scroll: u16,
     /// Frame counter for animating spinners in the UI.
     pub frame_count: u64,
+
+    // ── OpenCode-style slash command state ───────────────────────────
+    /// Current color theme (`/themes`).
+    theme: Theme,
+    /// Whether to show timestamps next to chat messages (`/timestamps`).
+    pub show_timestamps: bool,
+    /// Whether to show LLM thinking/streaming output (`/thinking`).
+    pub show_thinking: bool,
+    /// Timestamps recorded when each chat message was added.
+    message_timestamps: Vec<DateTime<Utc>>,
+    /// Stash stack for `/stash` (saved prompts).
+    stash_stack: Vec<String>,
+    /// Skills listed by the engine (`/skills`).
+    skills_list: Vec<SkillInfo>,
+    /// MCP servers with on/off state (`/mcps`).
+    mcps_list: Vec<McpStatus>,
+    /// Engine status report (`/status`).
+    status_info: Option<StatusInfo>,
+    /// Known workspaces (`/workspaces`).
+    workspaces_list: Vec<String>,
+    /// Session timeline entries (`/timeline`).
+    timeline: Vec<TimelineEntry>,
+    /// Whether the timeline panel is open.
+    pub show_timeline: bool,
+    /// Index of the highlighted timeline entry.
+    timeline_index: usize,
+    /// Whether the MCP list panel is open.
+    pub show_mcps: bool,
+    /// Index of the highlighted MCP entry.
+    mcps_index: usize,
+    /// Active `/init` flow (None when not running).
+    init_flow: Option<InitFlow>,
 }
 
 impl App {
@@ -181,7 +299,28 @@ impl App {
             palette_index: 0,
             chat_scroll: 0,
             frame_count: 0,
+            theme: Theme::Default,
+            show_timestamps: false,
+            show_thinking: true,
+            message_timestamps: Vec::new(),
+            stash_stack: Vec::new(),
+            skills_list: Vec::new(),
+            mcps_list: Vec::new(),
+            status_info: None,
+            workspaces_list: Vec::new(),
+            timeline: Vec::new(),
+            show_timeline: false,
+            timeline_index: 0,
+            show_mcps: false,
+            mcps_index: 0,
+            init_flow: None,
         }
+    }
+
+    /// Append a chat message, recording its timestamp for `/timestamps`.
+    fn push_msg(&mut self, msg: impl Into<String>) {
+        self.message_timestamps.push(Utc::now());
+        self.messages.push(msg.into());
     }
 
     /// Process a single event from the engine.
@@ -189,16 +328,16 @@ impl App {
         match event {
             EngineEvent::Started { debug } => {
                 self.debug_mode = debug;
-                self.messages.push("Anacleto started.".into());
+                self.push_msg("Anacleto started.");
                 self.chat_scroll = 0;
             }
             EngineEvent::ModelChanged { model } => {
                 self.current_model = model.clone();
-                self.messages.push(format!("Model changed to: {}", model));
+                self.push_msg(format!("Model changed to: {}", model));
                 self.chat_scroll = 0;
             }
             EngineEvent::ConversationCompacted { .. } => {
-                self.messages.push("Conversación compactada.".into());
+                self.push_msg("Conversación compactada.");
                 self.chat_scroll = 0;
             }
             EngineEvent::AgentCreated {
@@ -209,7 +348,7 @@ impl App {
                 skills,
                 mcps,
             } => {
-                self.messages.push(format!("Agent '{}' created.", name));
+                self.push_msg(format!("Agent '{}' created.", name));
                 self.chat_scroll = 0;
                 // Add to agent list
                 if !self.agents.iter().any(|a| a.id == id) {
@@ -231,7 +370,7 @@ impl App {
             }
             EngineEvent::AgentOutput { content, .. } => {
                 self.current_stream = None;
-                self.messages.push(content);
+                self.push_msg(content);
                 self.chat_scroll = 0;
             }
             EngineEvent::AgentStatusChanged {
@@ -291,11 +430,11 @@ impl App {
                 self.session_id = Some(id);
                 self.session_name = name.clone();
                 self.show_session_list = false;
-                self.messages.push(format!("Switched to session: {}", name));
+                self.push_msg(format!("Switched to session: {}", name));
                 self.chat_scroll = 0;
             }
             EngineEvent::SessionDeleted { id } => {
-                self.messages.push(format!("Session {} deleted.", &id[..8]));
+                self.push_msg(format!("Session {} deleted.", &id[..8]));
                 self.chat_scroll = 0;
                 if self.session_id.as_deref() == Some(&id) {
                     self.session_id = None;
@@ -304,16 +443,16 @@ impl App {
             }
             EngineEvent::SessionRenamed { name, .. } => {
                 self.session_name = name.clone();
-                self.messages.push(format!("Session renamed to: {}", name));
+                self.push_msg(format!("Session renamed to: {}", name));
                 self.chat_scroll = 0;
             }
             EngineEvent::Error { message, .. } => {
                 self.error = Some(message.clone());
-                self.messages.push(format!("Error: {}", message));
+                self.push_msg(format!("Error: {}", message));
                 self.chat_scroll = 0;
             }
             EngineEvent::ShuttingDown => {
-                self.messages.push("Anacleto shutting down.".into());
+                self.push_msg("Anacleto shutting down.");
                 self.chat_scroll = 0;
             }
             EngineEvent::ApprovalRequired { id, operation } => {
@@ -351,7 +490,7 @@ impl App {
                 } else {
                     format!("{} {} failed: {}", icon, tool_name, summary)
                 };
-                self.messages.push(msg);
+                self.push_msg(msg);
                 self.chat_scroll = 0;
             }
             EngineEvent::LlmRequestDebug {
@@ -360,12 +499,12 @@ impl App {
                 payload,
                 ..
             } => {
-                self.messages.push(format!(
+                self.push_msg(format!(
                     "\u{1f50d} LLM Request [{}] ({}):",
                     agent_name, model
                 ));
                 for line in payload.split('\n') {
-                    self.messages.push(format!("  {}", line));
+                    self.push_msg(format!("  {}", line));
                 }
                 self.chat_scroll = 0;
             }
@@ -375,13 +514,122 @@ impl App {
                 payload,
                 ..
             } => {
-                self.messages.push(format!(
+                self.push_msg(format!(
                     "\u{1f50d} LLM Response [{}] ({}):",
                     agent_name, model
                 ));
                 for line in payload.split('\n') {
-                    self.messages.push(format!("  {}", line));
+                    self.push_msg(format!("  {}", line));
                 }
+                self.chat_scroll = 0;
+            }
+            // ── OpenCode-style slash command events ──────────────────
+            EngineEvent::UndoApplied { removed } => {
+                // Remove the undone messages from the display log.
+                let n = removed.len();
+                for _ in 0..n {
+                    self.messages.pop();
+                    self.message_timestamps.pop();
+                }
+                self.push_msg("\u{21a9} Undo applied.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::RedoApplied { restored } => {
+                // Re-add the restored messages to the display log.
+                for msg in restored {
+                    self.push_msg(msg);
+                }
+                self.push_msg("\u{21aa} Redo applied.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::Forked { new_session_id } => {
+                self.session_id = Some(new_session_id.to_string());
+                self.push_msg(format!(
+                    "\u{2382} Forked into new session: {}",
+                    new_session_id
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::Exported { path } => {
+                self.push_msg(format!("\u{1f4e4} Session exported to: {}", path.display()));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::Imported { session_id } => {
+                self.session_id = Some(session_id.to_string());
+                self.push_msg(format!("\u{1f4e5} Session imported: {}", session_id));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::ShareUpdated { shared, link } => {
+                if shared {
+                    let l = link.as_deref().unwrap_or("(no link)");
+                    self.push_msg(format!("\u{1f517} Session shared: {}", l));
+                } else {
+                    self.push_msg("\u{1f513} Session unshared.");
+                }
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SkillsListed(skills) => {
+                self.skills_list = skills;
+                self.push_msg(format!(
+                    "\u{2699} {} skill(s) available.",
+                    self.skills_list.len()
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::McpsListed(mcps) => {
+                self.mcps_list = mcps;
+                self.show_mcps = true;
+                self.push_msg(format!("\u{1f50c} {} MCP server(s).", self.mcps_list.len()));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::StatusReport(info) => {
+                self.status_info = Some(info);
+                self.push_msg("\u{1f4ca} Status updated.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::InitDone => {
+                self.push_msg("\u{2705} AGENTS.md initialized.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::ReviewResult(result) => {
+                self.push_msg(format!("\u{1f50d} Review: {}", result));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::WorkspaceChanged(dir) => {
+                self.working_dir = dir.to_string_lossy().to_string();
+                self.push_msg(format!("\u{1f4c1} Workspace changed to: {}", dir.display()));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::WorkspacesListed(workspaces) => {
+                self.workspaces_list = workspaces;
+                self.push_msg(format!(
+                    "\u{1f5c2} {} workspace(s).",
+                    self.workspaces_list.len()
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::Timeline(entries) => {
+                self.timeline = entries;
+                self.show_timeline = true;
+                self.timeline_index = 0;
+                self.push_msg(format!(
+                    "\u{1f550} {} timeline entrie(s).",
+                    self.timeline.len()
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SessionMoved {
+                session_id,
+                workspace,
+            } => {
+                self.push_msg(format!(
+                    "\u{27a1} Session {} moved to workspace '{}'.",
+                    session_id, workspace
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::CommandError(msg) => {
+                self.push_msg(format!("\u{26a0} Error: {}", msg));
                 self.chat_scroll = 0;
             }
             _ => {}
@@ -409,6 +657,71 @@ impl App {
                             approved: false,
                         });
                     }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Interactive `/init` flow: capture answers.
+        if self.init_flow.is_some() {
+            match key {
+                KeyCode::Enter => {
+                    self.collect_init_answer();
+                }
+                KeyCode::Esc => {
+                    self.init_flow = None;
+                    self.input.clear();
+                }
+                KeyCode::Char(c) => {
+                    self.input.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.input.pop();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Timeline navigation.
+        if self.show_timeline {
+            match key {
+                KeyCode::Up => {
+                    self.timeline_index = self.timeline_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if !self.timeline.is_empty() {
+                        self.timeline_index = (self.timeline_index + 1) % self.timeline.len();
+                    }
+                }
+                KeyCode::Enter => {
+                    self.jump_to_timeline_entry();
+                }
+                KeyCode::Esc => {
+                    self.show_timeline = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // MCP list navigation.
+        if self.show_mcps {
+            match key {
+                KeyCode::Up => {
+                    self.mcps_index = self.mcps_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if !self.mcps_list.is_empty() {
+                        self.mcps_index = (self.mcps_index + 1) % self.mcps_list.len();
+                    }
+                }
+                KeyCode::Enter => {
+                    self.toggle_selected_mcp();
+                }
+                KeyCode::Esc => {
+                    self.show_mcps = false;
                 }
                 _ => {}
             }
@@ -578,7 +891,7 @@ impl App {
             self.handle_command(input);
         } else if let Some(cmd) = input.strip_prefix('!') {
             let cmd = cmd.trim().to_string();
-            self.messages.push(format!("$ {}", cmd));
+            self.push_msg(format!("$ {}", cmd));
             self.chat_scroll = 0;
             // Run synchronously; shell commands are typically fast
             match std::process::Command::new("sh").args(["-c", &cmd]).output() {
@@ -586,22 +899,22 @@ impl App {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                     for line in stdout.split('\n') {
-                        self.messages.push(format!("\u{2502} {}", line));
+                        self.push_msg(format!("\u{2502} {}", line));
                     }
                     if !stderr.is_empty() {
                         for line in stderr.split('\n') {
-                            self.messages.push(format!("\u{2514} {}", line));
+                            self.push_msg(format!("\u{2514} {}", line));
                         }
                     }
                 }
                 Err(e) => {
-                    self.messages.push(format!("Error: !command failed: {}", e));
+                    self.push_msg(format!("Error: !command failed: {}", e));
                 }
             }
             self.chat_scroll = 0;
         } else {
             let msg = format!("> {}", input);
-            self.messages.push(msg);
+            self.push_msg(msg);
             let cmd = EngineCommand::UserInput(input);
             let _ = self.cmd_tx.try_send(cmd);
         }
@@ -614,39 +927,39 @@ impl App {
 
         match cmd {
             "/sessions" | "/s" => {
-                self.messages.push("> /sessions".into());
+                self.push_msg("> /sessions");
                 let _ = self.cmd_tx.try_send(EngineCommand::ListSessions);
             }
             "/new" => {
                 let name = parts.get(1).unwrap_or(&"default");
-                self.messages.push(format!("> /new {}", name));
+                self.push_msg(format!("> /new {}", name));
                 let _ = self
                     .cmd_tx
                     .try_send(EngineCommand::NewSession(name.to_string()));
             }
             "/resume" | "/r" => {
                 if let Some(id) = parts.get(1) {
-                    self.messages.push(format!("> /resume {}", id));
+                    self.push_msg(format!("> /resume {}", id));
                     let _ = self
                         .cmd_tx
                         .try_send(EngineCommand::ResumeSession(id.to_string()));
                 } else {
-                    self.messages.push("Usage: /resume <session-id>".into());
+                    self.push_msg("Usage: /resume <session-id>");
                 }
             }
             "/delete" | "/d" => {
                 if let Some(id) = parts.get(1) {
-                    self.messages.push(format!("> /delete {}", id));
+                    self.push_msg(format!("> /delete {}", id));
                     let _ = self
                         .cmd_tx
                         .try_send(EngineCommand::DeleteSession(id.to_string()));
                 } else {
-                    self.messages.push("Usage: /delete <session-id>".into());
+                    self.push_msg("Usage: /delete <session-id>");
                 }
             }
             "/rename" => {
                 if let (Some(id), Some(name)) = (parts.get(1), parts.get(2)) {
-                    self.messages.push(format!("> /rename {} {}", id, name));
+                    self.push_msg(format!("> /rename {} {}", id, name));
                     let _ = self.cmd_tx.try_send(EngineCommand::RenameSession(
                         id.to_string(),
                         name.to_string(),
@@ -658,43 +971,43 @@ impl App {
             }
             // ── Agent info commands ────────────────────────────────
             "/agents" | "/a" => {
-                self.messages.push("> /agents".into());
+                self.push_msg("> /agents");
                 self.show_agents = !self.show_agents;
                 if self.show_agents {
-                    self.show_subagents = false;
-                    self.show_session_list = false;
+                    self.close_panels();
+                    self.show_agents = true;
                 }
             }
             "/subagents" | "/sa" => {
-                self.messages.push("> /subagents".into());
+                self.push_msg("> /subagents");
                 self.show_subagents = !self.show_subagents;
                 if self.show_subagents {
-                    self.show_agents = false;
-                    self.show_session_list = false;
+                    self.close_panels();
+                    self.show_subagents = true;
                 }
             }
             "/copy" => {
-                self.messages.push("> /copy".into());
+                self.push_msg("> /copy");
                 let content = self.messages.join("\n");
                 match copy_to_clipboard(&content) {
                     Ok(()) => {
-                        self.messages.push(format!(
+                        self.push_msg(format!(
                             "Chat copied to clipboard ({} lines).",
                             self.messages.len()
                         ));
                     }
                     Err(e) => {
-                        self.messages.push(format!("Error copying chat: {}", e));
+                        self.push_msg(format!("Error copying chat: {}", e));
                     }
                 }
             }
             "/compact" | "/c" => {
-                self.messages.push("> /compact".into());
+                self.push_msg("> /compact");
                 let _ = self.cmd_tx.try_send(EngineCommand::Compact);
             }
             "/debug" => {
                 self.debug_mode = !self.debug_mode;
-                self.messages.push(format!(
+                self.push_msg(format!(
                     "> /debug — debug mode {}",
                     if self.debug_mode { "ON" } else { "OFF" }
                 ));
@@ -711,26 +1024,276 @@ impl App {
                         .try_send(EngineCommand::SetModel(model.to_string()));
                 }
                 None => {
-                    self.messages.push("Usage: /models <model-name>".into());
+                    self.push_msg("Usage: /models <model-name>");
                 }
             },
             "/exit" | "/quit" => {
-                self.messages.push("> /exit".into());
+                self.push_msg("> /exit");
                 self.should_exit = true;
             }
             "/help" | "/h" => {
-                self.messages.push("> /help".into());
-                self.messages.push(
+                self.push_msg("> /help");
+                self.push_msg(
                     "Commands: /sessions, /new <name>, /resume <id>, /delete <id>, \
-                     /rename <id> <name>, /agents, /subagents, /debug, /copy, /compact, /models, /exit, /help"
-                        .into(),
+                     /rename <id> <name>, /agents, /subagents, /debug, /copy, /compact, /models, /exit, /help",
                 );
+            }
+            // ── OpenCode-style slash commands ────────────────────────
+            "/undo" => {
+                self.push_msg("> /undo");
+                let _ = self.cmd_tx.try_send(EngineCommand::Undo);
+            }
+            "/redo" => {
+                self.push_msg("> /redo");
+                let _ = self.cmd_tx.try_send(EngineCommand::Redo);
+            }
+            "/fork" => {
+                self.push_msg("> /fork");
+                let _ = self.cmd_tx.try_send(EngineCommand::Fork);
+            }
+            "/export" => {
+                self.push_msg("> /export");
+                let path = parts.get(1).map(|p| PathBuf::from(p.to_string()));
+                let format = parts.get(2).map(|f| match *f {
+                    "md" | "markdown" => ExportFormat::Markdown,
+                    _ => ExportFormat::Json,
+                });
+                let _ = self.cmd_tx.try_send(EngineCommand::Export { path, format });
+            }
+            "/import" => {
+                if let Some(p) = parts.get(1) {
+                    self.push_msg(format!("> /import {}", p));
+                    let _ = self.cmd_tx.try_send(EngineCommand::Import {
+                        path: PathBuf::from(p.to_string()),
+                    });
+                } else {
+                    self.push_msg("Usage: /import <path>");
+                }
+            }
+            "/share" => {
+                self.push_msg("> /share");
+                let _ = self.cmd_tx.try_send(EngineCommand::Share);
+            }
+            "/unshare" => {
+                self.push_msg("> /unshare");
+                let _ = self.cmd_tx.try_send(EngineCommand::Unshare);
+            }
+            "/skills" => {
+                self.push_msg("> /skills");
+                let _ = self.cmd_tx.try_send(EngineCommand::ListSkills);
+            }
+            "/mcps" => match (parts.get(1), parts.get(2)) {
+                (Some(name), Some(state)) => {
+                    let enabled = matches!(*state, "on" | "enable" | "1" | "true");
+                    self.push_msg(format!(
+                        "> /mcps {} {}",
+                        name,
+                        if enabled { "on" } else { "off" }
+                    ));
+                    let _ = self.cmd_tx.try_send(EngineCommand::ToggleMcp {
+                        name: name.to_string(),
+                        enabled,
+                    });
+                }
+                _ => {
+                    self.push_msg("> /mcps");
+                    self.close_panels();
+                    self.show_mcps = true;
+                    let _ = self.cmd_tx.try_send(EngineCommand::ListMcps);
+                }
+            },
+            "/status" => {
+                self.push_msg("> /status");
+                let _ = self.cmd_tx.try_send(EngineCommand::Status);
+            }
+            "/init" => {
+                self.push_msg("> /init");
+                self.init_flow = Some(InitFlow {
+                    step: 0,
+                    name: String::new(),
+                    description: String::new(),
+                    stack: String::new(),
+                });
+            }
+            "/review" => {
+                let target = parts.get(1).map(|t| t.to_string());
+                self.push_msg("> /review");
+                let _ = self.cmd_tx.try_send(EngineCommand::Review { target });
+            }
+            "/warp" => {
+                if let Some(dir) = parts.get(1) {
+                    self.push_msg(format!("> /warp {}", dir));
+                    let _ = self.cmd_tx.try_send(EngineCommand::Warp {
+                        dir: PathBuf::from(dir.to_string()),
+                    });
+                } else {
+                    self.push_msg("Usage: /warp <directory>");
+                }
+            }
+            "/workspaces" => {
+                self.push_msg("> /workspaces");
+                let _ = self.cmd_tx.try_send(EngineCommand::ListWorkspaces);
+            }
+            "/move" => {
+                if let Some(ws) = parts.get(1) {
+                    self.push_msg(format!("> /move {}", ws));
+                    let _ = self.cmd_tx.try_send(EngineCommand::MoveSession {
+                        workspace: ws.to_string(),
+                    });
+                } else {
+                    self.push_msg("Usage: /move <workspace>");
+                }
+            }
+            "/timeline" => {
+                self.push_msg("> /timeline");
+                self.close_panels();
+                self.show_timeline = true;
+                let _ = self.cmd_tx.try_send(EngineCommand::Timeline);
+            }
+            "/themes" => {
+                self.theme = self.theme.next();
+                self.push_msg(format!("> /themes — theme: {}", self.theme.name()));
+            }
+            "/timestamps" => {
+                self.show_timestamps = !self.show_timestamps;
+                self.push_msg(format!(
+                    "> /timestamps — {}",
+                    if self.show_timestamps { "ON" } else { "OFF" }
+                ));
+            }
+            "/thinking" => {
+                self.show_thinking = !self.show_thinking;
+                self.push_msg(format!(
+                    "> /thinking — {}",
+                    if self.show_thinking { "ON" } else { "OFF" }
+                ));
+            }
+            "/stash" => match parts.get(1) {
+                Some(&"pop") => {
+                    if let Some(saved) = self.stash_stack.pop() {
+                        self.input = saved;
+                        self.push_msg("> /stash pop — restored prompt.");
+                    } else {
+                        self.push_msg("> /stash pop — nothing stashed.");
+                    }
+                }
+                Some(&"list") => {
+                    self.push_msg(format!(
+                        "> /stash list — {} stashed:",
+                        self.stash_stack.len()
+                    ));
+                    let items: Vec<String> = self.stash_stack.to_vec();
+                    for (i, s) in items.iter().enumerate() {
+                        self.push_msg(format!("  [{}] {}", i, s));
+                    }
+                }
+                _ => {
+                    if self.input.trim().is_empty() {
+                        self.push_msg("> /stash — nothing to stash.");
+                    } else {
+                        self.stash_stack.push(self.input.clone());
+                        self.input.clear();
+                        self.push_msg(format!(
+                            "> /stash — saved ({} stashed).",
+                            self.stash_stack.len()
+                        ));
+                    }
+                }
+            },
+            "/editor" => {
+                self.push_msg("> /editor");
+                self.open_editor();
             }
             _ => {
                 self.messages
                     .push(format!("Unknown command: {}. Try /help", cmd));
             }
         }
+    }
+
+    /// Open the external editor ($EDITOR) with the current input buffer.
+    fn open_editor(&mut self) {
+        let editor = std::env::var("EDITOR")
+            .or_else(|_| std::env::var("VISUAL"))
+            .unwrap_or_else(|_| "vi".to_string());
+        let tmp = std::env::temp_dir().join(format!("anacleto-edit-{}.txt", std::process::id()));
+        let _ = std::fs::write(&tmp, &self.input);
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{} \"{}\"", editor, tmp.display()))
+            .status();
+        match status {
+            Ok(_) => {
+                if let Ok(contents) = std::fs::read_to_string(&tmp) {
+                    self.input = contents;
+                }
+            }
+            Err(e) => {
+                self.push_msg(format!("Error launching editor: {}", e));
+            }
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Advance the `/init` flow with the current input buffer.
+    fn collect_init_answer(&mut self) {
+        let Some(mut flow) = self.init_flow.take() else {
+            return;
+        };
+        let answer = std::mem::take(&mut self.input);
+        match flow.step {
+            0 => flow.name = answer,
+            1 => flow.description = answer,
+            _ => flow.stack = answer,
+        }
+        if flow.step < 2 {
+            flow.step += 1;
+            self.init_flow = Some(flow);
+        } else {
+            let answers = InitAnswers {
+                name: flow.name,
+                description: flow.description,
+                stack: flow.stack,
+            };
+            let _ = self.cmd_tx.try_send(EngineCommand::Init { answers });
+        }
+    }
+
+    /// Jump to a timeline entry (scroll chat to it).
+    fn jump_to_timeline_entry(&mut self) {
+        if let Some(entry) = self.timeline.get(self.timeline_index) {
+            let needle = format!("{}: {}", entry.role, entry.content);
+            if let Some(pos) = self
+                .messages
+                .iter()
+                .position(|m| m.contains(&entry.content))
+            {
+                let total = self.messages.len() as u16;
+                self.chat_scroll = total.saturating_sub(pos as u16);
+            }
+            self.show_timeline = false;
+            self.push_msg(format!("> /timeline — jumped to {}", needle));
+        }
+    }
+
+    /// Toggle the selected MCP server on/off.
+    fn toggle_selected_mcp(&mut self) {
+        if let Some(mcp) = self.mcps_list.get(self.mcps_index) {
+            let name = mcp.name.clone();
+            let enabled = !mcp.enabled;
+            let _ = self
+                .cmd_tx
+                .try_send(EngineCommand::ToggleMcp { name, enabled });
+        }
+    }
+
+    /// Close all overlay panels (session list, agents, subagents, timeline, mcps).
+    fn close_panels(&mut self) {
+        self.show_session_list = false;
+        self.show_agents = false;
+        self.show_subagents = false;
+        self.show_timeline = false;
+        self.show_mcps = false;
     }
 }
 
@@ -850,7 +1413,7 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
     all_spans.push(Span::styled(
         " ⬡ anacleto ",
         Style::default()
-            .fg(Color::Rgb(255, 107, 107))
+            .fg(app.theme.accent())
             .add_modifier(Modifier::BOLD),
     ));
     // Keyboard protocol indicator
@@ -936,7 +1499,11 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
 
 /// Render the left panel: session list, agent list, subagent tree, or chat.
 fn render_left_panel(f: &mut Frame, area: Rect, app: &App) {
-    if app.show_session_list {
+    if app.show_timeline {
+        render_timeline_panel(f, area, app);
+    } else if app.show_mcps {
+        render_mcp_list_panel(f, area, app);
+    } else if app.show_session_list {
         render_session_list(f, area, app);
     } else if app.show_agents {
         render_agent_list(f, area, app);
@@ -945,6 +1512,74 @@ fn render_left_panel(f: &mut Frame, area: Rect, app: &App) {
     } else {
         render_chat(f, area, app);
     }
+}
+
+/// Render the session timeline panel (`/timeline`).
+fn render_timeline_panel(f: &mut Frame, area: Rect, app: &App) {
+    let items: Vec<ListItem> = app
+        .timeline
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let label = format!(
+                "{} {}: {}",
+                e.created_at.format("%H:%M:%S"),
+                e.role,
+                e.content.chars().take(60).collect::<String>()
+            );
+            let style = if i == app.timeline_index {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(app.theme.accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(label).style(style)
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(app.theme.accent()))
+                .title(" Timeline "),
+        )
+        .highlight_style(Style::default().bg(app.theme.accent()));
+    f.render_widget(list, area);
+}
+
+/// Render the MCP server list panel (`/mcps`).
+fn render_mcp_list_panel(f: &mut Frame, area: Rect, app: &App) {
+    let items: Vec<ListItem> = app
+        .mcps_list
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let state = if m.enabled { "● ON" } else { "○ OFF" };
+            let label = format!("{} {}", state, m.name);
+            let style = if i == app.mcps_index {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(app.theme.accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(label).style(style)
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(app.theme.accent()))
+                .title(" MCP Servers "),
+        )
+        .highlight_style(Style::default().bg(app.theme.accent()));
+    f.render_widget(list, area);
 }
 
 /// Render the right panel: 4 stacked info panels (Status, MCPs, Skills, Running agents).
@@ -1243,13 +1878,24 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
 
     let mut lines: Vec<Line> = Vec::with_capacity(app.messages.len() + 4);
 
-    for m in &app.messages {
+    for (idx, m) in app.messages.iter().enumerate() {
+        let ts = if app.show_timestamps {
+            app.message_timestamps
+                .get(idx)
+                .map(|t| format!("[{}] ", t.format("%H:%M:%S")))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         if m.starts_with("> ") && !m.starts_with("> /") {
             let style = Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD);
             for line_text in m.split('\n') {
-                lines.push(Line::from(Span::styled(line_text.to_string(), style)));
+                lines.push(Line::from(Span::styled(
+                    format!("{}{}", ts, line_text),
+                    style,
+                )));
             }
         } else if m.starts_with("> /") {
             let style = Style::default()
@@ -1355,8 +2001,12 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
         } else {
             // AI responses — split by newline, render markdown per line
             let base = Style::default().fg(Color::Rgb(200, 220, 255));
-            for line_text in m.split('\n') {
-                lines.push(render_markdown_line(line_text, base));
+            for (i, line_text) in m.split('\n').enumerate() {
+                let prefix = if i == 0 { ts.as_str() } else { "" };
+                lines.push(render_markdown_line(
+                    &format!("{}{}", prefix, line_text),
+                    base,
+                ));
             }
         }
     }
@@ -1396,7 +2046,7 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Rgb(80, 120, 200)))
+                .border_style(Style::default().fg(app.theme.accent()))
                 .title(title),
         )
         .scroll((0, 0))
@@ -1974,7 +2624,7 @@ fn render_command_palette(f: &mut Frame, input_area: Rect, app: &App) {
 
 fn render_input(f: &mut Frame, area: Rect, app: &App) {
     let input_style = Style::default()
-        .fg(Color::Rgb(255, 107, 107))
+        .fg(app.theme.accent())
         .add_modifier(Modifier::BOLD);
     let prompt = Span::styled(" ❯ ", input_style);
 
@@ -1998,13 +2648,19 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
     let visible_rows = (area.height.saturating_sub(2)) as usize; // 2 for borders
     let scroll_offset = lines.len().saturating_sub(visible_rows);
 
+    let title = if let Some(flow) = &app.init_flow {
+        format!(" Init — {} ", flow.prompt())
+    } else {
+        " Input ".to_string()
+    };
+
     let paragraph = Paragraph::new(rendered)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Rgb(100, 100, 140)))
-                .title(" Input "),
+                .border_style(Style::default().fg(app.theme.accent()))
+                .title(title),
         )
         .scroll((scroll_offset as u16, 0))
         .style(Style::default().fg(Color::White));
