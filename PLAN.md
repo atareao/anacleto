@@ -587,50 +587,61 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 
 ### FASE 6 — LLM y providers
 
+> **Nota de rutas:** Todo el código de providers vive en `src/llm/provider.rs` (1758 líneas). **NO existe `src/llm/anthropic.rs`** — los tipos Anthropic (`AnthropicRequest`, `AnthropicMessage`, `AnthropicResponse`, `AnthropicContentBlock`, `AnthropicUsage`) están definidos en `provider.rs` (líneas 185-239). El trait `LlmProvider` (línea ~20) y la factory `create_provider(config)` (línea ~44) también residen allí. `LlmProviderConfig` y `LlmProviderType` están en `src/llm/types.rs` (líneas 88 y 97).
+
 #### Tarea 6.1: Política de prompt-caching / cache-control breakpoints
 
 **Archivos:**
-- Modificar: `src/llm/provider.rs` (inyección de `cache_control`)
-- Modificar: `src/config/types.rs` (config `cache: auto|off`)
-- Modificar: `src/engine/orchestrator.rs` (buckets TTL)
+- Modificar: `src/config/types.rs` (config `cache: auto|off` en `ModelsConfig`, línea 55)
+- Modificar: `src/llm/types.rs` (campo `cache_control` en `LlmRequest`, línea 51)
+- Modificar: `src/llm/provider.rs` (inyección provider-aware en `AnthropicProvider::complete`, línea 1234)
+- Modificar: `src/engine/orchestrator.rs` (propagación de `CacheControl` en `provider_config_to_llm`, línea 1938, y `ollama_config_to_llm`, línea 1951)
 
-- [ ] **Paso 1:** Implementar `cache:auto`: inyectar `cache_control` en el último tool/system/user.
-- [ ] **Paso 2:** Implementar buckets con TTL.
-- [ ] **Paso 3:** Hacer provider-aware (Anthropic, OpenAI, etc.).
+- [x] **Paso 1:** Añadir `cache: auto|off` a `ModelsConfig` en `src/config/types.rs` (junto a `anthropic`/`openai`/`openrouter`/`ollama`, línea 55) y parsearlo en `src/config/loader.rs` (`load_config`, línea 11).
+- [x] **Paso 2:** Añadir campo `cache_control: Option<CacheControl>` a `LlmRequest` en `src/llm/types.rs` (línea 51).
+- [x] **Paso 3:** En `src/llm/provider.rs`, implementar inyección provider-aware: para Anthropic, añadir `cache_control: { type: "ephemeral" }` a nivel top del request (automatic caching) en `AnthropicProvider::complete` (línea 1234); para OpenAI, delegar en el caching automático del proveedor (sin campo explícito).
+- [x] **Paso 4:** En `src/engine/orchestrator.rs`, propagar el `CacheControl` derivado de `models.cache.mode` en `provider_config_to_llm` (línea 1938) y `ollama_config_to_llm` (línea 1951) al construir `LlmProviderConfig`.
 
-**Criterio de aceptación:** `cache:auto` inyecta cache_control en los breakpoints correctos; los buckets respetan TTL; es provider-aware.
+**Criterio de aceptación:** `cache:auto` inyecta `cache_control` a nivel top del request Anthropic (automatic caching); es provider-aware (Anthropic explícito, OpenAI automático). Nota: la inyección a nivel de mensaje se descartó porque `cache_control` como campo hermano de `content: String` es un formato inválido para la API de Anthropic; el automatic caching top-level cubre el caso de uso.
 
 #### Tarea 6.2: Anthropic extended thinking
 
 **Archivos:**
-- Modificar: `src/llm/provider.rs` (campo `thinking` en request)
-- Modificar: `src/llm/anthropic.rs` (parseo de bloque thinking)
+- Modificar: `src/llm/provider.rs` (campo `thinking` en `AnthropicRequest`, línea ~185; parseo del bloque `thinking` en `AnthropicContentBlock`, línea ~239, y en `AnthropicProvider::complete`, línea 1234)
 
-- [ ] **Paso 1:** Añadir `thinking: { type: enabled, budget_tokens }` a la request.
-- [ ] **Paso 2:** Parsear el bloque thinking de la respuesta.
+- [x] **Paso 1:** Añadir campo `thinking: Option<AnthropicThinking>` a `AnthropicRequest` (línea ~185) con `{ type: "enabled", budget_tokens: u32 }`.
+- [x] **Paso 2:** Añadir variante `thinking` a `AnthropicContentBlock` (línea ~239) y parsear el bloque `thinking` de la respuesta en `AnthropicProvider::complete` (línea 1234), exponiéndolo en `LlmResponse`/`LlmStreamChunk` de `src/llm/types.rs`.
 
-**Criterio de aceptación:** El modelo Anthropic recibe budget_tokens y el bloque thinking se parsea correctamente.
+**Criterio de aceptación:** El modelo Anthropic recibe `budget_tokens` en la request y el bloque `thinking` de la respuesta se parsea correctamente y se expone al consumidor.
 
 #### Tarea 6.3: Plantillas de system-prompt por modelo/agente
 
 **Archivos:**
-- Modificar: `src/config/types.rs` (`system_prompt` como plantilla)
-- Crear: `src/llm/template.rs` (renderizado de variables)
+- Crear: `src/llm/template.rs` (renderizado de variables `{model}`, `{workspace}`, `{tools}`)
+- Modificar: `src/config/types.rs` (`AgentConfig.system_prompt` como plantilla, línea 279)
+- Modificar: `src/agent/lifecycle.rs` (renderizado al construir el contexto, líneas 160 y 218-238)
 
-- [ ] **Paso 1:** Permitir `system_prompt` como plantilla con variables (`{model}`, `{workspace}`, `{tools}`).
-- [ ] **Paso 2:** Renderizar la plantilla al construir el contexto.
+- [x] **Paso 1:** Crear `src/llm/template.rs` con una función de renderizado que sustituya `{model}`, `{workspace}` y `{tools}` en una plantilla.
+- [x] **Paso 2:** En `src/config/types.rs`, documentar que `AgentConfig.system_prompt` (línea 279) puede ser una plantilla con esas variables.
+- [x] **Paso 3:** En `src/agent/lifecycle.rs`, renderizar la plantilla al construir el system prompt (línea 160) y al inyectar los archivos de instrucción del workspace como `MessageRole::System` (líneas 227-238), antes de construir `LlmRequest` (líneas 322, 2207, 2553).
 
-**Criterio de aceptación:** El system-prompt se renderiza con variables por modelo/agente.
+**Criterio de aceptación:** El system-prompt se renderiza con variables por modelo/agente y se inyecta como `MessageRole::System` en el contexto.
 
 #### Tarea 6.4: Catálogo ampliado de providers
 
 **Archivos:**
-- Modificar: `src/llm/provider.rs` (`LlmProviderRegistry`)
 - Crear: `src/llm/bedrock.rs`, `src/llm/azure.rs`, `src/llm/google.rs`
+- Modificar: `src/llm/types.rs` (variantes `Bedrock`/`Azure`/`Google` en `LlmProviderType`, línea 88)
+- Modificar: `src/llm/provider.rs` (constructores en `create_provider`, línea ~44, y registro en `LlmProviderRegistry`, línea ~1106)
+- Modificar: `src/config/types.rs` (campos `bedrock`/`azure`/`google` en `ModelsConfig`, línea 55)
+- Modificar: `src/config/loader.rs` (parseo de los nuevos campos en `load_config`, línea 11)
 
-- [ ] **Paso 1:** Añadir constructores para Bedrock, Azure, Google.
+- [x] **Paso 1:** Añadir variantes `Bedrock`, `Azure`, `Google` a `LlmProviderType` en `src/llm/types.rs` (línea 88).
+- [x] **Paso 2:** Crear `src/llm/bedrock.rs`, `src/llm/azure.rs`, `src/llm/google.rs` con sus respectivos providers implementando el trait `LlmProvider`.
+- [x] **Paso 3:** Añadir los constructores al `match` de `create_provider` en `src/llm/provider.rs` (línea ~44) y registrarlos en `LlmProviderRegistry` (línea ~1106).
+- [x] **Paso 4:** Añadir campos `bedrock`/`azure`/`google` a `ModelsConfig` en `src/config/types.rs` (línea 55) y parsearlos en `src/config/loader.rs` (`load_config`, línea 11).
 
-**Criterio de aceptación:** Los nuevos providers se registran y seleccionan desde config.
+**Criterio de aceptación:** Los nuevos providers (Bedrock, Azure, Google) se registran en `create_provider`/`LlmProviderRegistry`, se seleccionan desde config y se construyen vía `provider_config_to_llm` en `src/engine/orchestrator.rs`.
 
 **Dependencia:** FASE 6 depende de FASE 2 (compaction/contexto) para los breakpoints de cache.
 

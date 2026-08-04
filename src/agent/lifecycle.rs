@@ -18,6 +18,7 @@ use crate::engine::jobs::JobRegistry;
 use crate::engine::orchestrator::{EngineEvent, UsageEvent};
 use crate::error::{Error, Result};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry};
+use crate::llm::template::render_template;
 use crate::llm::types::{
     LlmMessage, LlmRequest, LlmResponse, LlmStreamChunk, MessageRole, ToolCall, ToolDefinition,
 };
@@ -156,8 +157,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     let max_steps = agent.max_steps;
     let subagent_depth = agent.subagent_depth;
 
-    // Load agent description as system prompt
-    let system_prompt = agent.description.clone();
+    // Load agent description as system prompt (rendered as a template below)
 
     // Build tool list: skills + subagents + built-in todo tool
     let mut tools: Vec<ToolDefinition> = skills.iter().map(skill_to_tool_definition).collect();
@@ -177,6 +177,23 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     tools.push(mcp_list_resource_templates_tool_definition());
     tools.push(lsp_query_tool_definition());
     tools.push(task_tool_definition());
+
+    // Render the system prompt template (supports {model}, {workspace}, {tools}).
+    let system_prompt = {
+        let tool_names = tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut vars = HashMap::new();
+        vars.insert("model".to_string(), model.clone());
+        vars.insert(
+            "workspace".to_string(),
+            workspace.to_string_lossy().to_string(),
+        );
+        vars.insert("tools".to_string(), tool_names);
+        render_template(&agent.description, &vars)
+    };
 
     // Clone what the task needs
     let agent_mcp_names = agent.mcps.clone();
@@ -326,6 +343,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                             max_tokens: None,
                             temperature: None,
                             stream: true,
+                            cache_control: None,
                         };
 
                         // Emit debug event for LLM request if debug mode is on
@@ -425,6 +443,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             "tool_use".to_string()
                                         },
                                         usage: None,
+                                        thinking: None,
                                     };
                                     let payload = serde_json::to_string_pretty(&response)
                                         .unwrap_or_else(|_| "{}".to_string());
@@ -2211,6 +2230,7 @@ async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Result<String>
                 max_tokens: None,
                 temperature: None,
                 stream: false, // non-streaming for subagents
+                cache_control: None,
             };
 
             // Emit debug event for subagent LLM request if debug mode is on
@@ -2278,6 +2298,7 @@ async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Result<String>
                                 "tool_use".to_string()
                             },
                             usage: response.usage,
+                            thinking: None,
                         };
                         let payload = serde_json::to_string_pretty(&resp)
                             .unwrap_or_else(|_| "{}".to_string());
@@ -2562,6 +2583,7 @@ async fn summarize_conversation(
         max_tokens: Some(1024),
         temperature: Some(0.3),
         stream: false,
+        cache_control: None,
     };
 
     match prov.complete(request).await {
@@ -3111,6 +3133,7 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                thinking: None,
             })
         }
 

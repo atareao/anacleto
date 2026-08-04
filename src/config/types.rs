@@ -68,6 +68,22 @@ pub struct ModelsConfig {
     /// Ollama configuration.
     #[serde(default)]
     pub ollama: Option<OllamaConfig>,
+
+    /// AWS Bedrock configuration (OpenAI-compatible).
+    #[serde(default)]
+    pub bedrock: Option<ProviderConfig>,
+
+    /// Azure OpenAI configuration (OpenAI-compatible).
+    #[serde(default)]
+    pub azure: Option<ProviderConfig>,
+
+    /// Google Gemini configuration (OpenAI-compatible).
+    #[serde(default)]
+    pub google: Option<ProviderConfig>,
+
+    /// Prompt caching policy.
+    #[serde(default)]
+    pub cache: CacheConfig,
 }
 
 impl Default for ModelsConfig {
@@ -77,6 +93,37 @@ impl Default for ModelsConfig {
             openai: None,
             openrouter: None,
             ollama: Some(OllamaConfig::default()),
+            bedrock: None,
+            azure: None,
+            google: None,
+            cache: CacheConfig::default(),
+        }
+    }
+}
+
+/// Prompt caching mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheMode {
+    /// Enable prompt caching (inject provider-aware breakpoints).
+    #[default]
+    Auto,
+    /// Disable prompt caching.
+    Off,
+}
+
+/// Prompt caching configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConfig {
+    /// Caching mode.
+    #[serde(default)]
+    pub mode: CacheMode,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            mode: CacheMode::Auto,
         }
     }
 }
@@ -105,6 +152,12 @@ pub struct ProviderConfig {
     /// Output price in USD per million tokens.
     #[serde(default = "default_output_price_per_million")]
     pub output_price_per_million: f64,
+
+    /// Anthropic extended thinking budget in tokens. When set, the Anthropic
+    /// provider enables extended thinking with this budget. Ignored by other
+    /// providers.
+    #[serde(default)]
+    pub thinking_budget_tokens: Option<u32>,
 }
 
 fn default_model() -> String {
@@ -308,6 +361,10 @@ pub struct AgentConfig {
     pub subagents: Vec<String>,
 
     /// The agent's system prompt (body of the Markdown file).
+    ///
+    /// May be a template containing `{var}` placeholders that are substituted
+    /// at runtime. Supported variables: `{model}`, `{workspace}` and `{tools}`
+    /// (a comma-separated list of the agent's tool names).
     #[serde(default)]
     pub system_prompt: String,
 
