@@ -102,6 +102,19 @@ pub fn merge_configs(base: &mut Config, override_cfg: Config) {
     if let Some(ollama) = override_cfg.models.ollama {
         base.models.ollama = Some(ollama);
     }
+    if let Some(bedrock) = override_cfg.models.bedrock {
+        base.models.bedrock = Some(bedrock);
+    }
+    if let Some(azure) = override_cfg.models.azure {
+        base.models.azure = Some(azure);
+    }
+    if let Some(google) = override_cfg.models.google {
+        base.models.google = Some(google);
+    }
+    // Merge the prompt-caching policy (project wins over global).
+    if override_cfg.models.cache.mode != crate::config::types::CacheMode::Auto {
+        base.models.cache = override_cfg.models.cache;
+    }
 
     // Merge MCPs
     base.mcps.extend(override_cfg.mcps);

@@ -10,13 +10,15 @@ use chrono::{DateTime, Utc};
 use crate::agent::lifecycle::{AgentHandle, SpawnAgentConfig, spawn_agent};
 use crate::agent::types::{Agent, AgentId, AgentMessage, AgentMode, AgentRole, AgentStatus};
 use crate::config::Config;
-use crate::config::types::{OllamaConfig, ProviderConfig};
+use crate::config::types::{CacheMode, OllamaConfig, ProviderConfig};
 use crate::db::models::{SessionSummary, Snapshot, StoredMessage};
 use crate::db::session::Database;
 use crate::engine::jobs::JobRegistry;
 use crate::error::{Error, Result};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry, create_provider};
-use crate::llm::types::{LlmMessage, LlmProviderConfig, LlmProviderType, MessageRole};
+use crate::llm::types::{
+    CacheControl, LlmMessage, LlmProviderConfig, LlmProviderType, MessageRole,
+};
 use crate::mcp::client::McpRegistry;
 use crate::shell::{git_worktree_add, git_worktree_list, git_worktree_remove};
 use crate::skill::loader::load_agent_skills;
@@ -531,8 +533,10 @@ impl Engine {
         // Create LLM providers from config and register them
         let mut llm_registry = LlmProviderRegistry::new();
 
+        let cache: CacheControl = self.config.models.cache.mode.into();
+
         if let Some(ref cfg) = self.config.models.anthropic {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Anthropic);
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Anthropic, cache);
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -540,7 +544,7 @@ impl Engine {
             llm_registry.register("anthropic".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.openai {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::OpenAI);
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::OpenAI, cache);
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -548,7 +552,7 @@ impl Engine {
             llm_registry.register("openai".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.openrouter {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::OpenRouter);
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::OpenRouter, cache);
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -556,12 +560,36 @@ impl Engine {
             llm_registry.register("openrouter".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.ollama {
-            let llm_cfg = ollama_config_to_llm(cfg);
+            let llm_cfg = ollama_config_to_llm(cfg, cache);
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
             }
             llm_registry.register("ollama".into(), provider);
+        }
+        if let Some(ref cfg) = self.config.models.bedrock {
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Bedrock, cache);
+            let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
+            if let Ok(cw) = provider.fetch_context_window().await {
+                provider.set_context_window(cw);
+            }
+            llm_registry.register("bedrock".into(), provider);
+        }
+        if let Some(ref cfg) = self.config.models.azure {
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Azure, cache);
+            let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
+            if let Ok(cw) = provider.fetch_context_window().await {
+                provider.set_context_window(cw);
+            }
+            llm_registry.register("azure".into(), provider);
+        }
+        if let Some(ref cfg) = self.config.models.google {
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Google, cache);
+            let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
+            if let Ok(cw) = provider.fetch_context_window().await {
+                provider.set_context_window(cw);
+            }
+            llm_registry.register("google".into(), provider);
         }
 
         self.llm_registry = llm_registry;
@@ -1935,7 +1963,11 @@ impl Engine {
 // ---------------------------------------------------------------------------
 
 /// Convert a generic `ProviderConfig` + type tag to `LlmProviderConfig`.
-fn provider_config_to_llm(cfg: &ProviderConfig, ptype: LlmProviderType) -> LlmProviderConfig {
+fn provider_config_to_llm(
+    cfg: &ProviderConfig,
+    ptype: LlmProviderType,
+    cache: CacheControl,
+) -> LlmProviderConfig {
     LlmProviderConfig {
         provider_type: ptype,
         api_key: Some(cfg.api_key.clone()),
@@ -1944,11 +1976,13 @@ fn provider_config_to_llm(cfg: &ProviderConfig, ptype: LlmProviderType) -> LlmPr
         context_window: cfg.context_window,
         input_price_per_million: cfg.input_price_per_million,
         output_price_per_million: cfg.output_price_per_million,
+        cache_control: cache,
+        thinking_budget_tokens: cfg.thinking_budget_tokens,
     }
 }
 
 /// Convert an `OllamaConfig` to `LlmProviderConfig`.
-fn ollama_config_to_llm(cfg: &OllamaConfig) -> LlmProviderConfig {
+fn ollama_config_to_llm(cfg: &OllamaConfig, cache: CacheControl) -> LlmProviderConfig {
     LlmProviderConfig {
         provider_type: LlmProviderType::Ollama,
         api_key: None,
@@ -1957,6 +1991,17 @@ fn ollama_config_to_llm(cfg: &OllamaConfig) -> LlmProviderConfig {
         context_window: cfg.context_window,
         input_price_per_million: 0.0,
         output_price_per_million: 0.0,
+        cache_control: cache,
+        thinking_budget_tokens: None,
+    }
+}
+
+impl From<CacheMode> for CacheControl {
+    fn from(mode: CacheMode) -> Self {
+        match mode {
+            CacheMode::Auto => CacheControl::Auto,
+            CacheMode::Off => CacheControl::Off,
+        }
     }
 }
 
@@ -2026,8 +2071,9 @@ mod tests {
             base_url: None,
             input_price_per_million: 3.0,
             output_price_per_million: 15.0,
+            thinking_budget_tokens: None,
         };
-        let llm_cfg = provider_config_to_llm(&cfg, LlmProviderType::OpenAI);
+        let llm_cfg = provider_config_to_llm(&cfg, LlmProviderType::OpenAI, CacheControl::Auto);
         assert_eq!(llm_cfg.api_key, Some("sk-test".into()));
         assert_eq!(llm_cfg.model, "gpt-4o");
         assert_eq!(llm_cfg.context_window, 128_000);
@@ -2040,7 +2086,7 @@ mod tests {
             model: "llama3.2".into(),
             context_window: 8_192,
         };
-        let llm_cfg = ollama_config_to_llm(&cfg);
+        let llm_cfg = ollama_config_to_llm(&cfg, CacheControl::Auto);
         assert_eq!(llm_cfg.provider_type, LlmProviderType::Ollama);
         assert_eq!(llm_cfg.api_key, None);
         assert_eq!(llm_cfg.model, "llama3.2");
@@ -2062,6 +2108,8 @@ mod tests {
             context_window: 8_192,
             input_price_per_million: 0.0,
             output_price_per_million: 0.0,
+            cache_control: CacheControl::Auto,
+            thinking_budget_tokens: None,
         };
         engine
             .llm_registry

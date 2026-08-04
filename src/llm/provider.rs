@@ -8,6 +8,9 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 
+use super::azure::AzureProvider;
+use super::bedrock::BedrockProvider;
+use super::google::GoogleProvider;
 use super::types::*;
 
 /// Trait for LLM provider implementations.
@@ -45,6 +48,9 @@ pub fn create_provider(config: &LlmProviderConfig) -> Box<dyn LlmProvider> {
         LlmProviderType::OpenAI => Box::new(OpenAIProvider::new(config)),
         LlmProviderType::OpenRouter => Box::new(OpenRouterProvider::new(config)),
         LlmProviderType::Ollama => Box::new(OllamaProvider::new(config)),
+        LlmProviderType::Bedrock => Box::new(BedrockProvider::new(config)),
+        LlmProviderType::Azure => Box::new(AzureProvider::new(config)),
+        LlmProviderType::Google => Box::new(GoogleProvider::new(config)),
     }
 }
 
@@ -193,6 +199,42 @@ struct AnthropicRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<AnthropicThinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
+}
+
+/// Anthropic extended thinking configuration.
+#[derive(Serialize)]
+struct AnthropicThinking {
+    #[serde(rename = "type")]
+    type_: String,
+    budget_tokens: u32,
+}
+
+impl AnthropicThinking {
+    fn enabled(budget_tokens: u32) -> Self {
+        Self {
+            type_: "enabled".into(),
+            budget_tokens,
+        }
+    }
+}
+
+/// Anthropic prompt-caching breakpoint marker.
+#[derive(Serialize)]
+struct AnthropicCacheControl {
+    #[serde(rename = "type")]
+    type_: String,
+}
+
+impl AnthropicCacheControl {
+    fn ephemeral() -> Self {
+        Self {
+            type_: "ephemeral".into(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -220,6 +262,8 @@ struct AnthropicContentBlock {
     #[serde(rename = "type")]
     type_: String,
     text: Option<String>,
+    #[serde(default)]
+    thinking: Option<String>,
     #[serde(default)]
     tool_use: Option<AnthropicToolUse>,
 }
@@ -324,6 +368,13 @@ fn into_openai_messages(messages: Vec<LlmMessage>) -> Vec<OpenAiMessage> {
 
 /// Convert a `Vec<LlmMessage>` into Anthropic-compatible message list,
 /// extracting the system message separately.
+///
+/// Prompt caching for Anthropic is handled via the top-level `cache_control`
+/// field on the request (automatic caching), which is set in
+/// [`AnthropicProvider::complete`]. Message-level `cache_control` breakpoints
+/// are intentionally NOT injected here: they are only valid inside a content
+/// block array, and the automatic top-level caching already covers the
+/// prompt-prefix caching use case.
 fn into_anthropic_messages(messages: Vec<LlmMessage>) -> (Option<String>, Vec<AnthropicMessage>) {
     let mut system = None;
     let mut msgs = Vec::new();
@@ -463,7 +514,7 @@ impl OpenAIProvider {
         }
     }
 
-    fn base_url(&self) -> &str {
+    pub(crate) fn base_url(&self) -> &str {
         self.config
             .base_url
             .as_deref()
@@ -608,6 +659,7 @@ impl LlmProvider for OpenAIProvider {
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
             }),
+            thinking: None,
         })
     }
 
@@ -964,6 +1016,7 @@ impl LlmProvider for OpenRouterProvider {
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
             }),
+            thinking: None,
         })
     }
 
@@ -1232,6 +1285,7 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse> {
+        let cache = request.cache_control.unwrap_or(self.config.cache_control);
         let (system, messages) = into_anthropic_messages(request.messages);
         let max_tokens = request.max_tokens.unwrap_or(4096);
         let model = strip_model_prefix(&request.model);
@@ -1247,6 +1301,15 @@ impl LlmProvider for AnthropicProvider {
                 None
             } else {
                 Some(anthropic_tools(request.tools))
+            },
+            thinking: self
+                .config
+                .thinking_budget_tokens
+                .map(AnthropicThinking::enabled),
+            cache_control: if cache == CacheControl::Auto {
+                Some(AnthropicCacheControl::ephemeral())
+            } else {
+                None
             },
         };
 
@@ -1275,12 +1338,20 @@ impl LlmProvider for AnthropicProvider {
 
         let mut content = String::new();
         let mut tool_calls = Vec::new();
+        let mut thinking = String::new();
 
         for block in &data.content {
             match block.type_.as_str() {
                 "text" => {
                     if let Some(text) = &block.text {
                         content.push_str(text);
+                    }
+                }
+                "thinking" => {
+                    // Extended thinking output. Kept separate from the main
+                    // content so consumers can surface or drop it.
+                    if let Some(t) = &block.thinking {
+                        thinking.push_str(t);
                     }
                 }
                 "tool_use" => {
@@ -1308,6 +1379,11 @@ impl LlmProvider for AnthropicProvider {
                 completion_tokens: u.output_tokens,
                 total_tokens: u.input_tokens + u.output_tokens,
             }),
+            thinking: if thinking.is_empty() {
+                None
+            } else {
+                Some(thinking)
+            },
         })
     }
 
@@ -1472,6 +1548,7 @@ impl LlmProvider for OllamaProvider {
                 completion_tokens: data.eval_count.unwrap_or(0),
                 total_tokens: data.prompt_eval_count.unwrap_or(0) + data.eval_count.unwrap_or(0),
             }),
+            thinking: None,
         })
     }
 
@@ -1615,6 +1692,9 @@ mod tests {
             (LlmProviderType::OpenAI, "OpenAI".to_string()),
             (LlmProviderType::OpenRouter, "OpenRouter".to_string()),
             (LlmProviderType::Ollama, "Ollama".to_string()),
+            (LlmProviderType::Bedrock, "Bedrock".to_string()),
+            (LlmProviderType::Azure, "Azure".to_string()),
+            (LlmProviderType::Google, "Google".to_string()),
         ];
 
         for (ptype, _name) in configs {
@@ -1630,6 +1710,8 @@ mod tests {
                 context_window: 100_000,
                 input_price_per_million: 3.0,
                 output_price_per_million: 15.0,
+                cache_control: CacheControl::Auto,
+                thinking_budget_tokens: None,
             };
             let provider = create_provider(&config);
             assert_eq!(
@@ -1652,6 +1734,8 @@ mod tests {
             context_window: 100_000,
             input_price_per_million: 3.0,
             output_price_per_million: 15.0,
+            cache_control: CacheControl::Auto,
+            thinking_budget_tokens: None,
         };
         registry.register("primary".into(), Arc::from(create_provider(&config)));
         assert!(registry.get("primary").is_some());
@@ -1700,6 +1784,62 @@ mod tests {
         assert_eq!(system, Some("You are helpful.".into()));
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[0].content, "Hello");
+    }
+
+    #[test]
+    fn test_anthropic_cache_control_injection() {
+        // Prompt caching for Anthropic is applied at the top level of the
+        // request (automatic caching), not per-message. Verify the marker
+        // serializes correctly and that the request carries it when Auto.
+        let marker = AnthropicCacheControl::ephemeral();
+        let json = serde_json::to_value(&marker).unwrap();
+        assert_eq!(json["type"], "ephemeral");
+
+        let request = AnthropicRequest {
+            model: "claude-sonnet-4".into(),
+            messages: vec![],
+            system: None,
+            max_tokens: 4096,
+            temperature: None,
+            stream: false,
+            tools: None,
+            thinking: None,
+            cache_control: Some(AnthropicCacheControl::ephemeral()),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["cache_control"]["type"], "ephemeral");
+
+        // With caching off, the field is omitted entirely.
+        let request = AnthropicRequest {
+            cache_control: None,
+            ..request
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("cache_control").is_none());
+    }
+
+    #[test]
+    fn test_anthropic_thinking_block_parsing() {
+        // A response with a `thinking` block must expose it separately from the
+        // main text content.
+        let json = serde_json::json!({
+            "content": [
+                {"type": "thinking", "thinking": "Let me reason about this..."},
+                {"type": "text", "text": "Here is the answer."}
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+        let data: AnthropicResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(data.content.len(), 2);
+        assert_eq!(data.content[0].type_, "thinking");
+        assert_eq!(
+            data.content[0].thinking.as_deref(),
+            Some("Let me reason about this...")
+        );
+        assert_eq!(data.content[1].type_, "text");
+        assert_eq!(data.content[1].text.as_deref(), Some("Here is the answer."));
     }
 
     #[test]
