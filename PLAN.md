@@ -1,4 +1,4 @@
-# Anacleto — Implementación de Features de OpenCode (v0.3.0)
+# Anacleto — Implementación de Features de OpenCode (v0.6.0)
 
 ## Objetivo
 
@@ -764,19 +764,20 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - [x] `/agent <nombre>` cambia de agente root y el indicador se actualiza.
 
 **FASE 6**
-- [ ] `cache:auto` inyecta cache_control en los breakpoints correctos con TTL.
-- [ ] Anthropic extended thinking recibe budget_tokens y se parsea.
-- [ ] El system-prompt se renderiza con variables por modelo/agente.
-- [ ] Bedrock/Azure/Google se registran y seleccionan desde config.
+- [x] `cache:auto` inyecta cache_control a nivel top del request Anthropic (automatic caching).
+- [x] Anthropic extended thinking recibe budget_tokens y se parsea.
+- [x] El system-prompt se renderiza con variables por modelo/agente.
+- [x] Bedrock/Azure/Google se registran y seleccionan desde config.
 
 **FASE 7**
 - [ ] Los plugins se cargan y sus hooks/transforms se invocan.
 - [ ] Los comandos slash personalizados expanden `{env:VAR}`/`{file:path}`.
 - [ ] Los plugins registran tools/providers en runtime.
 
-### Cierre de la release v0.3.0
+### Cierre de la release v0.6.0
 
-- [ ] Todas las fases 1-7 (incl. 5.5) completadas y verificadas.
+- [x] Fases 1-6 (incl. 5.5) completadas y verificadas.
+- [ ] FASE 7 (extensibilidad) pendiente.
 - [ ] `cargo doc --no-deps` genera sin errores.
 - [ ] Documentación de nuevas config (keymap, compaction, plugins, providers) actualizada.
 - [ ] Rama `develop` con commits atómicos por tarea, cada uno pasando fmt/clippy/test.
