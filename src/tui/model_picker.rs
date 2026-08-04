@@ -137,6 +137,11 @@ impl ModelPicker {
         self.models.get(self.selected).cloned()
     }
 
+    /// The full list of available models (independent of the active mode).
+    pub fn all_models(&self) -> &[String] {
+        &self.all_models
+    }
+
     /// Render the picker as a centered popup.
     pub fn render(&self, f: &mut Frame, area: Rect) {
         if !self.visible {

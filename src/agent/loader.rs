@@ -136,7 +136,7 @@ pub fn load_agents_from_dir(dir: &Path, default_max_steps: u32) -> Vec<AgentConf
 }
 
 /// Load all agents from the global and project agent directories, merging
-/// them by name (project overrides global) and validating that exactly one
+/// them by name (project overrides global) and validating that at least one
 /// agent declares `role: root`.
 ///
 /// `default_max_steps` is the fallback for agents that don't declare
@@ -193,7 +193,9 @@ fn project_agents_dir(explicit_root: Option<&Path>) -> PathBuf {
 }
 
 /// Merge global and project agents by name (project overrides global) and
-/// validate that exactly one agent declares `role: root`.
+/// validate that at least one agent declares `role: root`. Multiple root
+/// agents are allowed — each is a user-invocable coordinator with its own
+/// subagent team.
 fn merge_agents(global: Vec<AgentConfig>, project: Vec<AgentConfig>) -> Result<Vec<AgentConfig>> {
     let mut merged: Vec<AgentConfig> = global;
     for agent in project {
@@ -207,13 +209,8 @@ fn merge_agents(global: Vec<AgentConfig>, project: Vec<AgentConfig>) -> Result<V
     let root_count = merged.iter().filter(|a| a.role == AgentRole::Root).count();
     if root_count == 0 {
         return Err(Error::Agent(
-            "No root agent found. Exactly one agent must declare `role: root`.".into(),
+            "No root agent found. At least one agent must declare `role: root`.".into(),
         ));
-    }
-    if root_count > 1 {
-        return Err(Error::Agent(format!(
-            "Multiple root agents found ({root_count}). Exactly one agent must declare `role: root`."
-        )));
     }
 
     Ok(merged)
@@ -418,7 +415,7 @@ role: root
     }
 
     #[test]
-    fn test_merge_agents_requires_exactly_one_root() {
+    fn test_merge_agents_requires_at_least_one_root() {
         // No root
         let no_root = vec![AgentConfig {
             name: "reviewer".into(),
@@ -435,7 +432,7 @@ role: root
         }];
         assert!(merge_agents(no_root, vec![]).is_err());
 
-        // Two roots
+        // Two roots are allowed — each is a user-invocable coordinator.
         let two_roots = vec![
             AgentConfig {
                 name: "a".into(),
@@ -464,7 +461,7 @@ role: root
                 subagent_depth: 3,
             },
         ];
-        assert!(merge_agents(two_roots, vec![]).is_err());
+        assert!(merge_agents(two_roots, vec![]).is_ok());
 
         // Exactly one root
         let one_root = vec![AgentConfig {

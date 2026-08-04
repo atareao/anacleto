@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -221,6 +222,9 @@ pub struct App {
     pub show_subagents: bool,
     /// Name of the currently active agent (for display).
     pub active_agent: String,
+    /// Configured subagent names per root agent (from config frontmatter),
+    /// used to show subagents in `/subagents` even before they are spawned.
+    configured_subagents: HashMap<String, Vec<String>>,
 
     // ── Human-in-the-loop approval ────────────────────────────────────
     /// Pending approval request (None if no pending request).
@@ -263,6 +267,18 @@ pub struct App {
     palette_matches: Vec<usize>,
     /// Index of the currently highlighted palette entry.
     palette_index: usize,
+    /// Whether the agent-selection combo is open (for `/agent`).
+    show_agent_palette: bool,
+    /// Root agent names matching the current `/agent` query.
+    agent_matches: Vec<String>,
+    /// Index of the currently highlighted agent entry.
+    agent_index: usize,
+    /// Whether the model-selection combo is open (for `/models`).
+    show_model_palette: bool,
+    /// Model names matching the current `/models` query.
+    model_matches: Vec<String>,
+    /// Index of the currently highlighted model entry.
+    model_index: usize,
     /// Vertical scroll offset for the chat panel (0 = bottom, auto-scroll).
     pub chat_scroll: u16,
     /// Frame counter for animating spinners in the UI.
@@ -344,6 +360,15 @@ impl App {
         let mut model_picker = ModelPicker::default();
         model_picker.set_favorites(config.model_picker.favorites.clone());
 
+        // Map each root agent to its configured subagent names (from frontmatter),
+        // so `/subagents` can show them even before they are spawned at runtime.
+        let configured_subagents = config
+            .agents
+            .iter()
+            .filter(|a| a.role == AgentRole::Root)
+            .map(|a| (a.name.clone(), a.subagents.clone()))
+            .collect::<HashMap<_, _>>();
+
         Self {
             cmd_tx,
             event_rx,
@@ -360,6 +385,7 @@ impl App {
             show_agents: false,
             show_subagents: false,
             active_agent: String::new(),
+            configured_subagents,
             pending_approval: None,
             pending_question: None,
             total_tokens: 0,
@@ -378,6 +404,12 @@ impl App {
             show_command_palette: false,
             palette_matches: Vec::new(),
             palette_index: 0,
+            show_agent_palette: false,
+            agent_matches: Vec::new(),
+            agent_index: 0,
+            show_model_palette: false,
+            model_matches: Vec::new(),
+            model_index: 0,
             chat_scroll: 0,
             frame_count: 0,
             theme: Theme::Default,
@@ -1179,7 +1211,17 @@ impl App {
                 self.chat_scroll = self.chat_scroll.saturating_sub(10);
             }
             KeyCode::Up => {
-                if self.show_command_palette && !self.palette_matches.is_empty() {
+                if self.show_model_palette && !self.model_matches.is_empty() {
+                    self.model_index = self
+                        .model_index
+                        .saturating_sub(1)
+                        .min(self.model_matches.len() - 1);
+                } else if self.show_agent_palette && !self.agent_matches.is_empty() {
+                    self.agent_index = self
+                        .agent_index
+                        .saturating_sub(1)
+                        .min(self.agent_matches.len() - 1);
+                } else if self.show_command_palette && !self.palette_matches.is_empty() {
                     self.palette_index = self
                         .palette_index
                         .saturating_sub(1)
@@ -1189,7 +1231,11 @@ impl App {
                 }
             }
             KeyCode::Down => {
-                if self.show_command_palette && !self.palette_matches.is_empty() {
+                if self.show_model_palette && !self.model_matches.is_empty() {
+                    self.model_index = (self.model_index + 1) % self.model_matches.len();
+                } else if self.show_agent_palette && !self.agent_matches.is_empty() {
+                    self.agent_index = (self.agent_index + 1) % self.agent_matches.len();
+                } else if self.show_command_palette && !self.palette_matches.is_empty() {
                     self.palette_index = (self.palette_index + 1) % self.palette_matches.len();
                 } else {
                     self.chat_scroll = self.chat_scroll.saturating_sub(1);
@@ -1262,6 +1308,22 @@ impl App {
                 if modifiers != KeyModifiers::NONE {
                     // Any modifier + Enter = insert newline (works across terminals)
                     self.input.push('\n');
+                } else if self.show_model_palette && !self.model_matches.is_empty() {
+                    // Execute `/models <selected>` from the model combo.
+                    let name = self.model_matches[self.model_index].clone();
+                    self.show_model_palette = false;
+                    self.model_matches.clear();
+                    self.model_index = 0;
+                    self.input.clear();
+                    self.handle_command(format!("/models {}", name));
+                } else if self.show_agent_palette && !self.agent_matches.is_empty() {
+                    // Execute `/agent <selected>` from the agent combo.
+                    let name = self.agent_matches[self.agent_index].clone();
+                    self.show_agent_palette = false;
+                    self.agent_matches.clear();
+                    self.agent_index = 0;
+                    self.input.clear();
+                    self.handle_command(format!("/agent {}", name));
                 } else if self.show_command_palette && !self.palette_matches.is_empty() {
                     // Execute the highlighted command from the palette.
                     let idx = self.palette_matches[self.palette_index];
@@ -1283,7 +1345,15 @@ impl App {
                 self.tab_matches.clear();
                 self.tab_index = 0;
                 // Close the command palette first, then other overlays
-                if self.show_command_palette {
+                if self.show_model_palette {
+                    self.show_model_palette = false;
+                    self.model_matches.clear();
+                    self.model_index = 0;
+                } else if self.show_agent_palette {
+                    self.show_agent_palette = false;
+                    self.agent_matches.clear();
+                    self.agent_index = 0;
+                } else if self.show_command_palette {
                     self.show_command_palette = false;
                     self.palette_matches.clear();
                     self.palette_index = 0;
@@ -1309,8 +1379,37 @@ impl App {
             self.show_command_palette = false;
             self.palette_matches.clear();
             self.palette_index = 0;
+            self.update_agent_palette();
+            self.update_model_palette();
             return;
         }
+
+        // `/agent` uses its own agent-selection combo instead of the command list.
+        if self.input.starts_with("/agent") {
+            self.show_command_palette = false;
+            self.palette_matches.clear();
+            self.palette_index = 0;
+            self.update_agent_palette();
+            self.update_model_palette();
+            return;
+        }
+
+        // `/models` uses its own model-selection combo instead of the command list.
+        if self.input.starts_with("/models") {
+            self.show_command_palette = false;
+            self.palette_matches.clear();
+            self.palette_index = 0;
+            self.update_agent_palette();
+            self.update_model_palette();
+            return;
+        }
+
+        self.show_agent_palette = false;
+        self.agent_matches.clear();
+        self.agent_index = 0;
+        self.show_model_palette = false;
+        self.model_matches.clear();
+        self.model_index = 0;
 
         let query = self.input.trim_start_matches('/');
         let mut scored: Vec<(u32, usize)> = COMMANDS
@@ -1325,6 +1424,63 @@ impl App {
         self.show_command_palette = !self.palette_matches.is_empty();
         if self.palette_index >= self.palette_matches.len() {
             self.palette_index = 0;
+        }
+    }
+
+    /// Fuzzy agent-selection combo for `/agent`. Only root agents are
+    /// switchable, so only those are offered.
+    fn update_agent_palette(&mut self) {
+        if !self.input.starts_with("/agent") {
+            self.show_agent_palette = false;
+            self.agent_matches.clear();
+            self.agent_index = 0;
+            return;
+        }
+
+        // Query is the part after `/agent` (e.g. `/agent writ` → "writ").
+        let query = self.input.trim_start_matches("/agent").trim_start();
+
+        let mut scored: Vec<(u32, String)> = self
+            .agents
+            .iter()
+            .filter(|a| a.role == AgentRole::Root)
+            .map(|a| a.name.clone())
+            .filter_map(|name| fuzzy_score(query, &name).map(|s| (s, name)))
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+        self.agent_matches = scored.into_iter().map(|(_, n)| n).collect();
+        self.show_agent_palette = !self.agent_matches.is_empty();
+        if self.agent_index >= self.agent_matches.len() {
+            self.agent_index = 0;
+        }
+    }
+
+    /// Fuzzy model-selection combo for `/models`.
+    fn update_model_palette(&mut self) {
+        if !self.input.starts_with("/models") {
+            self.show_model_palette = false;
+            self.model_matches.clear();
+            self.model_index = 0;
+            return;
+        }
+
+        // Query is the part after `/models` (e.g. `/models gpt` → "gpt").
+        let query = self.input.trim_start_matches("/models").trim_start();
+
+        let mut scored: Vec<(u32, String)> = self
+            .model_picker
+            .all_models()
+            .iter()
+            .cloned()
+            .filter_map(|name| fuzzy_score(query, &name).map(|s| (s, name)))
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+        self.model_matches = scored.into_iter().map(|(_, n)| n).collect();
+        self.show_model_palette = !self.model_matches.is_empty();
+        if self.model_index >= self.model_matches.len() {
+            self.model_index = 0;
         }
     }
 
@@ -2006,6 +2162,14 @@ fn render(f: &mut Frame, app: &mut App) {
     if app.show_command_palette && !app.palette_matches.is_empty() {
         render_command_palette(f, chunks[2], app);
     }
+    // Render the agent-selection combo above the input if open.
+    if app.show_agent_palette && !app.agent_matches.is_empty() {
+        render_agent_palette(f, chunks[2], app);
+    }
+    // Render the model-selection combo above the input if open.
+    if app.show_model_palette && !app.model_matches.is_empty() {
+        render_model_palette(f, chunks[2], app);
+    }
 
     // Render approval dialog on top if pending
     if app.pending_approval.is_some() {
@@ -2476,6 +2640,7 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
         display_agents
             .iter()
             .map(|a| {
+                let active = a.name == app.active_agent;
                 let (dot, dot_color) = match &a.status {
                     AgentStatus::Working => ("🟢", Color::Green),
                     AgentStatus::Idle => ("⏸", Color::Yellow),
@@ -2496,6 +2661,13 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(
+                        if active { "▶ " } else { "  " },
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
                         format!(" {} ", dot),
                         Style::default().fg(dot_color).add_modifier(Modifier::BOLD),
                     ),
@@ -2503,7 +2675,8 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                         &a.name,
                         Style::default()
                             .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
+                            .add_modifier(Modifier::BOLD)
+                            .bg(if active { Color::Magenta } else { Color::Reset }),
                     ),
                     if a.status == AgentStatus::Working {
                         Span::styled(
@@ -3073,7 +3246,7 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ))));
         for agent in &roots {
-            items.push(build_agent_list_item(agent));
+            items.push(build_agent_list_item(agent, agent.name == app.active_agent));
         }
     }
 
@@ -3086,7 +3259,7 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ))));
         for agent in &subagents {
-            items.push(build_agent_list_item(agent));
+            items.push(build_agent_list_item(agent, agent.name == app.active_agent));
         }
     }
 
@@ -3109,7 +3282,7 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(agent_list, area);
 }
 
-fn build_agent_list_item(agent: &AgentInfo) -> ListItem<'static> {
+fn build_agent_list_item(agent: &AgentInfo, active: bool) -> ListItem<'static> {
     // Status badge
     let (status_color, badge) = match &agent.status {
         AgentStatus::Idle => (Color::Green, " IDLE "),
@@ -3125,12 +3298,34 @@ fn build_agent_list_item(agent: &AgentInfo) -> ListItem<'static> {
             .fg(status_color)
             .add_modifier(Modifier::REVERSED),
     );
+
+    // Active agent marker: a ▶ prefix with a highlighted background on the name.
+    let marker_span = if active {
+        Span::styled(
+            "▶ ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw("  ")
+    };
     let name_span = Span::styled(
         agent.name.clone(),
-        Style::default().add_modifier(Modifier::BOLD),
+        Style::default().add_modifier(Modifier::BOLD).bg(if active {
+            Color::Magenta
+        } else {
+            Color::Reset
+        }),
     );
 
-    let mut spans = vec![badge_span, Span::raw(" ".to_string()), name_span];
+    let mut spans = vec![
+        marker_span,
+        badge_span,
+        Span::raw(" ".to_string()),
+        name_span,
+    ];
 
     // Model info
     if !agent.model.is_empty() {
@@ -3232,14 +3427,30 @@ fn render_subagent_tree(f: &mut Frame, area: Rect, app: &App) {
                 .filter(|a| a.parent_id == Some(root.id.clone()))
                 .collect();
 
-            if children.is_empty() {
+            // Configured subagents for this root that haven't been spawned yet.
+            let spawned_names: std::collections::HashSet<&str> =
+                children.iter().map(|c| c.name.as_str()).collect();
+            let pending: Vec<&String> = app
+                .configured_subagents
+                .get(&root.name)
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter(|n| !spawned_names.contains(n.as_str()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let total = children.len() + pending.len();
+
+            if total == 0 {
                 items.push(ListItem::new(Line::from(Span::styled(
                     "  │  (no subagents)",
                     Style::default().fg(Color::DarkGray),
                 ))));
             } else {
                 for (i, child) in children.iter().enumerate() {
-                    let is_last = i == children.len() - 1;
+                    let is_last = i == total - 1;
                     let (child_status_color, child_badge) = match &child.status {
                         AgentStatus::Idle => (Color::Green, " IDLE  "),
                         AgentStatus::Working => (Color::Yellow, " BUSY  "),
@@ -3262,6 +3473,29 @@ fn render_subagent_tree(f: &mut Frame, area: Rect, app: &App) {
                         ),
                         Span::raw(" "),
                         Span::styled(&child.name, Style::default().fg(Color::Magenta)),
+                    ];
+                    items.push(ListItem::new(Line::from(child_spans)));
+                }
+
+                // Configured but not yet spawned subagents.
+                for (j, name) in pending.iter().enumerate() {
+                    let idx = children.len() + j;
+                    let is_last = idx == total - 1;
+                    let prefix = if is_last { "└── " } else { "├── " };
+                    let child_spans = vec![
+                        Span::styled(
+                            format!("│ {}", prefix),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(
+                            " PEND ",
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::REVERSED),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(name.as_str(), Style::default().fg(Color::DarkGray)),
+                        Span::styled(" (not created)", Style::default().fg(Color::DarkGray)),
                     ];
                     items.push(ListItem::new(Line::from(child_spans)));
                 }
@@ -3329,6 +3563,97 @@ fn render_command_palette(f: &mut Frame, input_area: Rect, app: &App) {
         list,
         area,
         &mut ratatui::widgets::ListState::default().with_selected(Some(app.palette_index)),
+    );
+}
+
+/// Render the agent-selection combo as a dropdown above the input area.
+fn render_agent_palette(f: &mut Frame, input_area: Rect, app: &App) {
+    let max_items = 8usize;
+    let count = app.agent_matches.len().min(max_items);
+    let width = input_area.width.min(60);
+    let height = (count as u16) + 2; // +2 for borders
+    let x = input_area.x;
+    // Place the dropdown directly above the input area.
+    let y = input_area.y.saturating_sub(height);
+    let area = Rect::new(x, y, width, height);
+
+    let items: Vec<ListItem> = app
+        .agent_matches
+        .iter()
+        .take(max_items)
+        .map(|name| {
+            let line = Line::from(vec![
+                Span::styled(
+                    format!(" {:<16}", name),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("root", Style::default().fg(Color::DarkGray)),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Magenta))
+                .title(" Agents "),
+        )
+        .highlight_style(Style::default().bg(Color::Rgb(60, 40, 60)))
+        .highlight_symbol("▸ ");
+
+    f.render_stateful_widget(
+        list,
+        area,
+        &mut ratatui::widgets::ListState::default().with_selected(Some(app.agent_index)),
+    );
+}
+
+/// Render the model-selection combo as a dropdown above the input area.
+fn render_model_palette(f: &mut Frame, input_area: Rect, app: &App) {
+    let max_items = 8usize;
+    let count = app.model_matches.len().min(max_items);
+    let width = input_area.width.min(60);
+    let height = (count as u16) + 2; // +2 for borders
+    let x = input_area.x;
+    // Place the dropdown directly above the input area.
+    let y = input_area.y.saturating_sub(height);
+    let area = Rect::new(x, y, width, height);
+
+    let items: Vec<ListItem> = app
+        .model_matches
+        .iter()
+        .take(max_items)
+        .map(|name| {
+            let line = Line::from(vec![Span::styled(
+                format!(" {:<24}", name),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" Models "),
+        )
+        .highlight_style(Style::default().bg(Color::Rgb(40, 40, 60)))
+        .highlight_symbol("▸ ");
+
+    f.render_stateful_widget(
+        list,
+        area,
+        &mut ratatui::widgets::ListState::default().with_selected(Some(app.model_index)),
     );
 }
 
