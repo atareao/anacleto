@@ -1663,9 +1663,30 @@ impl Engine {
 
     /// Handle `/build`: read the plan markdown file from the workspace and
     /// inject it as an execution message to the active agent.
+    ///
+    /// If `PLAN.md` does not exist, a descriptive [`EngineEvent::Error`] is
+    /// emitted (instead of aborting the command) so the user gets clear
+    /// feedback and the engine loop continues.
     async fn handle_build(&mut self) -> Result<()> {
         let path = self.workspace.join("PLAN.md");
-        let content = tokio::fs::read_to_string(&path).await.map_err(Error::Io)?;
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.event_tx
+                    .send(EngineEvent::Error {
+                        agent_id: None,
+                        message: format!(
+                            "No se encontró PLAN.md en el workspace ({}). \
+                             Crea el plan antes de usar /build.",
+                            path.display()
+                        ),
+                    })
+                    .await
+                    .ok();
+                return Ok(());
+            }
+            Err(e) => return Err(Error::Io(e)),
+        };
         let prompt = format!(
             "Execute the following plan. Implement it fully, then report what was done.\n\n{}",
             content
@@ -1760,12 +1781,16 @@ impl Engine {
                 "Snapshot '{snapshot_id}' does not belong to the active session"
             )));
         }
+        // Parse the snapshot's messages BEFORE touching the session, so that a
+        // deserialization failure leaves the current messages intact instead of
+        // leaving the session empty/corrupt. The deletion only happens after
+        // the restore payload has been fully loaded and validated in memory.
+        let restored: Vec<StoredMessage> = serde_json::from_str(&snapshot.content)?;
         // Remove all current messages, then restore the snapshot's messages.
         let current = db.get_session_messages(session_id).await?;
         if !current.is_empty() {
             db.delete_messages(session_id, current.len()).await?;
         }
-        let restored: Vec<StoredMessage> = serde_json::from_str(&snapshot.content)?;
         db.restore_messages(session_id, &restored).await?;
         self.reload_history_to_root(session_id).await?;
         self.event_tx

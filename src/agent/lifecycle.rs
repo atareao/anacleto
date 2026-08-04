@@ -280,6 +280,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                         Some(&*provider),
                         &model,
                         false,
+                        Some(&tool_store),
                     )
                     .await;
 
@@ -314,6 +315,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                             Some(&*provider),
                             &model,
                             false,
+                            Some(&tool_store),
                         )
                         .await;
 
@@ -783,6 +785,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                         Some(&*provider),
                         &model,
                         true,
+                        Some(&tool_store),
                     )
                     .await;
                     let _ = event_tx
@@ -1798,6 +1801,13 @@ impl TaskToolArgs {
 }
 
 /// Tool definition for the dynamic `task` tool.
+///
+/// SEMANTICS of the `tools` argument: it is an allow-list of *skill* names
+/// granted to the spawned subagent. It does NOT restrict the subagent's
+/// permissions — the subagent's effective permissions are always
+/// `parent ∩ child` (the parent's permissions intersected with the child's
+/// own). To restrict what a subagent may do, configure the parent's
+/// permissions (deny rules propagate down to children).
 fn task_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "task".to_string(),
@@ -1805,7 +1815,10 @@ fn task_tool_definition() -> ToolDefinition {
                        Provide a task_id, a description of the work, and a mode \
                        ('foreground' to wait for the result, 'background' to run \
                        asynchronously and return immediately). Optionally specify \
-                       a model and a list of tool/skill names to grant."
+                       a model and a list of tool/skill names to grant. \
+                       NOTE: the 'tools' list only filters which skills the \
+                       subagent may use; it does not restrict permissions (the \
+                       subagent inherits the parent's permissions)."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -1907,9 +1920,19 @@ async fn execute_task_tool(
     }
 
     // Derive the child's permissions: parent ∩ child (deny propagates down).
+    //
+    // NOTE: The `tools` argument does NOT restrict the child's permissions.
+    // The child's effective permissions are always `parent ∩ child` — the
+    // parent's permissions intersected with the child's own (here the default,
+    // i.e. allow-by-default). The `tools` list only filters which *skills* the
+    // child is granted (see `skills_override` below); it is a capability
+    // allow-list for skills, not a permission restriction. Reimplementing
+    // per-tool permission filtering is intentionally out of scope here.
     let child_permissions = parent_permissions.intersection(&Permissions::default());
 
     // Filter the parent's skills by the requested tool names (or grant all).
+    // This is the ONLY effect of the `tools` list: it narrows the set of
+    // skills the child can invoke. It does not alter the child's permissions.
     let skills_override: Vec<Skill> = if args.tools.is_empty() {
         parent_skills.to_vec()
     } else {
@@ -2004,6 +2027,13 @@ async fn execute_task_tool(
                     .await
                     .register(task_id_for_register.clone(), handle);
             }
+            // NOTE: When `job_registry` is `None` (e.g. headless tests or a
+            // caller that did not provide a registry), the `JoinHandle` is
+            // dropped here and the background task is detached: it keeps
+            // running and emits `SubagentFinished`, but it is not tracked by
+            // any `JobRegistry` and therefore never appears in `/jobs`. In the
+            // engine this is always `Some`, so background jobs are tracked in
+            // practice; the `None` case is only a documented fallback.
             Ok(format!(
                 "Background task '{task_id_for_register}' launched. It will run asynchronously."
             ))
@@ -2170,6 +2200,7 @@ async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Result<String>
                 Some(&*provider),
                 &model,
                 false,
+                None, // subagents have no access to the parent's tool store
             )
             .await;
 
@@ -2365,7 +2396,12 @@ Resumen estructurado de la conversación. Rellena SOLO estas secciones, en este 
 /// The prompt instructs the LLM to produce a structured, anchored summary
 /// following [`SUMMARY_TEMPLATE`], preserving key facts, decisions, code
 /// patterns and context.
-fn build_summary_prompt(messages: &[LlmMessage]) -> String {
+///
+/// When `tool_store` is provided, Tool messages whose `tool_call_id` is present
+/// in the store use the FULL tool output (retained by the [`ToolOutputStore`])
+/// instead of the truncated version the LLM originally received, so the summary
+/// is built from complete information rather than the shortened context.
+fn build_summary_prompt(messages: &[LlmMessage], tool_store: Option<&ToolOutputStore>) -> String {
     let summary_text: String = messages
         .iter()
         .map(|m| {
@@ -2375,7 +2411,18 @@ fn build_summary_prompt(messages: &[LlmMessage]) -> String {
                 MessageRole::Tool => "Tool",
                 MessageRole::System => "System",
             };
-            format!("{}: {}", role_label, m.content)
+            // For Tool messages, prefer the full output retained in the store
+            // over the truncated version the LLM originally received.
+            let content = if m.role == MessageRole::Tool {
+                if let (Some(id), Some(store)) = (&m.tool_call_id, tool_store) {
+                    store.get(id).map(|s| s.as_str()).unwrap_or(&m.content)
+                } else {
+                    &m.content
+                }
+            } else {
+                &m.content
+            };
+            format!("{}: {}", role_label, content)
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -2442,6 +2489,9 @@ fn trim_conversation(messages: &mut Vec<LlmMessage>, max_tokens: usize) {
 /// message. Falls back to `trim_conversation` if the LLM call fails or if
 /// there aren't enough messages to make summarization worthwhile.
 ///
+/// When `tool_store` is provided, Tool messages being summarized use the full
+/// output retained in the store (see [`build_summary_prompt`]).
+///
 /// When `force` is `true`, the summarization is attempted even if the
 /// conversation is under the token budget (used by the `/compact` command).
 /// The rest of the logic (needs a provider, needs at least 4 non-system
@@ -2452,6 +2502,7 @@ async fn summarize_conversation(
     provider: Option<&dyn LlmProvider>,
     model: &str,
     force: bool,
+    tool_store: Option<&ToolOutputStore>,
 ) {
     // Quick check: if already under the compaction threshold, do nothing
     // (unless forced). The threshold is `max_tokens * COMPACTION_THRESHOLD_RATIO`.
@@ -2496,7 +2547,7 @@ async fn summarize_conversation(
     let recent = non_system_msgs;
 
     // Build summarization prompt using the structured, anchored template.
-    let summary_prompt = build_summary_prompt(&to_summarize);
+    let summary_prompt = build_summary_prompt(&to_summarize, tool_store);
 
     // Call LLM for summarization
     let request = LlmRequest {
@@ -2555,7 +2606,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
         }];
-        let prompt = build_summary_prompt(&messages);
+        let prompt = build_summary_prompt(&messages, None);
         for section in [
             "## Objetivo",
             "## Decisiones tomadas",
@@ -2571,6 +2622,45 @@ mod tests {
         }
         // The conversation content should also be included.
         assert!(prompt.contains("Implement auth"));
+    }
+
+    #[test]
+    fn test_build_summary_prompt_uses_full_tool_output_from_store() {
+        // A Tool message whose content was truncated for the LLM, but whose
+        // full output is retained in the store.
+        let messages = vec![LlmMessage {
+            role: MessageRole::Tool,
+            content: "truncated output...".into(),
+            tool_calls: None,
+            tool_call_id: Some("call_1".into()),
+        }];
+
+        // Without a store, the truncated content is used.
+        let prompt_no_store = build_summary_prompt(&messages, None);
+        assert!(prompt_no_store.contains("truncated output..."));
+        assert!(!prompt_no_store.contains("FULL OUTPUT"));
+
+        // With a store containing the full output, the full output is used.
+        let mut store = ToolOutputStore::new();
+        store.insert("call_1", "FULL OUTPUT of the tool call");
+        let prompt_with_store = build_summary_prompt(&messages, Some(&store));
+        assert!(prompt_with_store.contains("FULL OUTPUT of the tool call"));
+        assert!(!prompt_with_store.contains("truncated output..."));
+    }
+
+    #[test]
+    fn test_build_summary_prompt_falls_back_to_truncated_when_id_missing() {
+        // A Tool message whose id is NOT in the store falls back to its own
+        // (truncated) content.
+        let messages = vec![LlmMessage {
+            role: MessageRole::Tool,
+            content: "truncated output...".into(),
+            tool_calls: None,
+            tool_call_id: Some("call_missing".into()),
+        }];
+        let store = ToolOutputStore::new();
+        let prompt = build_summary_prompt(&messages, Some(&store));
+        assert!(prompt.contains("truncated output..."));
     }
 
     #[test]
@@ -2787,7 +2877,7 @@ mod tests {
             },
         ];
         let original_len = msgs.len();
-        summarize_conversation(&mut msgs, 9999, None, "test", false).await;
+        summarize_conversation(&mut msgs, 9999, None, "test", false, None).await;
         assert_eq!(msgs.len(), original_len);
         assert_eq!(msgs[0].content, "hello");
     }
@@ -2832,7 +2922,7 @@ mod tests {
         let original_len = msgs.len();
         let provider = MockProvider;
         // Generous budget: without `force` nothing would change.
-        summarize_conversation(&mut msgs, 9999, Some(&provider), "test", true).await;
+        summarize_conversation(&mut msgs, 9999, Some(&provider), "test", true, None).await;
         // System preserved, oldest non-system replaced by a summary, last exchange kept.
         assert_eq!(msgs[0].role, MessageRole::System);
         assert!(msgs.len() < original_len);
@@ -2877,7 +2967,7 @@ mod tests {
             },
         ];
         let original_len = msgs.len();
-        summarize_conversation(&mut msgs, 9999, None, "test", false).await;
+        summarize_conversation(&mut msgs, 9999, None, "test", false, None).await;
         assert_eq!(msgs.len(), original_len);
     }
 
@@ -2916,7 +3006,7 @@ mod tests {
             },
         ];
         // Very tight budget: only system + last 2 messages fit
-        summarize_conversation(&mut msgs, 30, None, "test", false).await;
+        summarize_conversation(&mut msgs, 30, None, "test", false, None).await;
         // System should be preserved, oldest non-system dropped
         assert_eq!(msgs[0].role, MessageRole::System);
         assert!(msgs.len() >= 2); // at least system + last exchange
@@ -2945,7 +3035,7 @@ mod tests {
             },
         ];
         // Only 3 non-system messages (< 4), should fall back to trim
-        summarize_conversation(&mut msgs, 5, None, "test", false).await;
+        summarize_conversation(&mut msgs, 5, None, "test", false, None).await;
         // Should still have at least 2 messages (last exchange)
         assert!(msgs.len() >= 2);
     }
