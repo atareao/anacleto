@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::config::types::KeymapConfig;
+
 /// A user-facing action that can be triggered by one or more key bindings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
@@ -76,6 +78,28 @@ impl Keymap {
             .get(&action)
             .map(|keys| keys.contains(&key))
             .unwrap_or(false)
+    }
+
+    /// Apply user-provided keybinding overrides from configuration.
+    ///
+    /// Each entry maps an action name (e.g. `ToggleSidebar`) to a list of key
+    /// strings (e.g. `ctrl+b`, `f2`, `enter`). Invalid action names or key
+    /// strings are silently ignored; valid bindings replace the defaults.
+    pub fn apply_overrides(&mut self, overrides: &KeymapConfig) {
+        for (action_name, keys) in &overrides.bindings {
+            let Some(action) = parse_action(action_name) else {
+                continue;
+            };
+            let mut parsed = Vec::new();
+            for k in keys {
+                if let Some(ke) = parse_key(k) {
+                    parsed.push(ke);
+                }
+            }
+            if !parsed.is_empty() {
+                self.bind(action, parsed);
+            }
+        }
     }
 }
 
@@ -199,6 +223,115 @@ fn format_key(key: &KeyEvent) -> String {
     s
 }
 
+/// Parse an action name (e.g. `ToggleSidebar`, `toggle_sidebar`) into an
+/// [`Action`]. Returns `None` for unknown names.
+fn parse_action(name: &str) -> Option<Action> {
+    let normalized = name.replace(['-', ' '], "_");
+    let lower = to_snake_case(&normalized);
+    for action in [
+        Action::Send,
+        Action::CancelInput,
+        Action::Quit,
+        Action::ToggleSidebar,
+        Action::ToggleDiffViewer,
+        Action::OpenWhichKey,
+        Action::OpenModelPicker,
+        Action::OpenEditor,
+        Action::ScrollUp,
+        Action::ScrollDown,
+        Action::PageUp,
+        Action::PageDown,
+        Action::Approve,
+        Action::Deny,
+        Action::FocusInput,
+        Action::FocusSidebar,
+        Action::FocusChat,
+        Action::ClearInput,
+    ] {
+        if to_snake_case(&format!("{action:?}")) == lower {
+            return Some(action);
+        }
+    }
+    None
+}
+
+/// Convert a CamelCase string to snake_case (used for action names).
+fn to_snake_case(s: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Parse a key string (e.g. `ctrl+b`, `alt+e`, `f2`, `enter`, `escape`,
+/// `ctrl+shift+p`) into a [`KeyEvent`]. Returns `None` for invalid strings.
+fn parse_key(s: &str) -> Option<KeyEvent> {
+    let mut ctrl = false;
+    let mut alt = false;
+    let mut shift = false;
+    let mut key = s;
+    for part in s.split('+') {
+        match part.trim().to_lowercase().as_str() {
+            "ctrl" => ctrl = true,
+            "alt" => alt = true,
+            "shift" => shift = true,
+            _ => key = part,
+        }
+    }
+    let mut modifiers = KeyModifiers::NONE;
+    if ctrl {
+        modifiers.insert(KeyModifiers::CONTROL);
+    }
+    if alt {
+        modifiers.insert(KeyModifiers::ALT);
+    }
+    if shift {
+        modifiers.insert(KeyModifiers::SHIFT);
+    }
+    let code = match key.trim().to_lowercase().as_str() {
+        "enter" => KeyCode::Enter,
+        "escape" | "esc" => KeyCode::Esc,
+        "pageup" | "pgup" => KeyCode::PageUp,
+        "pagedown" | "pgdn" => KeyCode::PageDown,
+        "backspace" => KeyCode::Backspace,
+        "tab" => KeyCode::Tab,
+        "space" => KeyCode::Char(' '),
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "f1" => KeyCode::F(1),
+        "f2" => KeyCode::F(2),
+        "f3" => KeyCode::F(3),
+        "f4" => KeyCode::F(4),
+        "f5" => KeyCode::F(5),
+        "f6" => KeyCode::F(6),
+        "f7" => KeyCode::F(7),
+        "f8" => KeyCode::F(8),
+        "f9" => KeyCode::F(9),
+        "f10" => KeyCode::F(10),
+        "f11" => KeyCode::F(11),
+        "f12" => KeyCode::F(12),
+        other => {
+            let mut chars = other.chars();
+            let c = chars.next()?;
+            if chars.next().is_some() || c.len_utf8() != 1 {
+                return None;
+            }
+            KeyCode::Char(c)
+        }
+    };
+    Some(KeyEvent::new(code, modifiers))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,5 +378,51 @@ mod tests {
         assert!(table.contains("Enviar mensaje"));
         assert!(table.contains("Salir"));
         assert!(table.contains("Ctrl+"));
+    }
+
+    #[test]
+    fn parse_action_accepts_camel_and_snake() {
+        assert_eq!(parse_action("ToggleSidebar"), Some(Action::ToggleSidebar));
+        assert_eq!(parse_action("toggle_sidebar"), Some(Action::ToggleSidebar));
+        assert_eq!(
+            parse_action("OpenModelPicker"),
+            Some(Action::OpenModelPicker)
+        );
+        assert_eq!(parse_action("bogus"), None);
+    }
+
+    #[test]
+    fn parse_key_handles_modifier_combos() {
+        let ctrl_b = parse_key("ctrl+b").unwrap();
+        assert_eq!(ctrl_b, key_event('b', true));
+        let f2 = parse_key("F2").unwrap();
+        assert_eq!(f2, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        let esc = parse_key("escape").unwrap();
+        assert_eq!(esc, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let ctrl_shift_p = parse_key("ctrl+shift+p").unwrap();
+        assert!(ctrl_shift_p.modifiers.contains(KeyModifiers::CONTROL));
+        assert!(ctrl_shift_p.modifiers.contains(KeyModifiers::SHIFT));
+        assert_eq!(parse_key(""), None);
+        assert_eq!(parse_key("abc"), None);
+    }
+
+    #[test]
+    fn apply_overrides_replaces_bindings() {
+        let mut km = Keymap::default();
+        let mut bindings = std::collections::HashMap::new();
+        bindings.insert("toggle_sidebar".to_string(), vec!["f9".to_string()]);
+        bindings.insert("bogus".to_string(), vec!["f1".to_string()]);
+        let cfg = KeymapConfig { bindings };
+        km.apply_overrides(&cfg);
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::F(9), KeyModifiers::NONE),
+            Action::ToggleSidebar
+        ));
+        assert!(!km.matches(key_event('b', true), Action::ToggleSidebar));
+        // Unbound action still has its defaults.
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Send
+        ));
     }
 }

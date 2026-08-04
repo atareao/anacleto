@@ -7,10 +7,59 @@ use ratatui::{
 };
 
 /// A popup for selecting a model for the active agent.
+///
+/// Supports several browsing modes (tabs): `All` (default list), `Recent`
+/// (models used recently, from the frecency ranking), `Providers` (grouped by
+/// provider) and `Favorites` (user-pinned models).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerMode {
+    All,
+    Recent,
+    Providers,
+    Favorites,
+}
+
+impl PickerMode {
+    /// Human-readable label for the mode tab.
+    pub fn label(self) -> &'static str {
+        match self {
+            PickerMode::All => "Todos",
+            PickerMode::Recent => "Recientes",
+            PickerMode::Providers => "Providers",
+            PickerMode::Favorites => "Favoritos",
+        }
+    }
+
+    /// The next mode (wrapping).
+    pub fn next(self) -> Self {
+        match self {
+            PickerMode::All => PickerMode::Recent,
+            PickerMode::Recent => PickerMode::Providers,
+            PickerMode::Providers => PickerMode::Favorites,
+            PickerMode::Favorites => PickerMode::All,
+        }
+    }
+
+    /// The previous mode (wrapping).
+    pub fn previous(self) -> Self {
+        match self {
+            PickerMode::All => PickerMode::Favorites,
+            PickerMode::Recent => PickerMode::All,
+            PickerMode::Providers => PickerMode::Recent,
+            PickerMode::Favorites => PickerMode::Providers,
+        }
+    }
+}
+
+/// A popup for selecting a model for the active agent.
 pub struct ModelPicker {
     pub visible: bool,
     pub models: Vec<String>,
     pub selected: usize,
+    pub mode: PickerMode,
+    pub recent: Vec<String>,
+    pub favorites: Vec<String>,
+    all_models: Vec<String>,
 }
 
 impl ModelPicker {
@@ -18,9 +67,40 @@ impl ModelPicker {
     pub fn new(models: Vec<String>) -> Self {
         Self {
             visible: false,
-            models,
+            models: models.clone(),
             selected: 0,
+            mode: PickerMode::All,
+            recent: Vec::new(),
+            favorites: Vec::new(),
+            all_models: models,
         }
+    }
+
+    /// Set the list of recently used models (from the frecency ranking).
+    pub fn set_recent(&mut self, recent: Vec<String>) {
+        self.recent = recent;
+        if self.mode == PickerMode::Recent {
+            self.rebuild();
+        }
+    }
+
+    /// Set the list of favorite models.
+    pub fn set_favorites(&mut self, favorites: Vec<String>) {
+        self.favorites = favorites;
+        if self.mode == PickerMode::Favorites {
+            self.rebuild();
+        }
+    }
+
+    /// Rebuild the displayed model list from the active mode's source.
+    fn rebuild(&mut self) {
+        self.models = match self.mode {
+            PickerMode::All => self.all_models.clone(),
+            PickerMode::Recent => self.recent.clone(),
+            PickerMode::Providers => self.all_models.clone(),
+            PickerMode::Favorites => self.favorites.clone(),
+        };
+        self.selected = 0;
     }
 
     /// Move the selection to the next model (wrapping).
@@ -40,6 +120,18 @@ impl ModelPicker {
         }
     }
 
+    /// Switch to the next browsing mode (wrapping) and reset the selection.
+    pub fn next_mode(&mut self) {
+        self.mode = self.mode.next();
+        self.rebuild();
+    }
+
+    /// Switch to the previous browsing mode (wrapping) and reset the selection.
+    pub fn previous_mode(&mut self) {
+        self.mode = self.mode.previous();
+        self.rebuild();
+    }
+
     /// The currently selected model, if any.
     pub fn selected_model(&self) -> Option<String> {
         self.models.get(self.selected).cloned()
@@ -51,8 +143,8 @@ impl ModelPicker {
             return;
         }
 
-        let width = area.width.min(50);
-        let height = (self.models.len() as u16 + 4).min(area.height.min(20));
+        let width = area.width.min(56);
+        let height = (self.models.len() as u16 + 6).min(area.height.min(22));
         let x = area.x + (area.width.saturating_sub(width)) / 2;
         let y = area.y + (area.height.saturating_sub(height)) / 2;
         let popup_area = Rect::new(x, y, width, height);
@@ -73,13 +165,35 @@ impl ModelPicker {
             })
             .collect();
 
+        let tabs = [
+            PickerMode::All,
+            PickerMode::Recent,
+            PickerMode::Providers,
+            PickerMode::Favorites,
+        ]
+        .iter()
+        .map(|m| {
+            let active = *m == self.mode;
+            let style = if active {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            Span::styled(format!(" {} ", m.label()), style)
+        })
+        .collect::<Vec<_>>();
+
+        let title = Line::from(tabs);
         let list = List::new(items)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::Magenta))
-                    .title(" Seleccionar modelo ")
+                    .title(title)
                     .style(Style::default().bg(Color::Rgb(25, 15, 30))),
             )
             .highlight_style(
@@ -97,7 +211,7 @@ impl ModelPicker {
         );
 
         // Footer hint.
-        let footer = " ↑/↓ navegar  ·  Enter: seleccionar  ·  Esc: cancelar ";
+        let footer = " ↑/↓ navegar  ·  Tab: cambiar modo  ·  Enter: seleccionar  ·  Esc: cancelar ";
         let footer_y = y + height.saturating_sub(1);
         let footer_area = Rect::new(x, footer_y, width, 1);
         f.render_widget(
@@ -173,5 +287,40 @@ mod tests {
     #[test]
     fn defaults_are_non_empty() {
         assert!(!default_models().is_empty());
+    }
+
+    #[test]
+    fn mode_cycles_forward_and_backward() {
+        let mut p = ModelPicker::new(vec!["a".into(), "b".into()]);
+        assert_eq!(p.mode, PickerMode::All);
+        p.next_mode();
+        assert_eq!(p.mode, PickerMode::Recent);
+        p.next_mode();
+        assert_eq!(p.mode, PickerMode::Providers);
+        p.next_mode();
+        assert_eq!(p.mode, PickerMode::Favorites);
+        p.next_mode();
+        assert_eq!(p.mode, PickerMode::All);
+        p.previous_mode();
+        assert_eq!(p.mode, PickerMode::Favorites);
+    }
+
+    #[test]
+    fn recent_mode_shows_recent_models() {
+        let mut p = ModelPicker::new(vec!["a".into(), "b".into()]);
+        p.set_recent(vec!["x".into(), "y".into()]);
+        p.next_mode(); // -> Recent
+        assert_eq!(p.models, vec!["x".to_string(), "y".to_string()]);
+        assert_eq!(p.selected_model().as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn favorites_mode_shows_favorites() {
+        let mut p = ModelPicker::new(vec!["a".into(), "b".into()]);
+        p.set_favorites(vec!["fav1".into()]);
+        p.next_mode(); // Recent
+        p.next_mode(); // Providers
+        p.next_mode(); // Favorites
+        assert_eq!(p.models, vec!["fav1".to_string()]);
     }
 }

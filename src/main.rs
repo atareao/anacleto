@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(64);
 
     // Initialize engine
-    let mut engine = Engine::new(config, event_tx.clone(), cmd_rx);
+    let mut engine = Engine::new(config.clone(), event_tx.clone(), cmd_rx);
     engine.initialize().await?;
 
     // Setup terminal
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let mut app = App::new(cmd_tx, event_rx, kb_supported);
+    let mut app = App::new(cmd_tx, event_rx, kb_supported, &config);
     let tui_result = run_tui(&mut terminal, &mut app).await;
 
     // Cleanup

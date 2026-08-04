@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
 
 use crate::agent::types::{AgentId, AgentRole, AgentStatus};
+use crate::config::Config;
 use crate::db::models::SessionSummary;
 use crate::engine::orchestrator::{
     EngineCommand, EngineEvent, ExportFormat, InitAnswers, McpStatus, SkillInfo, StatusInfo,
@@ -298,6 +299,8 @@ pub struct App {
     pub diff_viewer: DiffViewer,
     /// Model picker overlay state.
     pub model_picker: ModelPicker,
+    /// External editor command (from config, overrides `$EDITOR`/`$VISUAL`).
+    pub editor: Option<String>,
 }
 
 impl App {
@@ -305,11 +308,19 @@ impl App {
         cmd_tx: mpsc::Sender<EngineCommand>,
         event_rx: mpsc::Receiver<EngineEvent>,
         kb_supported: bool,
+        config: &Config,
     ) -> Self {
         let working_dir = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| String::from("(unknown)"));
         let lang = std::env::var("LANG").unwrap_or_default();
+
+        let mut keymap = Keymap::default();
+        if let Some(overrides) = &config.keymap {
+            keymap.apply_overrides(overrides);
+        }
+        let mut model_picker = ModelPicker::default();
+        model_picker.set_favorites(config.model_picker.favorites.clone());
 
         Self {
             cmd_tx,
@@ -362,12 +373,13 @@ impl App {
             mcps_index: 0,
             init_flow: None,
             todos: Vec::new(),
-            keymap: Keymap::default(),
+            keymap,
             which_key: WhichKeyPopup::new(),
             toasts: ToastQueue::default(),
             show_sidebar: true,
             diff_viewer: DiffViewer::new(),
-            model_picker: ModelPicker::default(),
+            model_picker,
+            editor: config.editor.clone(),
         }
     }
 
@@ -713,6 +725,10 @@ impl App {
                 self.toasts
                     .push("Diff disponible — pulsa Ctrl+G", ToastKind::Info);
             }
+            EngineEvent::ModelsFrecency(frecency) => {
+                let recent = frecency.into_iter().map(|(m, _)| m).collect();
+                self.model_picker.set_recent(recent);
+            }
             _ => {}
         }
     }
@@ -901,9 +917,12 @@ impl App {
             match key {
                 KeyCode::Up => self.model_picker.previous(),
                 KeyCode::Down => self.model_picker.next(),
+                KeyCode::Tab | KeyCode::Right => self.model_picker.next_mode(),
+                KeyCode::Left => self.model_picker.previous_mode(),
                 KeyCode::Enter => {
                     if let Some(model) = self.model_picker.selected_model() {
-                        let _ = self.cmd_tx.try_send(EngineCommand::SetModel(model));
+                        let _ = self.cmd_tx.try_send(EngineCommand::SetModel(model.clone()));
+                        let _ = self.cmd_tx.try_send(EngineCommand::RecordModelUsage(model));
                         self.toasts.push("Cambiando modelo…", ToastKind::Info);
                     }
                     self.model_picker.visible = false;
@@ -953,6 +972,7 @@ impl App {
             }
             if self.keymap.matches(key_event, Action::OpenModelPicker) {
                 self.model_picker.visible = true;
+                let _ = self.cmd_tx.try_send(EngineCommand::ListModelFrecency);
                 return;
             }
             if self.keymap.matches(key_event, Action::OpenEditor) {
@@ -1466,9 +1486,12 @@ impl App {
 
     /// Open the external editor ($EDITOR) with the current input buffer.
     fn open_editor(&mut self) {
-        let editor = std::env::var("EDITOR")
-            .or_else(|_| std::env::var("VISUAL"))
-            .unwrap_or_else(|_| "vi".to_string());
+        let editor = self
+            .editor
+            .clone()
+            .or_else(|| std::env::var("EDITOR").ok())
+            .or_else(|| std::env::var("VISUAL").ok())
+            .unwrap_or_else(|| "vi".to_string());
         let tmp = std::env::temp_dir().join(format!("anacleto-edit-{}.txt", std::process::id()));
         if std::fs::write(&tmp, &self.input).is_err() {
             self.push_msg("Error: could not write temp file for editor".to_string());

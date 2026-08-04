@@ -173,6 +173,8 @@ pub enum EngineEvent {
     CommandError(String),
     /// A unified diff is available for display (e.g. after `apply_patch`).
     DiffAvailable { text: String, title: String },
+    /// Model usage frequency records (model, count) for the picker.
+    ModelsFrecency(Vec<(String, usize)>),
 }
 
 /// Output format for a session export.
@@ -321,6 +323,10 @@ pub enum EngineCommand {
     SetDebug(bool),
     /// Change the model for the root agent.
     SetModel(String),
+    /// Record model usage for the frecency ranking.
+    RecordModelUsage(String),
+    /// Request the current model usage frequency records.
+    ListModelFrecency,
     /// Force compaction of the root agent's conversation context.
     Compact,
     /// Undo the last message pair in the active session.
@@ -648,6 +654,12 @@ impl Engine {
                             EngineCommand::SetModel(model) => {
                                 self.handle_set_model(model).await?;
                             }
+                            EngineCommand::RecordModelUsage(model) => {
+                                self.handle_record_model_usage(&model).await?;
+                            }
+                            EngineCommand::ListModelFrecency => {
+                                self.handle_list_model_frecency().await?;
+                            }
                             EngineCommand::Compact => {
                                 self.send_to_root(AgentMessage::Compact).await?;
                             }
@@ -766,6 +778,27 @@ impl Engine {
 
         self.event_tx
             .send(EngineEvent::ModelChanged { model })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Record model usage for the frecency ranking.
+    async fn handle_record_model_usage(&mut self, model: &str) -> Result<()> {
+        if let Some(db) = &self.database {
+            db.record_model_usage(model).await?;
+        }
+        Ok(())
+    }
+
+    /// Emit the current model usage frequency records to the TUI.
+    async fn handle_list_model_frecency(&mut self) -> Result<()> {
+        let frecency = match &self.database {
+            Some(db) => db.list_model_frecency().await?,
+            None => Vec::new(),
+        };
+        self.event_tx
+            .send(EngineEvent::ModelsFrecency(frecency))
             .await
             .ok();
         Ok(())
