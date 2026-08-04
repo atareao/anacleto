@@ -165,16 +165,45 @@ pub fn encode_content(content: &str, enc: &FileEncoding) -> Vec<u8> {
     out
 }
 
+/// Resolve a patch path.
+///
+/// When `allow_external` is `false`, paths must stay within the workspace
+/// (absolute paths and `..` traversal are rejected). When `allow_external` is
+/// `true`, absolute paths and traversal are permitted, so the caller must have
+/// already verified the `fs.external` permission.
+pub fn resolve_patch_path(
+    workspace: &Path,
+    rel: &str,
+    allow_external: bool,
+) -> Result<PathBuf, String> {
+    if allow_external {
+        let p = Path::new(rel);
+        if p.is_absolute() {
+            Ok(p.to_path_buf())
+        } else {
+            Ok(workspace.join(p))
+        }
+    } else {
+        resolve_within_workspace(workspace, rel)
+    }
+}
+
 /// Apply a batch of patch operations to the workspace.
 ///
 /// All paths are validated before any change is made; if any path escapes the
 /// workspace the whole batch is rejected without touching the filesystem.
-pub fn apply_patch_batch(workspace: &Path, batch: &PatchBatch) -> Result<Vec<String>, String> {
+/// When `allow_external` is `true`, paths may escape the workspace (the caller
+/// is responsible for having granted the `fs.external` permission).
+pub fn apply_patch_batch(
+    workspace: &Path,
+    batch: &PatchBatch,
+    allow_external: bool,
+) -> Result<Vec<String>, String> {
     // Validate every path up-front so a bad path aborts the whole batch before
     // any file is modified.
     let mut resolved = Vec::with_capacity(batch.operations.len());
     for op in &batch.operations {
-        let full = resolve_within_workspace(workspace, &op.path)?;
+        let full = resolve_patch_path(workspace, &op.path, allow_external)?;
         resolved.push(full);
     }
 
@@ -272,7 +301,7 @@ mod tests {
             r#"{"operations":[{"op":"add","path":"dir/nested/f.txt","content":"hello"}]}"#,
         )
         .unwrap();
-        let results = apply_patch_batch(&ws, &add).unwrap();
+        let results = apply_patch_batch(&ws, &add, false).unwrap();
         assert_eq!(results, vec!["Added dir/nested/f.txt".to_string()]);
         let file = ws.join("dir/nested/f.txt");
         assert!(file.exists());
@@ -283,7 +312,7 @@ mod tests {
             r#"{"operations":[{"op":"update","path":"dir/nested/f.txt","content":"world"}]}"#,
         )
         .unwrap();
-        let results = apply_patch_batch(&ws, &upd).unwrap();
+        let results = apply_patch_batch(&ws, &upd, false).unwrap();
         assert_eq!(results, vec!["Updated dir/nested/f.txt".to_string()]);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "world");
 
@@ -291,7 +320,7 @@ mod tests {
         let del =
             parse_patch_batch(r#"{"operations":[{"op":"delete","path":"dir/nested/f.txt"}]}"#)
                 .unwrap();
-        let results = apply_patch_batch(&ws, &del).unwrap();
+        let results = apply_patch_batch(&ws, &del, false).unwrap();
         assert_eq!(results, vec!["Deleted dir/nested/f.txt".to_string()]);
         assert!(!file.exists());
 
@@ -304,7 +333,7 @@ mod tests {
         let batch =
             parse_patch_batch(r#"{"operations":[{"op":"add","path":"a/b/c.txt","content":"x"}]}"#)
                 .unwrap();
-        apply_patch_batch(&ws, &batch).unwrap();
+        apply_patch_batch(&ws, &batch, false).unwrap();
         assert!(ws.join("a/b/c.txt").exists());
         std::fs::remove_dir_all(&ws).unwrap();
     }
@@ -319,7 +348,7 @@ mod tests {
             r#"{"operations":[{"op":"update","path":"crlf.txt","content":"new1\nnew2\n"}]}"#,
         )
         .unwrap();
-        apply_patch_batch(&ws, &batch).unwrap();
+        apply_patch_batch(&ws, &batch, false).unwrap();
 
         let bytes = std::fs::read(&file).unwrap();
         assert_eq!(bytes, b"new1\r\nnew2\r\n");
@@ -338,7 +367,7 @@ mod tests {
             r#"{"operations":[{"op":"update","path":"bom.txt","content":"world"}]}"#,
         )
         .unwrap();
-        apply_patch_batch(&ws, &batch).unwrap();
+        apply_patch_batch(&ws, &batch, false).unwrap();
 
         let bytes = std::fs::read(&file).unwrap();
         assert!(bytes.starts_with(&[0xEF, 0xBB, 0xBF]));
@@ -358,7 +387,7 @@ mod tests {
             r#"{"operations":[{"op":"update","path":"both.txt","content":"x\ny\n"}]}"#,
         )
         .unwrap();
-        apply_patch_batch(&ws, &batch).unwrap();
+        apply_patch_batch(&ws, &batch, false).unwrap();
 
         let bytes = std::fs::read(&file).unwrap();
         assert!(bytes.starts_with(&[0xEF, 0xBB, 0xBF]));
@@ -373,7 +402,7 @@ mod tests {
             r#"{"operations":[{"op":"add","path":"new.txt","content":"a\nb\n"}]}"#,
         )
         .unwrap();
-        apply_patch_batch(&ws, &batch).unwrap();
+        apply_patch_batch(&ws, &batch, false).unwrap();
         let bytes = std::fs::read(ws.join("new.txt")).unwrap();
         assert!(!bytes.starts_with(&[0xEF, 0xBB, 0xBF]));
         assert_eq!(bytes, b"a\nb\n");
@@ -387,7 +416,7 @@ mod tests {
             r#"{"operations":[{"op":"add","path":"../escape.txt","content":"x"}]}"#,
         )
         .unwrap();
-        let err = apply_patch_batch(&ws, &batch).unwrap_err();
+        let err = apply_patch_batch(&ws, &batch, false).unwrap_err();
         assert!(err.contains("escapes workspace"));
         // Nothing should have been created.
         assert!(!ws.join("../escape.txt").exists());
@@ -401,8 +430,33 @@ mod tests {
             r#"{"operations":[{"op":"add","path":"/etc/passwd","content":"x"}]}"#,
         )
         .unwrap();
-        assert!(apply_patch_batch(&ws, &batch).is_err());
+        assert!(apply_patch_batch(&ws, &batch, false).is_err());
         std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    #[test]
+    fn external_path_requires_allow_external() {
+        let ws = temp_workspace();
+        let outside = std::env::temp_dir().join(format!(
+            "anacleto_apply_patch_outside_{}",
+            uuid::Uuid::new_v4()
+        ));
+
+        // Without allow_external, an absolute external path is rejected.
+        let batch = parse_patch_batch(&format!(
+            r#"{{"operations":[{{"op":"add","path":"{}","content":"x"}}]}}"#,
+            outside.display()
+        ))
+        .unwrap();
+        assert!(apply_patch_batch(&ws, &batch, false).is_err());
+
+        // With allow_external, it is permitted.
+        let results = apply_patch_batch(&ws, &batch, true).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(outside.exists());
+
+        std::fs::remove_dir_all(&ws).unwrap();
+        std::fs::remove_file(&outside).unwrap();
     }
 
     #[test]
@@ -412,7 +466,7 @@ mod tests {
             r#"{"operations":[{"op":"add","path":"a/../../escape.txt","content":"x"}]}"#,
         )
         .unwrap();
-        assert!(apply_patch_batch(&ws, &batch).is_err());
+        assert!(apply_patch_batch(&ws, &batch, false).is_err());
         std::fs::remove_dir_all(&ws).unwrap();
     }
 
@@ -423,7 +477,7 @@ mod tests {
             r#"{"operations":[{"op":"update","path":"missing.txt","content":"x"}]}"#,
         )
         .unwrap();
-        assert!(apply_patch_batch(&ws, &batch).is_err());
+        assert!(apply_patch_batch(&ws, &batch, false).is_err());
         std::fs::remove_dir_all(&ws).unwrap();
     }
 
@@ -434,7 +488,7 @@ mod tests {
         let batch =
             parse_patch_batch(r#"{"operations":[{"op":"add","path":"exists.txt","content":"y"}]}"#)
                 .unwrap();
-        assert!(apply_patch_batch(&ws, &batch).is_err());
+        assert!(apply_patch_batch(&ws, &batch, false).is_err());
         std::fs::remove_dir_all(&ws).unwrap();
     }
 

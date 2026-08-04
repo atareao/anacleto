@@ -18,11 +18,18 @@ use crate::llm::types::{
 };
 use crate::mcp::client::McpRegistry;
 use crate::permissions::checker::{
-    check_command_run, check_fs_write, check_net_http, check_skill_use,
+    check_command_run, check_fs_read, check_fs_write, check_net_http, check_skill_use,
 };
 use crate::permissions::types::Permissions;
 use crate::skill::loader::load_agent_skills;
 use crate::skill::types::Skill;
+use crate::tools::glob::{execute_glob_tool, glob_tool_definition};
+use crate::tools::grep::{execute_grep_tool, grep_tool_definition};
+use crate::tools::read::{execute_read_tool, read_tool_definition};
+use crate::tools::web::{
+    execute_webfetch_tool, execute_websearch_tool, webfetch_tool_definition,
+    websearch_tool_definition,
+};
 
 /// Shared state for tracking pending human approvals.
 type PendingApprovals =
@@ -128,6 +135,11 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     tools.push(todo_tool_definition());
     tools.push(question_tool_definition());
     tools.push(apply_patch_tool_definition());
+    tools.push(read_tool_definition());
+    tools.push(grep_tool_definition());
+    tools.push(glob_tool_definition());
+    tools.push(webfetch_tool_definition());
+    tools.push(websearch_tool_definition());
 
     // Clone what the task needs
     let agent_mcp_names = agent.mcps.clone();
@@ -474,6 +486,26 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                         )
                                         .await
                                         .unwrap_or_else(|e| e)
+                                    } else if tc.function.name == "read" {
+                                        execute_read_tool(&workspace, &agent_permissions, tc)
+                                            .await
+                                            .unwrap_or_else(|e| e)
+                                    } else if tc.function.name == "grep" {
+                                        execute_grep_tool(&workspace, &agent_permissions, tc)
+                                            .await
+                                            .unwrap_or_else(|e| e)
+                                    } else if tc.function.name == "glob" {
+                                        execute_glob_tool(&workspace, &agent_permissions, tc)
+                                            .await
+                                            .unwrap_or_else(|e| e)
+                                    } else if tc.function.name == "webfetch" {
+                                        execute_webfetch_tool(&agent_permissions, tc)
+                                            .await
+                                            .unwrap_or_else(|e| e)
+                                    } else if tc.function.name == "websearch" {
+                                        execute_websearch_tool(&agent_permissions, tc)
+                                            .await
+                                            .unwrap_or_else(|e| e)
                                     } else if let Some(_skill) =
                                         skills.iter().find(|s| s.name == tc.function.name)
                                     {
@@ -650,6 +682,7 @@ async fn check_tool_permission(
     let denied = match perm_type.as_str() {
         "command.run" => check_command_run(permissions).is_err(),
         "fs.write" => check_fs_write(permissions).is_err(),
+        "fs.read" => check_fs_read(permissions).is_err(),
         "net.http" => check_net_http(permissions).is_err(),
         "skill.use" => check_skill_use(permissions).is_err(),
         _ => false, // unknown types are allowed by default
@@ -747,6 +780,12 @@ fn classify_tool_operation(tool_call: &ToolCall) -> (String, String) {
     match name {
         n if n == "shell" || n.starts_with("shell_") => {
             ("command.run".into(), format!("shell: {}", task))
+        }
+        n if n == "read" || n == "grep" || n == "glob" => {
+            ("fs.read".into(), format!("filesystem: {}", task))
+        }
+        n if n == "webfetch" || n == "websearch" => {
+            ("net.http".into(), format!("network: {}", task))
         }
         n if n.contains("write") || n.contains("create") || n.contains("delete") => {
             ("fs.write".into(), format!("filesystem: {}", task))
@@ -1173,6 +1212,8 @@ async fn execute_apply_patch_tool(
 
     // apply_patch only performs filesystem writes.
     check_fs_write(permissions).map_err(|e| format!("Permission denied: {e}"))?;
+    // Writes outside the workspace additionally require fs.external.
+    let allow_external = crate::permissions::checker::check_fs_external(permissions).is_ok();
 
     // Build a human-readable summary of the batch for the approval prompt.
     let summary = batch
@@ -1187,7 +1228,7 @@ async fn execute_apply_patch_tool(
         return Err("apply_patch was denied by the user; no changes were applied.".to_string());
     }
 
-    let results = crate::engine::apply_patch::apply_patch_batch(workspace, &batch)?;
+    let results = crate::engine::apply_patch::apply_patch_batch(workspace, &batch, allow_external)?;
     Ok(results.join("\n"))
 }
 

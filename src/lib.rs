@@ -14,4 +14,5 @@ pub mod mcp;
 pub mod permissions;
 pub mod shell;
 pub mod skill;
+pub mod tools;
 pub mod tui;
