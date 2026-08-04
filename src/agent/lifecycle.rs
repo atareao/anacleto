@@ -18,13 +18,20 @@ use crate::llm::types::{
 };
 use crate::mcp::client::McpRegistry;
 use crate::permissions::checker::{
-    check_command_run, check_fs_read, check_fs_write, check_net_http, check_skill_use,
+    check_command_run, check_fs_read, check_fs_write, check_mcp_use, check_net_http,
+    check_skill_use,
 };
 use crate::permissions::types::Permissions;
 use crate::skill::loader::load_agent_skills;
 use crate::skill::types::Skill;
 use crate::tools::glob::{execute_glob_tool, glob_tool_definition};
 use crate::tools::grep::{execute_grep_tool, grep_tool_definition};
+use crate::tools::lsp::{execute_lsp_query_tool, lsp_query_tool_definition};
+use crate::tools::mcp::{
+    execute_mcp_list_resource_templates_tool, execute_mcp_list_resources_tool,
+    execute_mcp_read_resource_tool, mcp_list_resource_templates_tool_definition,
+    mcp_list_resources_tool_definition, mcp_read_resource_tool_definition,
+};
 use crate::tools::read::{execute_read_tool, read_tool_definition};
 use crate::tools::web::{
     execute_webfetch_tool, execute_websearch_tool, webfetch_tool_definition,
@@ -140,6 +147,10 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     tools.push(glob_tool_definition());
     tools.push(webfetch_tool_definition());
     tools.push(websearch_tool_definition());
+    tools.push(mcp_list_resources_tool_definition());
+    tools.push(mcp_read_resource_tool_definition());
+    tools.push(mcp_list_resource_templates_tool_definition());
+    tools.push(lsp_query_tool_definition());
 
     // Clone what the task needs
     let agent_mcp_names = agent.mcps.clone();
@@ -506,6 +517,52 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                         execute_websearch_tool(&agent_permissions, tc)
                                             .await
                                             .unwrap_or_else(|e| e)
+                                    } else if tc.function.name == "mcp_list_resources" {
+                                        match mcp_registry {
+                                            Some(ref reg) => execute_mcp_list_resources_tool(
+                                                reg,
+                                                &agent_permissions,
+                                                tc,
+                                            )
+                                            .await
+                                            .unwrap_or_else(|e| e),
+                                            None => {
+                                                "MCP registry not available for mcp_list_resources"
+                                                    .to_string()
+                                            }
+                                        }
+                                    } else if tc.function.name == "mcp_read_resource" {
+                                        match mcp_registry {
+                                            Some(ref reg) => execute_mcp_read_resource_tool(
+                                                reg,
+                                                &agent_permissions,
+                                                tc,
+                                            )
+                                            .await
+                                            .unwrap_or_else(|e| e),
+                                            None => {
+                                                "MCP registry not available for mcp_read_resource"
+                                                    .to_string()
+                                            }
+                                        }
+                                    } else if tc.function.name == "mcp_list_resource_templates" {
+                                        match mcp_registry {
+                                            Some(ref reg) => {
+                                                execute_mcp_list_resource_templates_tool(
+                                                    reg, &agent_permissions, tc,
+                                                )
+                                                .await
+                                                .unwrap_or_else(|e| e)
+                                            }
+                                            None => {
+                                                "MCP registry not available for mcp_list_resource_templates"
+                                                    .to_string()
+                                            }
+                                        }
+                                    } else if tc.function.name == "lsp_query" {
+                                        execute_lsp_query_tool(&agent_permissions, tc)
+                                            .await
+                                            .unwrap_or_else(|e| e)
                                     } else if let Some(_skill) =
                                         skills.iter().find(|s| s.name == tc.function.name)
                                     {
@@ -684,6 +741,7 @@ async fn check_tool_permission(
         "fs.write" => check_fs_write(permissions).is_err(),
         "fs.read" => check_fs_read(permissions).is_err(),
         "net.http" => check_net_http(permissions).is_err(),
+        "mcp.use" => check_mcp_use(permissions).is_err(),
         "skill.use" => check_skill_use(permissions).is_err(),
         _ => false, // unknown types are allowed by default
     };
@@ -787,6 +845,8 @@ fn classify_tool_operation(tool_call: &ToolCall) -> (String, String) {
         n if n == "webfetch" || n == "websearch" => {
             ("net.http".into(), format!("network: {}", task))
         }
+        n if n.starts_with("mcp_") => ("mcp.use".into(), format!("mcp: {}", task)),
+        n if n == "lsp_query" => ("command.run".into(), format!("lsp: {}", task)),
         n if n.contains("write") || n.contains("create") || n.contains("delete") => {
             ("fs.write".into(), format!("filesystem: {}", task))
         }

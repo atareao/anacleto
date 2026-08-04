@@ -250,6 +250,57 @@ impl McpClient {
         Ok(tools)
     }
 
+    /// List available resources from the MCP server.
+    pub async fn list_resources(&mut self) -> Result<Vec<McpResource>> {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": self.next_id,
+            "method": "resources/list",
+            "params": {}
+        });
+        self.next_id += 1;
+
+        self.send_jsonrpc(&request).await?;
+        let response = self.read_jsonrpc().await?;
+        parse_resources_response(&response)
+    }
+
+    /// List available resource templates from the MCP server.
+    pub async fn list_resource_templates(&mut self) -> Result<Vec<McpResourceTemplate>> {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": self.next_id,
+            "method": "resources/templates/list",
+            "params": {}
+        });
+        self.next_id += 1;
+
+        self.send_jsonrpc(&request).await?;
+        let response = self.read_jsonrpc().await?;
+        parse_resource_templates_response(&response)
+    }
+
+    /// Read a resource by URI from the MCP server.
+    ///
+    /// Text contents are concatenated into a single string. Binary contents
+    /// (base64 `blob`) are returned as `data:<mime>;base64,<payload>` so the
+    /// caller can distinguish them from plain text.
+    pub async fn read_resource(&mut self, uri: &str) -> Result<String> {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": self.next_id,
+            "method": "resources/read",
+            "params": {
+                "uri": uri
+            }
+        });
+        self.next_id += 1;
+
+        self.send_jsonrpc(&request).await?;
+        let response = self.read_jsonrpc().await?;
+        parse_read_resource_response(&response)
+    }
+
     /// Send a JSON-RPC message over the active transport (stdio or TCP).
     async fn send_jsonrpc(&mut self, message: &serde_json::Value) -> Result<()> {
         let data = serde_json::to_string(message)
@@ -317,6 +368,103 @@ impl McpClient {
         }
         Ok(())
     }
+}
+
+/// Parse a `resources/list` JSON-RPC response into a list of resources.
+fn parse_resources_response(response: &serde_json::Value) -> Result<Vec<McpResource>> {
+    if let Some(error) = response.get("error") {
+        return Err(Error::Mcp(
+            error
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error")
+                .to_string(),
+        ));
+    }
+
+    let result = response
+        .get("result")
+        .ok_or_else(|| Error::Mcp("resources/list response missing 'result'".into()))?;
+
+    let resources = result
+        .get("resources")
+        .and_then(|r| serde_json::from_value::<Vec<McpResource>>(r.clone()).ok())
+        .unwrap_or_default();
+
+    Ok(resources)
+}
+
+/// Parse a `resources/templates/list` JSON-RPC response into a list of templates.
+fn parse_resource_templates_response(
+    response: &serde_json::Value,
+) -> Result<Vec<McpResourceTemplate>> {
+    if let Some(error) = response.get("error") {
+        return Err(Error::Mcp(
+            error
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error")
+                .to_string(),
+        ));
+    }
+
+    let result = response
+        .get("result")
+        .ok_or_else(|| Error::Mcp("resources/templates/list response missing 'result'".into()))?;
+
+    let templates = result
+        .get("resourceTemplates")
+        .and_then(|t| serde_json::from_value::<Vec<McpResourceTemplate>>(t.clone()).ok())
+        .unwrap_or_default();
+
+    Ok(templates)
+}
+
+/// Parse a `resources/read` JSON-RPC response into a string.
+///
+/// Text contents are concatenated; binary `blob` contents are exposed as
+/// `data:<mime>;base64,<payload>` data URIs.
+fn parse_read_resource_response(response: &serde_json::Value) -> Result<String> {
+    if let Some(error) = response.get("error") {
+        return Err(Error::Mcp(
+            error
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error")
+                .to_string(),
+        ));
+    }
+
+    let result = response
+        .get("result")
+        .ok_or_else(|| Error::Mcp("resources/read response missing 'result'".into()))?;
+
+    let contents = result
+        .get("contents")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if contents.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut out = String::new();
+    for item in contents {
+        let mime = item
+            .get("mimeType")
+            .and_then(|m| m.as_str())
+            .unwrap_or("text/plain");
+        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+            out.push_str(text);
+        } else if let Some(blob) = item.get("blob").and_then(|b| b.as_str()) {
+            // Binary content: expose as a data URI with mime metadata.
+            out.push_str(&format!("data:{mime};base64,{blob}"));
+        }
+        out.push('\n');
+    }
+
+    Ok(out)
 }
 
 /// Registry of connected MCP clients.
@@ -405,6 +553,39 @@ impl McpRegistry {
         }
     }
 
+    /// List resources from a specific MCP server.
+    pub async fn list_resources(&self, server_name: &str) -> Result<Vec<McpResource>> {
+        let client_lock = self
+            .clients
+            .get(server_name)
+            .ok_or_else(|| Error::Mcp(format!("MCP server '{}' not found", server_name)))?;
+        let mut client = client_lock.lock().await;
+        client.list_resources().await
+    }
+
+    /// List resource templates from a specific MCP server.
+    pub async fn list_resource_templates(
+        &self,
+        server_name: &str,
+    ) -> Result<Vec<McpResourceTemplate>> {
+        let client_lock = self
+            .clients
+            .get(server_name)
+            .ok_or_else(|| Error::Mcp(format!("MCP server '{}' not found", server_name)))?;
+        let mut client = client_lock.lock().await;
+        client.list_resource_templates().await
+    }
+
+    /// Read a resource by URI from a specific MCP server.
+    pub async fn read_resource(&self, server_name: &str, uri: &str) -> Result<String> {
+        let client_lock = self
+            .clients
+            .get(server_name)
+            .ok_or_else(|| Error::Mcp(format!("MCP server '{}' not found", server_name)))?;
+        let mut client = client_lock.lock().await;
+        client.read_resource(uri).await
+    }
+
     /// Disconnect all clients.
     pub async fn disconnect_all(&mut self) {
         for client in self.clients.values_mut() {
@@ -479,5 +660,112 @@ mod tests {
         assert!(client.stdin.is_none());
         assert!(client.stdout.is_none());
         assert!(client.tcp_stream.is_none());
+    }
+
+    #[test]
+    fn test_parse_resources_response() {
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "resources": [
+                    {
+                        "uri": "file:///tmp/a.txt",
+                        "name": "a.txt",
+                        "description": "A file",
+                        "mimeType": "text/plain"
+                    },
+                    {
+                        "uri": "file:///tmp/b.png",
+                        "name": "b.png"
+                    }
+                ]
+            }
+        });
+        let resources = parse_resources_response(&response).unwrap();
+        assert_eq!(resources.len(), 2);
+        assert_eq!(resources[0].uri, "file:///tmp/a.txt");
+        assert_eq!(resources[0].name, "a.txt");
+        assert_eq!(resources[0].description.as_deref(), Some("A file"));
+        assert_eq!(resources[0].mime_type.as_deref(), Some("text/plain"));
+        // Optional fields default to None.
+        assert_eq!(resources[1].description, None);
+        assert_eq!(resources[1].mime_type, None);
+    }
+
+    #[test]
+    fn test_parse_resources_response_error() {
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32601, "message": "Method not found" }
+        });
+        let err = parse_resources_response(&response).unwrap_err();
+        assert!(err.to_string().contains("Method not found"));
+    }
+
+    #[test]
+    fn test_parse_resource_templates_response() {
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "resourceTemplates": [
+                    {
+                        "uriTemplate": "file:///{path}",
+                        "name": "Any file",
+                        "description": "Read any file",
+                        "mimeType": "text/plain"
+                    }
+                ]
+            }
+        });
+        let templates = parse_resource_templates_response(&response).unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].uri_template, "file:///{path}");
+        assert_eq!(templates[0].name, "Any file");
+        assert_eq!(templates[0].description.as_deref(), Some("Read any file"));
+        assert_eq!(templates[0].mime_type.as_deref(), Some("text/plain"));
+    }
+
+    #[test]
+    fn test_parse_read_resource_response_text() {
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "contents": [
+                    { "uri": "file:///tmp/a.txt", "mimeType": "text/plain", "text": "hello world" }
+                ]
+            }
+        });
+        let content = parse_read_resource_response(&response).unwrap();
+        assert!(content.contains("hello world"));
+    }
+
+    #[test]
+    fn test_parse_read_resource_response_binary_blob() {
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "contents": [
+                    { "uri": "file:///tmp/b.png", "mimeType": "image/png", "blob": "aGVsbG8=" }
+                ]
+            }
+        });
+        let content = parse_read_resource_response(&response).unwrap();
+        assert!(content.contains("data:image/png;base64,aGVsbG8="));
+    }
+
+    #[test]
+    fn test_parse_read_resource_response_empty() {
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "contents": [] }
+        });
+        let content = parse_read_resource_response(&response).unwrap();
+        assert!(content.is_empty());
     }
 }

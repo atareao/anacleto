@@ -51,6 +51,22 @@ pub struct McpResource {
     /// Resource description.
     pub description: Option<String>,
     /// MIME type.
+    #[serde(rename = "mimeType", default)]
+    pub mime_type: Option<String>,
+}
+
+/// A resource template exposed by an MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpResourceTemplate {
+    /// URI template (e.g. `file:///{path}`).
+    #[serde(rename = "uriTemplate")]
+    pub uri_template: String,
+    /// Template name.
+    pub name: String,
+    /// Template description.
+    pub description: Option<String>,
+    /// MIME type.
+    #[serde(rename = "mimeType", default)]
     pub mime_type: Option<String>,
 }
 

@@ -10,6 +10,7 @@ pub mod engine;
 pub mod error;
 pub mod filesystem;
 pub mod llm;
+pub mod lsp;
 pub mod mcp;
 pub mod permissions;
 pub mod shell;
