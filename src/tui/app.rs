@@ -80,6 +80,16 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/thinking", "Toggle thinking display"),
     ("/stash", "Stash the current prompt"),
     ("/editor", "Open external editor"),
+    // ── FASE 1 y 2: build, jobs y snapshots ─────────────────────────
+    ("/build", "Hand off the plan to build mode"),
+    ("/jobs", "List running background jobs"),
+    ("/parent", "Navigate to the parent session"),
+    ("/children", "List child sessions"),
+    ("/snapshot", "Create a snapshot of the session"),
+    ("/revert", "Revert the session to a snapshot"),
+    ("/stage", "Stage the conversation as a pending snapshot"),
+    ("/clear", "Clear the staged snapshot"),
+    ("/commit", "Commit the staged snapshot"),
 ];
 
 #[derive(Debug, Clone)]
@@ -753,6 +763,75 @@ impl App {
             EngineEvent::ModelsFrecency(frecency) => {
                 let recent = frecency.into_iter().map(|(m, _)| m).collect();
                 self.model_picker.set_recent(recent);
+            }
+            // ── FASE 1 y 2: build, jobs y snapshots ─────────────────
+            EngineEvent::SubagentFinished { task_id, summary } => {
+                self.push_msg(format!(
+                    "\u{1f4c4} Tarea '{}' finalizada: {}",
+                    task_id, summary
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::BuildDone => {
+                self.push_msg("\u{1f3d7} Build completado.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SessionTree(sessions) => {
+                if sessions.is_empty() {
+                    self.push_msg("\u{1f5c2} Sin sesiones hijas.");
+                } else {
+                    self.push_msg(format!("\u{1f5c2} Árbol de sesiones ({}):", sessions.len()));
+                    for s in &sessions {
+                        let parent = s
+                            .parent_id
+                            .map(|p| format!(" (padre: {})", &p.to_string()[..8]))
+                            .unwrap_or_default();
+                        self.push_msg(format!(
+                            "  \u{251c} {} — {} mensajes{}",
+                            s.name, s.message_count, parent
+                        ));
+                    }
+                }
+                self.chat_scroll = 0;
+            }
+            EngineEvent::JobsListed(jobs) => {
+                if jobs.is_empty() {
+                    self.push_msg("\u{1f4cb} Sin jobs activos.");
+                } else {
+                    self.push_msg(format!("\u{1f4cb} {} job(s) activo(s):", jobs.len()));
+                    for job in &jobs {
+                        self.push_msg(format!("  \u{2022} {}", job));
+                    }
+                }
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SnapshotCreated { snapshot } => {
+                self.push_msg(format!(
+                    "\u{1f4be} Snapshot '{}' creado ({} mensajes).",
+                    snapshot.name, snapshot.message_count
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SnapshotReverted { snapshot_id } => {
+                self.push_msg(format!(
+                    "\u{21a9} Sesión revertida al snapshot {}.",
+                    &snapshot_id.to_string()[..8]
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SnapshotsListed(snapshots) => {
+                if snapshots.is_empty() {
+                    self.push_msg("\u{1f4be} Sin snapshots para esta sesión.");
+                } else {
+                    self.push_msg(format!("\u{1f4be} {} snapshot(s):", snapshots.len()));
+                    for s in &snapshots {
+                        self.push_msg(format!(
+                            "  \u{2022} {} — {} mensajes",
+                            s.name, s.message_count
+                        ));
+                    }
+                }
+                self.chat_scroll = 0;
             }
             _ => {}
         }
@@ -1674,6 +1753,49 @@ impl App {
             "/editor" => {
                 self.push_msg("> /editor");
                 self.open_editor();
+            }
+            // ── FASE 1 y 2: build, jobs y snapshots ────────────────
+            "/build" => {
+                self.push_msg("> /build");
+                let _ = self.cmd_tx.try_send(EngineCommand::Build);
+            }
+            "/jobs" => {
+                self.push_msg("> /jobs");
+                let _ = self.cmd_tx.try_send(EngineCommand::ListJobs);
+            }
+            "/parent" => {
+                self.push_msg("> /parent");
+                let _ = self.cmd_tx.try_send(EngineCommand::Parent);
+            }
+            "/children" => {
+                self.push_msg("> /children");
+                let _ = self.cmd_tx.try_send(EngineCommand::Children);
+            }
+            "/snapshot" => {
+                let name = parts.get(1).map(|s| s.to_string());
+                self.push_msg(format!("> /snapshot {}", name.as_deref().unwrap_or("")));
+                let _ = self.cmd_tx.try_send(EngineCommand::Snapshot { name });
+            }
+            "/revert" => match parts.get(1).and_then(|s| s.parse::<uuid::Uuid>().ok()) {
+                Some(snapshot_id) => {
+                    self.push_msg(format!("> /revert {}", snapshot_id));
+                    let _ = self.cmd_tx.try_send(EngineCommand::Revert { snapshot_id });
+                }
+                None => self.push_msg("Usage: /revert <snapshot-id>"),
+            },
+            "/stage" => {
+                let name = parts.get(1).map(|s| s.to_string());
+                self.push_msg(format!("> /stage {}", name.as_deref().unwrap_or("")));
+                let _ = self.cmd_tx.try_send(EngineCommand::Stage { name });
+            }
+            "/clear" => {
+                self.push_msg("> /clear");
+                let _ = self.cmd_tx.try_send(EngineCommand::Clear);
+            }
+            "/commit" => {
+                let name = parts.get(1).map(|s| s.to_string());
+                self.push_msg(format!("> /commit {}", name.as_deref().unwrap_or("")));
+                let _ = self.cmd_tx.try_send(EngineCommand::Commit { name });
             }
             _ => {
                 self.messages
