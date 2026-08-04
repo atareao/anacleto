@@ -555,27 +555,35 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 
 ### FASE 5.5 — Cambio de agente activo
 
+**Objetivo:** Permitir seleccionar cuál de los agentes root (ya spawneados por `initialize()`) recibe el input del usuario, enrutando input, modelo y respawn al agente activo en lugar de fijarse siempre en el primer root.
+
 #### Tarea 5.5.1: Enrutado al agente activo
 
 **Archivos:**
-- Modificar: `src/engine/orchestrator.rs` (campo `active_agent`, enrutado de input/modelo)
+- Modificar: `src/engine/orchestrator.rs` (campo `active_agent`, enrutado de input/modelo, renombrado de helpers)
 
-- [ ] **Paso 1:** Añadir campo `active_agent: String` a `Engine` (inicializado al primer root).
-- [ ] **Paso 2:** `handle_user_input` y `handle_set_model` enrutan al agente activo en vez del primer root.
+- [x] **Paso 1:** Añadir campo `active_agent: String` a `Engine` y inicializarlo en `Engine::new()` con el nombre del primer agente `role == AgentRole::Root` (misma lógica que `current_model`).
+- [x] **Paso 2:** En `handle_user_input` (~línea 768), enrutar a `self.active_agent` en lugar de `root_agent_config()?.name`.
+- [x] **Paso 3:** En `handle_set_model` (~línea 790), buscar el config del agente activo por `a.name == self.active_agent`, actualizar su modelo y llamar al respawn del agente activo.
+- [x] **Paso 4:** Renombrar `respawn_root_agent` → `respawn_active_agent` y `send_to_root` → `send_to_active`, usando `self.active_agent` en lugar de `root_agent_config()?.name`. Actualizar todos los callers (líneas 678 Compact, 913 ClearHistory, 959 LoadHistory, 1074 LoadHistory en `reload_history_to_root`, 1410 UserInput en `handle_review`).
+- [x] **Paso 5:** En `reload_history_to_root` (~línea 1071), cambiar el guard `if self.root_agent_config().is_err()` por `if !self.agents.contains_key(&self.active_agent)`.
 
-**Criterio de aceptación:** El input del usuario llega al agente activo, no siempre al primer root.
+**Criterio de aceptación:** El input del usuario, el cambio de modelo y el respawn se dirigen al agente activo, no siempre al primer root. `cargo build` compila sin referencias a `respawn_root_agent`/`send_to_root`/`root_agent_config` en los callers migrados.
 
 #### Tarea 5.5.2: Comando de cambio de agente en la TUI
 
 **Archivos:**
-- Modificar: `src/engine/orchestrator.rs` (`EngineCommand::SwitchAgent`, `EngineEvent::AgentSwitched`)
-- Modificar: `src/tui/app.rs` (comando `/agent`, indicador en barra de estado)
+- Modificar: `src/engine/orchestrator.rs` (`EngineCommand::SwitchAgent`, `EngineEvent::AgentSwitched`, handler, dispatch en `run()`)
+- Modificar: `src/tui/app.rs` (campo `active_agent`, manejo de evento, comando `/agent`, `COMMANDS`, barra de estado)
 
-- [ ] **Paso 1:** Añadir `EngineCommand::SwitchAgent(String)` + `EngineEvent::AgentSwitched { name }` y su handler.
-- [ ] **Paso 2:** Comando `/agent <nombre>` en la TUI; `/agents` lista los disponibles.
-- [ ] **Paso 3:** Mostrar el agente activo en la barra de estado.
+- [x] **Paso 1:** Añadir variante `EngineCommand::SwitchAgent(String)` al enum `EngineCommand` (línea 310) y `EngineEvent::AgentSwitched { name: String }` al enum `EngineEvent` (inicio del archivo).
+- [x] **Paso 2:** Implementar `handle_switch_agent(name)`: validar que el agente existe en `self.agents` y es root; si no, emitir error; si sí, actualizar `self.active_agent` y `self.current_model` con el modelo del agente, y emitir `AgentSwitched { name }` + `ModelChanged`.
+- [x] **Paso 3:** Añadir el dispatch de `EngineCommand::SwitchAgent` en el `match` de `run()` (~línea 625) llamando a `handle_switch_agent`.
+- [x] **Paso 4:** Añadir campo `active_agent: String` a `App` y manejarlo en `handle_event` (~línea 405) cuando llegue `EngineEvent::AgentSwitched { name }`.
+- [x] **Paso 5:** Añadir el comando `/agent <nombre>` en `handle_command` (línea 1279) que envía `EngineCommand::SwitchAgent(nombre)`; añadir `/agent` a la const `COMMANDS` (línea 35) para autocompletado.
+- [x] **Paso 6:** Mostrar el agente activo en `render_status_bar` (línea 1931) junto a `current_model`.
 
-**Criterio de aceptación:** Se cambia de agente root con `/agent <nombre>` y el indicador se actualiza.
+**Criterio de aceptación:** `/agent <nombre>` cambia el agente root activo, el indicador de la barra de estado se actualiza, y `/agents` sigue listando los disponibles. `cargo fmt --check && cargo clippy && cargo test` pasan.
 
 ### FASE 6 — LLM y providers
 
@@ -741,8 +749,8 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - [x] `/review` muestra diffs vs branch/VCS.
 
 **FASE 5.5**
-- [ ] El input del usuario llega al agente activo, no siempre al primer root.
-- [ ] `/agent <nombre>` cambia de agente root y el indicador se actualiza.
+- [x] El input del usuario llega al agente activo, no siempre al primer root.
+- [x] `/agent <nombre>` cambia de agente root y el indicador se actualiza.
 
 **FASE 6**
 - [ ] `cache:auto` inyecta cache_control en los breakpoints correctos con TTL.

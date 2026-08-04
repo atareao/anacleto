@@ -126,6 +126,8 @@ pub enum EngineEvent {
     },
     /// The model for the root agent changed.
     ModelChanged { model: String },
+    /// The active root agent changed (via `/agent`).
+    AgentSwitched { name: String },
     /// The conversation context was compacted (via `/compact`).
     ConversationCompacted {
         agent_id: AgentId,
@@ -290,6 +292,8 @@ pub struct Engine {
     debug: Arc<AtomicBool>,
     /// Current model for the root agent.
     current_model: String,
+    /// Name of the currently active root agent (routing target for user input).
+    active_agent: String,
     /// Stack of undone message pairs (for `/undo`).
     undo_stack: Vec<Vec<StoredMessage>>,
     /// Stack of undone message pairs available for `/redo`.
@@ -326,6 +330,8 @@ pub enum EngineCommand {
     SetDebug(bool),
     /// Change the model for the root agent.
     SetModel(String),
+    /// Switch the active root agent.
+    SwitchAgent(String),
     /// Record model usage for the frecency ranking.
     RecordModelUsage(String),
     /// Request the current model usage frequency records.
@@ -411,6 +417,12 @@ impl Engine {
                 .find(|a| a.role == AgentRole::Root)
                 .map(|a| a.model.clone())
                 .unwrap_or_default(),
+            active_agent: config
+                .agents
+                .iter()
+                .find(|a| a.role == AgentRole::Root)
+                .map(|a| a.name.clone())
+                .unwrap_or_default(),
             database: None,
             active_session_id: None,
             event_tx,
@@ -443,6 +455,15 @@ impl Engine {
         self.event_tx
             .send(EngineEvent::ModelChanged {
                 model: self.current_model.clone(),
+            })
+            .await
+            .ok();
+
+        // Notify the TUI of the active root agent at startup so the status bar
+        // is populated before the first `/agent` switch.
+        self.event_tx
+            .send(EngineEvent::AgentSwitched {
+                name: self.active_agent.clone(),
             })
             .await
             .ok();
@@ -612,15 +633,6 @@ impl Engine {
         })
     }
 
-    /// Find the root agent config (the one with `role == Root`).
-    fn root_agent_config(&self) -> Result<&crate::config::AgentConfig> {
-        self.config
-            .agents
-            .iter()
-            .find(|a| a.role == AgentRole::Root)
-            .ok_or_else(|| Error::Agent("No root agent configured".into()))
-    }
-
     /// Run the main event loop.
     pub async fn run(&mut self) -> Result<()> {
         loop {
@@ -668,6 +680,9 @@ impl Engine {
                             EngineCommand::SetModel(model) => {
                                 self.handle_set_model(model).await?;
                             }
+                            EngineCommand::SwitchAgent(name) => {
+                                self.handle_switch_agent(&name).await?;
+                            }
                             EngineCommand::RecordModelUsage(model) => {
                                 self.handle_record_model_usage(&model).await?;
                             }
@@ -675,7 +690,7 @@ impl Engine {
                                 self.handle_list_model_frecency().await?;
                             }
                             EngineCommand::Compact => {
-                                self.send_to_root(AgentMessage::Compact).await?;
+                                self.send_to_active(AgentMessage::Compact).await?;
                             }
                             EngineCommand::Undo => {
                                 self.handle_undo().await?;
@@ -764,12 +779,12 @@ impl Engine {
         Ok(())
     }
 
-    /// Handle user input: route to the root agent.
+    /// Handle user input: route to the active root agent.
     async fn handle_user_input(&mut self, input: String) -> Result<()> {
         // A new turn invalidates any pending redo history.
         self.redo_stack.clear();
-        // Find the root agent (the one with role == Root)
-        let root_name = &self.root_agent_config()?.name;
+        // Find the active root agent
+        let root_name = &self.active_agent;
 
         let root_id = self
             .agents
@@ -786,24 +801,60 @@ impl Engine {
             .await
     }
 
-    /// Handle model change: update config, respawn root agent.
+    /// Handle model change: update config, respawn active agent.
     async fn handle_set_model(&mut self, model: String) -> Result<()> {
-        // Update the config in memory
+        // Update the config in memory for the active agent
         if let Some(ref mut agent) = self
             .config
             .agents
             .iter_mut()
-            .find(|a| a.role == AgentRole::Root)
+            .find(|a| a.name == self.active_agent)
         {
             agent.model = model.clone();
         }
         self.current_model = model.clone();
 
-        // Respawn the root agent with the new model
-        self.respawn_root_agent().await?;
+        // Respawn the active agent with the new model
+        self.respawn_active_agent().await?;
 
         self.event_tx
             .send(EngineEvent::ModelChanged { model })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle switching the active root agent.
+    async fn handle_switch_agent(&mut self, name: &str) -> Result<()> {
+        // Validate that the target agent exists and is a root agent.
+        let agent = self
+            .config
+            .agents
+            .iter()
+            .find(|a| a.name == name && a.role == AgentRole::Root)
+            .ok_or_else(|| Error::Agent(format!("Root agent '{name}' not found")))?;
+
+        // Validate that the agent is actually spawned. An agent with `role: Root`
+        // that is also listed as a subagent of another agent is skipped during
+        // `initialize()` and therefore not present in `self.agents`/`self.handles`.
+        if !self.agents.contains_key(name) {
+            return Err(Error::Agent(format!(
+                "Root agent '{name}' is not spawned (it is listed as a subagent of another agent)"
+            )));
+        }
+
+        let name = name.to_string();
+        self.active_agent = name.clone();
+        self.current_model = agent.model.clone();
+
+        self.event_tx
+            .send(EngineEvent::AgentSwitched { name })
+            .await
+            .ok();
+        self.event_tx
+            .send(EngineEvent::ModelChanged {
+                model: self.current_model.clone(),
+            })
             .await
             .ok();
         Ok(())
@@ -830,9 +881,14 @@ impl Engine {
         Ok(())
     }
 
-    /// Respawn the root agent (used after model change).
-    async fn respawn_root_agent(&mut self) -> Result<()> {
-        let agent_config = self.root_agent_config()?;
+    /// Respawn the active agent (used after model change).
+    async fn respawn_active_agent(&mut self) -> Result<()> {
+        let agent_config = self
+            .config
+            .agents
+            .iter()
+            .find(|a| a.name == self.active_agent)
+            .ok_or_else(|| Error::Agent(format!("Agent '{}' not found", self.active_agent)))?;
 
         let agent = Agent::from_config(agent_config, AgentRole::Root);
         let name = agent.name.clone();
@@ -909,8 +965,8 @@ impl Engine {
             self.active_session_id = Some(session_id);
             self.clear_undo_redo();
 
-            // Clear root agent's conversation
-            self.send_to_root(AgentMessage::ClearHistory).await?;
+            // Clear active agent's conversation
+            self.send_to_active(AgentMessage::ClearHistory).await?;
 
             self.event_tx
                 .send(EngineEvent::SessionSwitched {
@@ -955,8 +1011,8 @@ impl Engine {
             self.active_session_id = Some(session_id);
             self.clear_undo_redo();
 
-            // Send history to root agent
-            self.send_to_root(AgentMessage::LoadHistory(history))
+            // Send history to active agent
+            self.send_to_active(AgentMessage::LoadHistory(history))
                 .await?;
 
             // Get session name for the event
@@ -1066,12 +1122,12 @@ impl Engine {
                 tool_call_id: None,
             })
             .collect();
-        // Only sync the agent context if a root agent is actually running;
+        // Only sync the agent context if an active agent is actually running;
         // otherwise (e.g. headless tests) skip without failing the operation.
-        if self.root_agent_config().is_err() {
+        if !self.agents.contains_key(&self.active_agent) {
             return Ok(());
         }
-        self.send_to_root(AgentMessage::LoadHistory(history))
+        self.send_to_active(AgentMessage::LoadHistory(history))
             .await?;
         Ok(())
     }
@@ -1407,7 +1463,7 @@ impl Engine {
                 diff
             )
         };
-        self.send_to_root(AgentMessage::UserInput { content: prompt })
+        self.send_to_active(AgentMessage::UserInput { content: prompt })
             .await?;
         self.event_tx
             .send(EngineEvent::ReviewResult(diff))
@@ -1539,9 +1595,9 @@ impl Engine {
         }
     }
 
-    /// Send a message to the root agent.
-    async fn send_to_root(&self, msg: AgentMessage) -> Result<()> {
-        let root_name = &self.root_agent_config()?.name;
+    /// Send a message to the active root agent.
+    async fn send_to_active(&self, msg: AgentMessage) -> Result<()> {
+        let root_name = &self.active_agent;
 
         let root_id = self
             .agents
@@ -1603,6 +1659,7 @@ fn ollama_config_to_llm(cfg: &OllamaConfig) -> LlmProviderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::types::AgentConfig;
 
     #[tokio::test]
     async fn test_engine_creation() {
@@ -1849,5 +1906,131 @@ mod tests {
             }
             _ => panic!("expected SessionMoved event"),
         }
+    }
+
+    /// Build an engine whose config declares two root agents and whose
+    /// `self.agents` map reflects that both were spawned.
+    fn engine_with_agents() -> (Engine, mpsc::Receiver<EngineEvent>) {
+        let (event_tx, event_rx) = mpsc::channel(64);
+        let (_cmd_tx, cmd_rx) = mpsc::channel(64);
+        let mut config = Config::default();
+        config.agents = vec![
+            AgentConfig {
+                name: "root".into(),
+                description: "root agent".into(),
+                role: AgentRole::Root,
+                model: "claude-sonnet-4".into(),
+                skills: vec![],
+                mcps: vec![],
+                permissions: crate::config::types::PermissionConfig::default(),
+                subagents: vec![],
+                system_prompt: String::new(),
+                max_steps: 90,
+            },
+            AgentConfig {
+                name: "writer".into(),
+                description: "writer agent".into(),
+                role: AgentRole::Root,
+                model: "claude-opus-4".into(),
+                skills: vec![],
+                mcps: vec![],
+                permissions: crate::config::types::PermissionConfig::default(),
+                subagents: vec![],
+                system_prompt: String::new(),
+                max_steps: 90,
+            },
+            AgentConfig {
+                name: "helper".into(),
+                description: "non-root agent".into(),
+                role: AgentRole::SubAgent,
+                model: "claude-sonnet-4".into(),
+                skills: vec![],
+                mcps: vec![],
+                permissions: crate::config::types::PermissionConfig::default(),
+                subagents: vec![],
+                system_prompt: String::new(),
+                max_steps: 90,
+            },
+        ];
+        let mut engine = Engine::new(config, event_tx, cmd_rx);
+        // Simulate both root agents having been spawned by `initialize()`.
+        engine.agents.insert("root".into(), AgentId::new());
+        engine.agents.insert("writer".into(), AgentId::new());
+        (engine, event_rx)
+    }
+
+    #[tokio::test]
+    async fn test_handle_switch_agent_valid() {
+        let (mut engine, mut rx) = engine_with_agents();
+        engine.active_agent = "root".into();
+        engine.current_model = "claude-sonnet-4".into();
+
+        engine.handle_switch_agent("writer").await.unwrap();
+
+        assert_eq!(engine.active_agent, "writer");
+        assert_eq!(engine.current_model, "claude-opus-4");
+        // AgentSwitched is emitted before ModelChanged.
+        let ev = rx.try_recv().unwrap();
+        match ev {
+            EngineEvent::AgentSwitched { name } => assert_eq!(name, "writer"),
+            _ => panic!("expected AgentSwitched event"),
+        }
+        let ev = rx.try_recv().unwrap();
+        match ev {
+            EngineEvent::ModelChanged { model } => assert_eq!(model, "claude-opus-4"),
+            _ => panic!("expected ModelChanged event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_switch_agent_unknown() {
+        let (mut engine, _rx) = engine_with_agents();
+        let err = engine.handle_switch_agent("ghost").await.unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_switch_agent_non_root() {
+        let (mut engine, _rx) = engine_with_agents();
+        let err = engine.handle_switch_agent("helper").await.unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_switch_agent_not_spawned() {
+        // A root agent that is listed as a subagent of another agent is skipped
+        // during `initialize()`, so it is absent from `self.agents` even though
+        // it passes the config `role == Root` check.
+        let (mut engine, _rx) = engine_with_agents();
+        engine.config.agents.push(AgentConfig {
+            name: "orphan".into(),
+            description: "root but listed as subagent".into(),
+            role: AgentRole::Root,
+            model: "claude-sonnet-4".into(),
+            skills: vec![],
+            mcps: vec![],
+            permissions: crate::config::types::PermissionConfig::default(),
+            subagents: vec![],
+            system_prompt: String::new(),
+            max_steps: 90,
+        });
+        // `orphan` is NOT in `self.agents` (not spawned).
+        let err = engine.handle_switch_agent("orphan").await.unwrap_err();
+        assert!(err.to_string().contains("not spawned"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_switch_agent_current_model_consistency() {
+        let (mut engine, _rx) = engine_with_agents();
+        engine.active_agent = "root".into();
+        engine.current_model = "claude-sonnet-4".into();
+
+        engine.handle_switch_agent("writer").await.unwrap();
+        assert_eq!(engine.current_model, "claude-opus-4");
+
+        // Switching back restores the original agent's model.
+        engine.handle_switch_agent("root").await.unwrap();
+        assert_eq!(engine.current_model, "claude-sonnet-4");
+        assert_eq!(engine.active_agent, "root");
     }
 }

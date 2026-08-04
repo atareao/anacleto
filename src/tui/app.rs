@@ -45,6 +45,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/rename", "Rename a session"),
     ("/agents", "List agents"),
     ("/a", "List agents (alias)"),
+    ("/agent", "Switch active agent"),
     ("/subagents", "List subagents"),
     ("/sa", "List subagents (alias)"),
     ("/copy", "Copy chat to clipboard"),
@@ -208,6 +209,8 @@ pub struct App {
     pub show_agents: bool,
     /// Whether to show the subagent tree overlay.
     pub show_subagents: bool,
+    /// Name of the currently active agent (for display).
+    pub active_agent: String,
 
     // ── Human-in-the-loop approval ────────────────────────────────────
     /// Pending approval request (None if no pending request).
@@ -346,6 +349,7 @@ impl App {
             agents: Vec::new(),
             show_agents: false,
             show_subagents: false,
+            active_agent: String::new(),
             pending_approval: None,
             pending_question: None,
             total_tokens: 0,
@@ -511,6 +515,11 @@ impl App {
                 self.session_name = name.clone();
                 self.show_session_list = false;
                 self.push_msg(format!("Switched to session: {}", name));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::AgentSwitched { name } => {
+                self.active_agent = name.clone();
+                self.push_msg(format!("Agente activo: {}", name));
                 self.chat_scroll = 0;
             }
             EngineEvent::SessionDeleted { id } => {
@@ -1363,6 +1372,17 @@ impl App {
                 }
             }
             // ── Agent info commands ────────────────────────────────
+            "/agent" => {
+                let name = parts.get(1).unwrap_or(&"").trim();
+                if name.is_empty() {
+                    self.push_msg("Usage: /agent <agent-name>");
+                } else {
+                    self.push_msg(format!("> /agent {}", name));
+                    let _ = self
+                        .cmd_tx
+                        .try_send(EngineCommand::SwitchAgent(name.to_string()));
+                }
+            }
             "/agents" | "/a" => {
                 self.push_msg("> /agents");
                 self.show_agents = !self.show_agents;
@@ -1980,6 +2000,17 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(Color::Cyan),
     ));
     all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+
+    // Active agent indicator
+    if !app.active_agent.is_empty() {
+        all_spans.push(Span::styled(
+            format!(" @{} ", app.active_agent),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ));
+        all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+    }
 
     // Debug mode indicator
     if app.debug_mode {
