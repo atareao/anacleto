@@ -119,6 +119,25 @@ impl Permissions {
             )))
         }
     }
+
+    /// Intersect two permission sets, producing the effective permissions for
+    /// a child that must satisfy both its own rules and its parent's.
+    ///
+    /// Semantics:
+    /// - A permission is denied if either set denies it (deny propagates down).
+    /// - A permission is explicitly allowed only if both sets allow it.
+    /// - Allow-by-default only holds if both sets allow by default.
+    pub fn intersection(&self, other: &Permissions) -> Permissions {
+        let denied: HashSet<Permission> = self.denied.union(&other.denied).cloned().collect();
+        let allowed: HashSet<Permission> =
+            self.allowed.intersection(&other.allowed).cloned().collect();
+        let allow_by_default = self.allow_by_default && other.allow_by_default;
+        Permissions {
+            denied,
+            allowed,
+            allow_by_default,
+        }
+    }
 }
 
 impl Default for Permissions {
@@ -193,6 +212,52 @@ mod tests {
         assert_eq!(variants.len(), 8);
         let unique: std::collections::HashSet<&Permission> = variants.iter().collect();
         assert_eq!(unique.len(), 8);
+    }
+
+    #[test]
+    fn test_intersection_propagates_deny() {
+        // Parent denies command.run; child allows everything by default.
+        let parent = Permissions::from_config(&PermissionConfig {
+            deny: vec!["command.run".into()],
+            allow: vec![],
+        });
+        let child = Permissions::default();
+        let effective = parent.intersection(&child);
+        // The parent's deny propagates to the child.
+        assert!(!effective.is_allowed(&Permission::CommandRun));
+        // Other permissions remain allowed by default.
+        assert!(effective.is_allowed(&Permission::FsRead));
+        assert!(effective.is_allowed(&Permission::NetHttp));
+    }
+
+    #[test]
+    fn test_intersection_allow_lists_intersect() {
+        let parent = Permissions::from_config(&PermissionConfig {
+            deny: vec![],
+            allow: vec!["fs.read".into(), "skill.use".into()],
+        });
+        let child = Permissions::from_config(&PermissionConfig {
+            deny: vec![],
+            allow: vec!["fs.read".into(), "net.http".into()],
+        });
+        let effective = parent.intersection(&child);
+        // Only the intersection of the allow lists is granted.
+        assert!(effective.is_allowed(&Permission::FsRead));
+        assert!(!effective.is_allowed(&Permission::SkillUse));
+        assert!(!effective.is_allowed(&Permission::NetHttp));
+        // Deny-by-default holds because neither side allows by default.
+        assert!(!effective.is_allowed(&Permission::CommandRun));
+    }
+
+    #[test]
+    fn test_intersection_deny_overrides_allow() {
+        let parent = Permissions::from_config(&PermissionConfig {
+            deny: vec!["fs.read".into()],
+            allow: vec!["fs.read".into()],
+        });
+        let child = Permissions::default();
+        let effective = parent.intersection(&child);
+        assert!(!effective.is_allowed(&Permission::FsRead));
     }
 
     fn permission_strategy() -> impl Strategy<Value = Permission> {

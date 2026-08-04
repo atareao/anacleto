@@ -21,6 +21,8 @@ pub struct Session {
     pub shared: bool,
     /// Workspace this session belongs to (if any).
     pub workspace: Option<String>,
+    /// Parent session id (for forked/child sessions), if any.
+    pub parent_id: Option<Uuid>,
 }
 
 /// A message stored in a session.
@@ -53,6 +55,8 @@ pub struct SessionSummary {
     pub is_active: bool,
     /// Whether the session is pinned (shown at the top of the sidebar).
     pub pinned: bool,
+    /// Parent session id (for forked/child sessions), if any.
+    pub parent_id: Option<Uuid>,
 }
 
 /// A single message in an exported session transcript.

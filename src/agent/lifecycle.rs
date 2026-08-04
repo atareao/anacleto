@@ -6,10 +6,13 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::agent::retry::retry_with_backoff;
-use crate::agent::types::{Agent, AgentId, AgentMessage, AgentRole, AgentStatus};
+use crate::agent::types::{
+    Agent, AgentId, AgentMessage, AgentMode, AgentRole, AgentStatus, TaskMode,
+};
 use crate::config::types::AgentConfig;
 use crate::config::types::RetryConfig;
 use crate::db::session::Database;
+use crate::engine::jobs::JobRegistry;
 use crate::engine::orchestrator::{EngineEvent, UsageEvent};
 use crate::error::{Error, Result};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry};
@@ -94,6 +97,16 @@ pub struct SpawnAgentConfig {
     /// If true, emit LlmRequestDebug/LlmResponseDebug events with serialized JSON.
     /// Shared so the `/debug` toggle takes effect on running agents immediately.
     pub debug: Arc<AtomicBool>,
+    /// Optional id of the task that spawned this agent (via the `task` tool).
+    pub task_id: Option<String>,
+    /// Current delegation depth (0 for root agents). Used to enforce
+    /// `subagent_depth` on dynamic `task` tool delegation.
+    pub depth: u32,
+    /// Operational mode (Plan = read-only, Build = full access).
+    pub mode: AgentMode,
+    /// Shared registry of background jobs, used to track `task` tool
+    /// background delegations.
+    pub job_registry: Option<Arc<tokio::sync::Mutex<JobRegistry>>>,
 }
 
 /// Spawn a new agent task and return a handle to it.
@@ -121,6 +134,10 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         history_limit_percent,
         debug,
         workspace,
+        task_id: _task_id,
+        depth,
+        mode,
+        job_registry,
     } = config;
     let (tx, mut rx) = mpsc::channel::<AgentMessage>(256);
     let handle = AgentHandle::new(tx);
@@ -130,6 +147,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     let model = agent.model.clone();
     let agent_permissions = agent.permissions.clone();
     let max_steps = agent.max_steps;
+    let subagent_depth = agent.subagent_depth;
 
     // Load agent description as system prompt
     let system_prompt = agent.description.clone();
@@ -151,6 +169,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     tools.push(mcp_read_resource_tool_definition());
     tools.push(mcp_list_resource_templates_tool_definition());
     tools.push(lsp_query_tool_definition());
+    tools.push(task_tool_definition());
 
     // Clone what the task needs
     let agent_mcp_names = agent.mcps.clone();
@@ -473,11 +492,42 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                     )
                                     .await;
 
-                                    let result = if !permission_ok {
+                                    // In Plan mode, block write tools (read-only).
+                                    let plan_blocked = plan_mode_blocked(
+                                        &mode,
+                                        &tc.function.name,
+                                        &tc.function.arguments,
+                                    );
+
+                                    let result = if let Some(msg) = plan_blocked {
+                                        msg
+                                    } else if !permission_ok {
                                         format!(
                                             "Operation '{}' was denied by user or permissions.",
                                             tc.function.name
                                         )
+                                    } else if tc.function.name == "task" {
+                                        execute_task_tool(
+                                            tc,
+                                            &agent_permissions,
+                                            &llm_registry,
+                                            &skills,
+                                            &event_tx,
+                                            &usage_tx,
+                                            &db,
+                                            session_id,
+                                            history_limit_percent,
+                                            &retry_config,
+                                            &debug_mode,
+                                            depth,
+                                            subagent_depth,
+                                            &agent_name,
+                                            &agent_id,
+                                            &model,
+                                            &job_registry,
+                                        )
+                                        .await
+                                        .unwrap_or_else(|e| e)
                                     } else if tc.function.name == "todo" {
                                         execute_todo_tool(&db, session_id, tc, &event_tx)
                                             .await
@@ -595,10 +645,10 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             .await;
 
                                         match spawn_subagent_and_delegate(SpawnSubagentConfig {
-                                            config,
-                                            parent_id: &agent_id,
-                                            llm_registry: &llm_registry,
-                                            task,
+                                            config: config.clone(),
+                                            parent_id: agent_id.clone(),
+                                            llm_registry: llm_registry.clone(),
+                                            task: task.to_string(),
                                             db: db.clone(),
                                             session_id,
                                             event_tx: event_tx.clone(),
@@ -607,6 +657,9 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             retry_config: retry_config.clone(),
                                             debug: debug_mode.clone(),
                                             max_steps: config.max_steps,
+                                            depth: depth + 1,
+                                            skills_override: None,
+                                            permissions_override: None,
                                         })
                                         .await
                                         {
@@ -1672,6 +1725,273 @@ fn subagent_config_to_tool_definition(config: &AgentConfig) -> ToolDefinition {
     }
 }
 
+/// Parsed arguments for the dynamic `task` tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskToolArgs {
+    task_id: String,
+    description: String,
+    mode: TaskMode,
+    model: Option<String>,
+    tools: Vec<String>,
+}
+
+impl TaskToolArgs {
+    /// Parse the `task` tool arguments from the LLM's JSON string.
+    fn parse(arguments: &str) -> std::result::Result<Self, String> {
+        let args: serde_json::Value = serde_json::from_str(arguments)
+            .map_err(|e| format!("Failed to parse task arguments: {e}"))?;
+        let task_id = args
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let description = args
+            .get("description")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "task requires 'description'".to_string())?
+            .to_string();
+        let mode = match args
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("foreground")
+        {
+            "background" => TaskMode::Background,
+            _ => TaskMode::Foreground,
+        };
+        let model = args.get("model").and_then(|v| v.as_str()).map(String::from);
+        let tools = args
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Self {
+            task_id,
+            description,
+            mode,
+            model,
+            tools,
+        })
+    }
+}
+
+/// Tool definition for the dynamic `task` tool.
+fn task_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "task".to_string(),
+        description: "Dynamically delegate a task to a fresh subagent. \
+                       Provide a task_id, a description of the work, and a mode \
+                       ('foreground' to wait for the result, 'background' to run \
+                       asynchronously and return immediately). Optionally specify \
+                       a model and a list of tool/skill names to grant."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "A unique identifier for this task."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "The task to delegate to the subagent."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["foreground", "background"],
+                    "description": "foreground waits for the result; background returns immediately."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional model for the subagent."
+                },
+                "tools": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional list of tool/skill names to grant the subagent."
+                }
+            },
+            "required": ["task_id", "description"]
+        }),
+    }
+}
+
+/// In Plan (read-only) mode, block write tools and return an error message.
+/// Returns `None` when the tool is not a write operation or mode is Build.
+fn plan_mode_blocked(mode: &AgentMode, tool_name: &str, arguments: &str) -> Option<String> {
+    if *mode != AgentMode::Plan {
+        return None;
+    }
+    let is_write = match tool_name {
+        "apply_patch" => true,
+        "filesystem" => {
+            let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+            let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
+            crate::filesystem::parse_request(task)
+                .map(|r| crate::filesystem::is_write_op(&r.op))
+                .unwrap_or(false)
+        }
+        n if n.contains("write")
+            || n.contains("create")
+            || n.contains("delete")
+            || n.contains("edit") =>
+        {
+            true
+        }
+        _ => false,
+    };
+    if is_write {
+        Some(format!(
+            "read-only plan mode: tool '{tool_name}' is disabled"
+        ))
+    } else {
+        None
+    }
+}
+
+/// Execute a dynamic `task` tool call: delegate to a fresh subagent.
+///
+/// In `Foreground` mode the subagent is spawned and awaited inline. In
+/// `Background` mode the subagent runs in its own tokio task, is registered
+/// in the shared `JobRegistry`, and emits `EngineEvent::SubagentFinished`
+/// when it completes.
+#[allow(clippy::too_many_arguments)]
+async fn execute_task_tool(
+    tool_call: &ToolCall,
+    parent_permissions: &Permissions,
+    llm_registry: &LlmProviderRegistry,
+    parent_skills: &[Skill],
+    event_tx: &mpsc::Sender<EngineEvent>,
+    usage_tx: &Option<mpsc::Sender<UsageEvent>>,
+    db: &Option<Database>,
+    session_id: Option<Uuid>,
+    history_limit_percent: f64,
+    retry_config: &RetryConfig,
+    debug: &Arc<AtomicBool>,
+    depth: u32,
+    subagent_depth: u32,
+    parent_name: &str,
+    parent_id: &AgentId,
+    parent_model: &str,
+    job_registry: &Option<Arc<tokio::sync::Mutex<JobRegistry>>>,
+) -> std::result::Result<String, String> {
+    let args = TaskToolArgs::parse(&tool_call.function.arguments)?;
+
+    // Enforce the delegation depth limit.
+    if depth >= subagent_depth {
+        return Err(format!(
+            "subagent depth limit reached ({depth} >= {subagent_depth}): cannot delegate further"
+        ));
+    }
+
+    // Derive the child's permissions: parent ∩ child (deny propagates down).
+    let child_permissions = parent_permissions.intersection(&Permissions::default());
+
+    // Filter the parent's skills by the requested tool names (or grant all).
+    let skills_override: Vec<Skill> = if args.tools.is_empty() {
+        parent_skills.to_vec()
+    } else {
+        parent_skills
+            .iter()
+            .filter(|s| args.tools.iter().any(|t| t == &s.name))
+            .cloned()
+            .collect()
+    };
+
+    let model = args
+        .model
+        .clone()
+        .unwrap_or_else(|| parent_model.to_string());
+
+    let config = AgentConfig {
+        name: args.task_id.clone(),
+        description: args.description.clone(),
+        role: AgentRole::SubAgent,
+        model,
+        skills: Vec::new(), // skills provided via `skills_override`
+        mcps: Vec::new(),
+        permissions: crate::config::PermissionConfig::default(),
+        subagents: Vec::new(),
+        system_prompt: args.description.clone(),
+        max_steps: 90,
+        subagent_depth,
+    };
+
+    let sub_cfg = SpawnSubagentConfig {
+        config,
+        parent_id: parent_id.clone(),
+        llm_registry: llm_registry.clone(),
+        task: args.description.clone(),
+        db: db.clone(),
+        session_id,
+        event_tx: event_tx.clone(),
+        usage_tx: usage_tx.clone(),
+        history_limit_percent,
+        retry_config: retry_config.clone(),
+        debug: debug.clone(),
+        max_steps: 90,
+        depth: depth + 1,
+        skills_override: Some(skills_override),
+        permissions_override: Some(child_permissions),
+    };
+
+    match args.mode {
+        TaskMode::Foreground => {
+            let _ = event_tx
+                .send(EngineEvent::AgentStatusChanged {
+                    agent_id: parent_id.clone(),
+                    agent_name: parent_name.to_string(),
+                    status: AgentStatus::WaitingForSubAgent,
+                })
+                .await;
+            let result = spawn_subagent_and_delegate(sub_cfg).await;
+            let _ = event_tx
+                .send(EngineEvent::AgentStatusChanged {
+                    agent_id: parent_id.clone(),
+                    agent_name: parent_name.to_string(),
+                    status: AgentStatus::Working,
+                })
+                .await;
+            match result {
+                Ok(r) => Ok(r),
+                Err(e) => Err(format!("Subagent error: {e}")),
+            }
+        }
+        TaskMode::Background => {
+            let task_id = args.task_id.clone();
+            let task_id_for_register = task_id.clone();
+            let job_registry_owned = job_registry.clone();
+            let event_tx_owned = event_tx.clone();
+            let handle = tokio::spawn(async move {
+                let summary = match spawn_subagent_and_delegate(sub_cfg).await {
+                    Ok(r) => r,
+                    Err(e) => format!("Subagent error: {e}"),
+                };
+                let _ = event_tx_owned
+                    .send(EngineEvent::SubagentFinished {
+                        task_id: task_id.clone(),
+                        summary,
+                    })
+                    .await;
+                if let Some(reg) = job_registry_owned {
+                    reg.lock().await.remove(&task_id);
+                }
+            });
+            if let Some(reg) = job_registry {
+                reg.lock()
+                    .await
+                    .register(task_id_for_register.clone(), handle);
+            }
+            Ok(format!(
+                "Background task '{task_id_for_register}' launched. It will run asynchronously."
+            ))
+        }
+    }
+}
+
 /// Resolve an LLM provider for a given model name using the registry.
 fn resolve_provider_for_model(
     model: &str,
@@ -1693,11 +2013,11 @@ fn resolve_provider_for_model(
 }
 
 /// Configuration for spawning a subagent on-demand.
-pub struct SpawnSubagentConfig<'a> {
-    pub config: &'a AgentConfig,
-    pub parent_id: &'a AgentId,
-    pub llm_registry: &'a LlmProviderRegistry,
-    pub task: &'a str,
+pub struct SpawnSubagentConfig {
+    pub config: AgentConfig,
+    pub parent_id: AgentId,
+    pub llm_registry: LlmProviderRegistry,
+    pub task: String,
     pub db: Option<Database>,
     pub session_id: Option<Uuid>,
     pub event_tx: mpsc::Sender<EngineEvent>,
@@ -1706,6 +2026,14 @@ pub struct SpawnSubagentConfig<'a> {
     pub retry_config: RetryConfig,
     pub debug: Arc<AtomicBool>,
     pub max_steps: u32,
+    /// Delegation depth of the spawned subagent (parent depth + 1).
+    pub depth: u32,
+    /// Pre-loaded skills to grant the subagent. If `None`, skills are loaded
+    /// from the config's skill paths.
+    pub skills_override: Option<Vec<Skill>>,
+    /// Effective permissions for the subagent (parent ∩ child). If `Some`,
+    /// overrides the permissions derived from `config.permissions`.
+    pub permissions_override: Option<Permissions>,
 }
 
 /// Spawn a subagent on-demand, delegate a task to it, and wait for the response.
@@ -1713,7 +2041,7 @@ pub struct SpawnSubagentConfig<'a> {
 /// The subagent is created fresh with its own LLM provider and skills.
 /// It processes the task using its own model (which may differ from the parent's)
 /// and returns the text response. The subagent task is destroyed after responding.
-async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig<'_>) -> Result<String> {
+async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Result<String> {
     let SpawnSubagentConfig {
         config,
         parent_id,
@@ -1727,9 +2055,15 @@ async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig<'_>) -> Result<Str
         retry_config,
         debug,
         max_steps,
+        depth: _depth,
+        skills_override,
+        permissions_override,
     } = cfg;
     // Create agent with SubAgent role
-    let agent = Agent::from_config(config, AgentRole::SubAgent);
+    let mut agent = Agent::from_config(&config, AgentRole::SubAgent);
+    if let Some(perms) = permissions_override {
+        agent.permissions = perms;
+    }
     let agent_id = agent.id.clone();
     let agent_name = agent.name.clone();
     let model = agent.model.clone();
@@ -1753,10 +2087,13 @@ async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig<'_>) -> Result<Str
         .await;
 
     // Resolve provider
-    let provider = resolve_provider_for_model(&model, llm_registry).map_err(Error::Provider)?;
+    let provider = resolve_provider_for_model(&model, &llm_registry).map_err(Error::Provider)?;
 
-    // Load subagent's own skills
-    let skills = load_agent_skills(&agent.skills);
+    // Load subagent's own skills (or use pre-loaded skills from `skills_override`).
+    let skills = match skills_override {
+        Some(s) => s,
+        None => load_agent_skills(&agent.skills),
+    };
     let subagent_tools: Vec<ToolDefinition> = skills.iter().map(skill_to_tool_definition).collect();
 
     // Load subagent description as system prompt
@@ -2173,6 +2510,7 @@ mod tests {
             subagents: vec![],
             system_prompt: "You are a test agent.".into(),
             max_steps: 60,
+            subagent_depth: 3,
         };
         let root = Agent::from_config(&config, AgentRole::Root);
         assert!(root.is_root());
@@ -2620,5 +2958,85 @@ mod tests {
         fn output_price_per_million(&self) -> f64 {
             0.0
         }
+    }
+
+    #[test]
+    fn test_task_tool_args_parse_foreground() {
+        let args = TaskToolArgs::parse(
+            r#"{"task_id":"t1","description":"do the thing","mode":"foreground"}"#,
+        )
+        .unwrap();
+        assert_eq!(args.task_id, "t1");
+        assert_eq!(args.description, "do the thing");
+        assert_eq!(args.mode, TaskMode::Foreground);
+        assert_eq!(args.model, None);
+        assert!(args.tools.is_empty());
+    }
+
+    #[test]
+    fn test_task_tool_args_parse_background_with_model_and_tools() {
+        let args = TaskToolArgs::parse(
+            r#"{"task_id":"t2","description":"research","mode":"background","model":"claude-opus-4","tools":["shell","read"]}"#,
+        )
+        .unwrap();
+        assert_eq!(args.task_id, "t2");
+        assert_eq!(args.mode, TaskMode::Background);
+        assert_eq!(args.model.as_deref(), Some("claude-opus-4"));
+        assert_eq!(args.tools, vec!["shell".to_string(), "read".to_string()]);
+    }
+
+    #[test]
+    fn test_task_tool_args_defaults_mode_and_task_id() {
+        // Missing mode defaults to foreground; missing task_id is generated.
+        let args = TaskToolArgs::parse(r#"{"description":"just a task"}"#).unwrap();
+        assert_eq!(args.mode, TaskMode::Foreground);
+        assert!(!args.task_id.is_empty());
+    }
+
+    #[test]
+    fn test_task_tool_args_requires_description() {
+        let err = TaskToolArgs::parse(r#"{"task_id":"t3"}"#).unwrap_err();
+        assert!(err.contains("description"));
+    }
+
+    #[test]
+    fn test_task_tool_args_invalid_json() {
+        assert!(TaskToolArgs::parse("not json").is_err());
+    }
+
+    #[test]
+    fn test_plan_mode_blocks_apply_patch() {
+        let blocked = plan_mode_blocked(&AgentMode::Plan, "apply_patch", "{}");
+        assert!(blocked.is_some());
+        assert!(blocked.unwrap().contains("plan mode"));
+    }
+
+    #[test]
+    fn test_plan_mode_blocks_filesystem_write() {
+        let blocked = plan_mode_blocked(
+            &AgentMode::Plan,
+            "filesystem",
+            r#"{"task":"{\"op\":\"write\",\"path\":\"a.txt\",\"content\":\"x\"}"}"#,
+        );
+        assert!(blocked.is_some());
+    }
+
+    #[test]
+    fn test_plan_mode_allows_reads() {
+        assert!(plan_mode_blocked(&AgentMode::Plan, "read", "{}").is_none());
+        assert!(plan_mode_blocked(&AgentMode::Plan, "grep", "{}").is_none());
+        assert!(
+            plan_mode_blocked(
+                &AgentMode::Plan,
+                "filesystem",
+                r#"{"task":"{\"op\":\"read\",\"path\":\"a.txt\"}"}"#,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn test_build_mode_allows_writes() {
+        assert!(plan_mode_blocked(&AgentMode::Build, "apply_patch", "{}").is_none());
     }
 }

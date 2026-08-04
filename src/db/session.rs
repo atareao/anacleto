@@ -132,6 +132,7 @@ impl Database {
         self.ensure_column("sessions", "workspace", "TEXT").await?;
         self.ensure_column("sessions", "pinned", "INTEGER NOT NULL DEFAULT 0")
             .await?;
+        self.ensure_column("sessions", "parent_id", "TEXT").await?;
 
         Ok(())
     }
@@ -162,19 +163,29 @@ impl Database {
 
     /// Create a new session.
     pub async fn create_session(&self, name: &str) -> Result<Session> {
+        self.create_session_with_parent(name, None).await
+    }
+
+    /// Create a new session, optionally linked to a parent session (for forks).
+    pub async fn create_session_with_parent(
+        &self,
+        name: &str,
+        parent_id: Option<Uuid>,
+    ) -> Result<Session> {
         let now = Utc::now();
         let id = Uuid::new_v4();
 
         sqlx::query(
             r#"
-            INSERT INTO sessions (id, name, created_at, updated_at, is_active)
-            VALUES (?, ?, ?, ?, 1)
+            INSERT INTO sessions (id, name, created_at, updated_at, is_active, parent_id)
+            VALUES (?, ?, ?, ?, 1, ?)
             "#,
         )
         .bind(id.to_string())
         .bind(name)
         .bind(now.to_rfc3339())
         .bind(now.to_rfc3339())
+        .bind(parent_id.map(|p| p.to_string()))
         .execute(&self.pool)
         .await?;
 
@@ -187,6 +198,7 @@ impl Database {
             metadata: None,
             shared: false,
             workspace: None,
+            parent_id,
         })
     }
 
@@ -318,7 +330,7 @@ impl Database {
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
         let rows = sqlx::query(
             r#"
-            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active, s.pinned,
+            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active, s.pinned, s.parent_id,
                    COUNT(m.id) as message_count
             FROM sessions s
             LEFT JOIN messages m ON m.session_id = s.id
@@ -349,6 +361,9 @@ impl Database {
                     message_count: row.get("message_count"),
                     is_active: row.get::<i32, _>("is_active") != 0,
                     pinned: row.get::<i32, _>("pinned") != 0,
+                    parent_id: row
+                        .get::<Option<String>, _>("parent_id")
+                        .and_then(|s| Uuid::parse_str(&s).ok()),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -370,7 +385,7 @@ impl Database {
     pub async fn list_pinned_sessions(&self) -> Result<Vec<SessionSummary>> {
         let rows = sqlx::query(
             r#"
-            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active, s.pinned,
+            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active, s.pinned, s.parent_id,
                    COUNT(m.id) as message_count
             FROM sessions s
             LEFT JOIN messages m ON m.session_id = s.id
@@ -402,6 +417,9 @@ impl Database {
                     message_count: row.get("message_count"),
                     is_active: row.get::<i32, _>("is_active") != 0,
                     pinned: true,
+                    parent_id: row
+                        .get::<Option<String>, _>("parent_id")
+                        .and_then(|s| Uuid::parse_str(&s).ok()),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -703,6 +721,74 @@ impl Database {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Set (or clear) the parent session of a session (used by `/fork`).
+    pub async fn set_parent(&self, session_id: Uuid, parent_id: Option<Uuid>) -> Result<()> {
+        sqlx::query("UPDATE sessions SET parent_id = ? WHERE id = ?")
+            .bind(parent_id.map(|p| p.to_string()))
+            .bind(session_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Get the parent session id of a session, if any.
+    pub async fn get_parent(&self, session_id: Uuid) -> Result<Option<Uuid>> {
+        let row = sqlx::query("SELECT parent_id FROM sessions WHERE id = ?")
+            .bind(session_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row
+            .and_then(|r| r.get::<Option<String>, _>("parent_id"))
+            .and_then(|s| Uuid::parse_str(&s).ok()))
+    }
+
+    /// List the child sessions (direct forks) of a session.
+    pub async fn get_children(&self, session_id: Uuid) -> Result<Vec<SessionSummary>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active, s.pinned, s.parent_id,
+                   COUNT(m.id) as message_count
+            FROM sessions s
+            LEFT JOIN messages m ON m.session_id = s.id
+            WHERE s.parent_id = ?
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC
+            "#,
+        )
+        .bind(session_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let summaries = rows
+            .iter()
+            .map(|row| -> Result<SessionSummary> {
+                Ok(SessionSummary {
+                    id: Uuid::parse_str(row.get::<&str, _>("id"))
+                        .map_err(|e| Error::Session(e.to_string()))?,
+                    name: row.get("name"),
+                    created_at: chrono::DateTime::parse_from_rfc3339(
+                        row.get::<&str, _>("created_at"),
+                    )
+                    .map_err(|e| Error::Session(e.to_string()))?
+                    .with_timezone(&chrono::Utc),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(
+                        row.get::<&str, _>("updated_at"),
+                    )
+                    .map_err(|e| Error::Session(e.to_string()))?
+                    .with_timezone(&chrono::Utc),
+                    message_count: row.get("message_count"),
+                    is_active: row.get::<i32, _>("is_active") != 0,
+                    pinned: row.get::<i32, _>("pinned") != 0,
+                    parent_id: row
+                        .get::<Option<String>, _>("parent_id")
+                        .and_then(|s| Uuid::parse_str(&s).ok()),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(summaries)
     }
 
     /// Add a new todo to a session.
@@ -1263,5 +1349,42 @@ mod tests {
         assert!(!s1_summary.pinned);
         let s2_summary = all.iter().find(|s| s.id == s2.id).unwrap();
         assert!(s2_summary.pinned);
+    }
+
+    #[tokio::test]
+    async fn test_session_parent_children() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Database::open(&db_path).await.unwrap();
+
+        let parent = db.create_session("parent").await.unwrap();
+        assert_eq!(parent.parent_id, None);
+
+        // Create a child linked to the parent at creation time.
+        let child = db
+            .create_session_with_parent("child", Some(parent.id))
+            .await
+            .unwrap();
+        assert_eq!(child.parent_id, Some(parent.id));
+
+        // get_parent resolves the link.
+        assert_eq!(db.get_parent(child.id).await.unwrap(), Some(parent.id));
+        assert_eq!(db.get_parent(parent.id).await.unwrap(), None);
+
+        // get_children lists direct forks.
+        let children = db.get_children(parent.id).await.unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].id, child.id);
+        assert_eq!(children[0].parent_id, Some(parent.id));
+
+        // set_parent can re-link or clear.
+        let other = db.create_session("other").await.unwrap();
+        db.set_parent(child.id, Some(other.id)).await.unwrap();
+        assert_eq!(db.get_parent(child.id).await.unwrap(), Some(other.id));
+        assert!(db.get_children(parent.id).await.unwrap().is_empty());
+        assert_eq!(db.get_children(other.id).await.unwrap().len(), 1);
+
+        db.set_parent(child.id, None).await.unwrap();
+        assert_eq!(db.get_parent(child.id).await.unwrap(), None);
     }
 }

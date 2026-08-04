@@ -8,11 +8,12 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 use crate::agent::lifecycle::{AgentHandle, SpawnAgentConfig, spawn_agent};
-use crate::agent::types::{Agent, AgentId, AgentMessage, AgentRole, AgentStatus};
+use crate::agent::types::{Agent, AgentId, AgentMessage, AgentMode, AgentRole, AgentStatus};
 use crate::config::Config;
 use crate::config::types::{OllamaConfig, ProviderConfig};
 use crate::db::models::{SessionSummary, StoredMessage};
 use crate::db::session::Database;
+use crate::engine::jobs::JobRegistry;
 use crate::error::{Error, Result};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry, create_provider};
 use crate::llm::types::{LlmMessage, LlmProviderConfig, LlmProviderType, MessageRole};
@@ -180,6 +181,15 @@ pub enum EngineEvent {
     ModelsFrecency(Vec<(String, usize)>),
     /// Result of a git worktree operation (via `/worktree`).
     WorktreeResult(String),
+    /// A background task (dynamic `task` tool delegation) finished.
+    SubagentFinished { task_id: String, summary: String },
+    /// The active session's plan was handed off to build mode (via `/build`).
+    BuildDone,
+    /// The session hierarchy (children of the active session) was produced
+    /// (via `/children`).
+    SessionTree(Vec<SessionSummary>),
+    /// The list of running background jobs was produced (via `/jobs`).
+    JobsListed(Vec<String>),
 }
 
 /// Output format for a session export.
@@ -307,6 +317,8 @@ pub struct Engine {
     total_tokens: u32,
     /// Total cost in dollars (tracked for `/status`).
     total_cost: f64,
+    /// Registry of running background jobs (dynamic `task` tool delegations).
+    job_registry: Arc<tokio::sync::Mutex<JobRegistry>>,
 }
 
 /// Commands from the TUI to the engine.
@@ -390,6 +402,14 @@ pub enum EngineCommand {
     QuestionAnswer { id: String, answer: String },
     /// Pin or unpin a session (shown at the top of the sidebar).
     SetSessionPinned { id: String, pinned: bool },
+    /// List the running background jobs (via `/jobs`).
+    ListJobs,
+    /// Hand off the active session's plan to build mode (via `/build`).
+    Build,
+    /// Navigate to the parent session of the active session (via `/parent`).
+    Parent,
+    /// List the child sessions of the active session (via `/children`).
+    Children,
     /// Shutdown the engine.
     Shutdown,
 }
@@ -435,6 +455,7 @@ impl Engine {
             mcp_enabled: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             total_tokens: 0,
             total_cost: 0.0,
+            job_registry: Arc::new(tokio::sync::Mutex::new(JobRegistry::new())),
         }
     }
 
@@ -603,6 +624,10 @@ impl Engine {
                 history_limit_percent: history_limit,
                 debug: self.debug.clone(),
                 workspace: self.workspace.clone(),
+                task_id: None,
+                depth: 0,
+                mode: AgentMode::Build,
+                job_registry: Some(self.job_registry.clone()),
             });
 
             self.agents.insert(name, id.clone());
@@ -754,6 +779,18 @@ impl Engine {
                             }
                             EngineCommand::SetSessionPinned { id, pinned } => {
                                 self.handle_set_session_pinned(&id, pinned).await?;
+                            }
+                            EngineCommand::ListJobs => {
+                                self.handle_list_jobs().await?;
+                            }
+                            EngineCommand::Build => {
+                                self.handle_build().await?;
+                            }
+                            EngineCommand::Parent => {
+                                self.handle_parent().await?;
+                            }
+                            EngineCommand::Children => {
+                                self.handle_children().await?;
                             }
                             EngineCommand::Shutdown => unreachable!(),
                         }
@@ -949,6 +986,10 @@ impl Engine {
             history_limit_percent: history_limit,
             debug: self.debug.clone(),
             workspace: self.workspace.clone(),
+            task_id: None,
+            depth: 0,
+            mode: AgentMode::Build,
+            job_registry: Some(self.job_registry.clone()),
         });
 
         self.agents.insert(name.clone(), id.clone());
@@ -1195,7 +1236,9 @@ impl Engine {
             .get_session_name(session_id)
             .await?
             .unwrap_or_else(|| "fork".into());
-        let new_session = db.create_session(&format!("{name} (fork)")).await?;
+        let new_session = db
+            .create_session_with_parent(&format!("{name} (fork)"), Some(session_id))
+            .await?;
         db.copy_messages(session_id, new_session.id).await?;
         self.active_session_id = Some(new_session.id);
         self.clear_undo_redo();
@@ -1579,6 +1622,58 @@ impl Engine {
         Ok(())
     }
 
+    /// Handle `/build`: read the plan markdown file from the workspace and
+    /// inject it as an execution message to the active agent.
+    async fn handle_build(&mut self) -> Result<()> {
+        let path = self.workspace.join("PLAN.md");
+        let content = tokio::fs::read_to_string(&path).await.map_err(Error::Io)?;
+        let prompt = format!(
+            "Execute the following plan. Implement it fully, then report what was done.\n\n{}",
+            content
+        );
+        self.send_to_active(AgentMessage::UserInput { content: prompt })
+            .await?;
+        self.event_tx.send(EngineEvent::BuildDone).await.ok();
+        Ok(())
+    }
+
+    /// Handle `/parent`: navigate to the parent session of the active session.
+    async fn handle_parent(&mut self) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        if let Some(parent_id) = db.get_parent(session_id).await? {
+            self.handle_resume_session(&parent_id.to_string()).await?;
+        }
+        Ok(())
+    }
+
+    /// Handle `/children`: list the child sessions of the active session.
+    async fn handle_children(&self) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        let children = db.get_children(session_id).await?;
+        self.event_tx
+            .send(EngineEvent::SessionTree(children))
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/jobs`: list the running background jobs.
+    async fn handle_list_jobs(&self) -> Result<()> {
+        let ids = self.job_registry.lock().await.running_ids();
+        self.event_tx.send(EngineEvent::JobsListed(ids)).await.ok();
+        Ok(())
+    }
+
     /// Handle approval response from the TUI.
     async fn handle_approval_response(&self, id: &str, approved: bool) {
         let mut pending = self.pending_approvals.lock().await;
@@ -1926,6 +2021,7 @@ mod tests {
                 subagents: vec![],
                 system_prompt: String::new(),
                 max_steps: 90,
+                subagent_depth: 3,
             },
             AgentConfig {
                 name: "writer".into(),
@@ -1938,6 +2034,7 @@ mod tests {
                 subagents: vec![],
                 system_prompt: String::new(),
                 max_steps: 90,
+                subagent_depth: 3,
             },
             AgentConfig {
                 name: "helper".into(),
@@ -1950,6 +2047,7 @@ mod tests {
                 subagents: vec![],
                 system_prompt: String::new(),
                 max_steps: 90,
+                subagent_depth: 3,
             },
         ];
         let mut engine = Engine::new(config, event_tx, cmd_rx);
@@ -2013,6 +2111,7 @@ mod tests {
             subagents: vec![],
             system_prompt: String::new(),
             max_steps: 90,
+            subagent_depth: 3,
         });
         // `orphan` is NOT in `self.agents` (not spawned).
         let err = engine.handle_switch_agent("orphan").await.unwrap_err();

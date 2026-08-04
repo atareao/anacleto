@@ -315,6 +315,12 @@ pub struct AgentConfig {
     /// is forced to stop and mark the task as incomplete.
     #[serde(default = "default_max_steps")]
     pub max_steps: u32,
+
+    /// Maximum depth of dynamic subagent delegation via the `task` tool.
+    /// When an agent's delegation depth reaches this limit, further `task`
+    /// tool calls are rejected to prevent runaway nesting.
+    #[serde(default = "default_subagent_depth")]
+    pub subagent_depth: u32,
 }
 
 fn default_role() -> AgentRole {
@@ -323,6 +329,10 @@ fn default_role() -> AgentRole {
 
 fn default_max_steps() -> u32 {
     90
+}
+
+pub fn default_subagent_depth() -> u32 {
+    3
 }
 
 /// Permission configuration for an agent.
