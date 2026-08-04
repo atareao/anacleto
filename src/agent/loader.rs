@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::agent::types::AgentRole;
-use crate::config::types::{AgentConfig, PermissionConfig};
+use crate::config::types::{AgentConfig, PermissionConfig, default_subagent_depth};
 use crate::error::{Error, Result};
 
 /// Parse an agent from a Markdown string with YAML frontmatter.
@@ -65,6 +65,8 @@ pub fn parse_agent(content: &str, default_max_steps: u32) -> Result<AgentConfig>
         subagents: Vec<String>,
         #[serde(default)]
         max_steps: Option<u32>,
+        #[serde(default)]
+        subagent_depth: Option<u32>,
     }
 
     let frontmatter: Frontmatter = serde_yaml::from_str(frontmatter_str)
@@ -81,6 +83,9 @@ pub fn parse_agent(content: &str, default_max_steps: u32) -> Result<AgentConfig>
         subagents: frontmatter.subagents,
         system_prompt,
         max_steps: frontmatter.max_steps.unwrap_or(default_max_steps),
+        subagent_depth: frontmatter
+            .subagent_depth
+            .unwrap_or(default_subagent_depth()),
     })
 }
 
@@ -356,6 +361,7 @@ role: root
             subagents: vec![],
             system_prompt: "global prompt".into(),
             max_steps: 60,
+            subagent_depth: 3,
         }];
         let project = vec![AgentConfig {
             name: "root".into(),
@@ -368,6 +374,7 @@ role: root
             subagents: vec!["reviewer".into()],
             system_prompt: "project prompt".into(),
             max_steps: 60,
+            subagent_depth: 3,
         }];
 
         let merged = merge_agents(global, project).unwrap();
@@ -390,6 +397,7 @@ role: root
             subagents: vec![],
             system_prompt: "root prompt".into(),
             max_steps: 60,
+            subagent_depth: 3,
         }];
         let project = vec![AgentConfig {
             name: "reviewer".into(),
@@ -402,6 +410,7 @@ role: root
             subagents: vec![],
             system_prompt: "reviewer prompt".into(),
             max_steps: 60,
+            subagent_depth: 3,
         }];
 
         let merged = merge_agents(global, project).unwrap();
@@ -422,6 +431,7 @@ role: root
             subagents: vec![],
             system_prompt: "p".into(),
             max_steps: 60,
+            subagent_depth: 3,
         }];
         assert!(merge_agents(no_root, vec![]).is_err());
 
@@ -438,6 +448,7 @@ role: root
                 subagents: vec![],
                 system_prompt: "p".into(),
                 max_steps: 60,
+                subagent_depth: 3,
             },
             AgentConfig {
                 name: "b".into(),
@@ -450,6 +461,7 @@ role: root
                 subagents: vec![],
                 system_prompt: "p".into(),
                 max_steps: 60,
+                subagent_depth: 3,
             },
         ];
         assert!(merge_agents(two_roots, vec![]).is_err());
@@ -466,6 +478,7 @@ role: root
             subagents: vec![],
             system_prompt: "p".into(),
             max_steps: 60,
+            subagent_depth: 3,
         }];
         assert!(merge_agents(one_root, vec![]).is_ok());
     }

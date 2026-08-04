@@ -21,6 +21,8 @@ pub struct Session {
     pub shared: bool,
     /// Workspace this session belongs to (if any).
     pub workspace: Option<String>,
+    /// Parent session id (for forked/child sessions), if any.
+    pub parent_id: Option<Uuid>,
 }
 
 /// A message stored in a session.
@@ -51,6 +53,10 @@ pub struct SessionSummary {
     pub updated_at: DateTime<Utc>,
     pub message_count: i64,
     pub is_active: bool,
+    /// Whether the session is pinned (shown at the top of the sidebar).
+    pub pinned: bool,
+    /// Parent session id (for forked/child sessions), if any.
+    pub parent_id: Option<Uuid>,
 }
 
 /// A single message in an exported session transcript.
@@ -88,4 +94,44 @@ pub enum ExportFormat {
     Json,
     /// Human-readable Markdown transcript.
     Markdown,
+}
+
+/// A snapshot of a session's conversation state, used for revert/fork.
+///
+/// A snapshot captures the full ordered message list of a session at a point
+/// in time. The `content` field stores the serialized messages so the state
+/// can be restored later (via `/revert`) or forked into a new session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// Unique snapshot ID.
+    pub id: Uuid,
+    /// Session this snapshot belongs to.
+    pub session_id: Uuid,
+    /// Human-readable snapshot name.
+    pub name: String,
+    /// When the snapshot was created.
+    pub created_at: DateTime<Utc>,
+    /// Number of messages captured in this snapshot.
+    pub message_count: i64,
+    /// Serialized conversation state (JSON array of messages).
+    pub content: String,
+}
+
+/// A task tracked by the `todo` tool, persisted per session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Todo {
+    /// Unique todo ID.
+    pub id: Uuid,
+    /// Session this todo belongs to.
+    pub session_id: Uuid,
+    /// Task content.
+    pub content: String,
+    /// Task status: "pending" | "in_progress" | "completed" | "cancelled".
+    pub status: String,
+    /// Optional priority ("low" | "medium" | "high").
+    pub priority: Option<String>,
+    /// When the todo was created.
+    pub created_at: DateTime<Utc>,
+    /// When the todo was last updated.
+    pub updated_at: DateTime<Utc>,
 }

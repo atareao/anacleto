@@ -54,7 +54,8 @@ impl Database {
                 is_active INTEGER NOT NULL DEFAULT 1,
                 metadata TEXT,
                 shared INTEGER NOT NULL DEFAULT 0,
-                workspace TEXT
+                workspace TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0
             )
             "#,
         )
@@ -87,10 +88,76 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS todos (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                priority TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_todos_session_id
+            ON todos(session_id)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS model_usage (
+                model TEXT PRIMARY KEY,
+                count INTEGER NOT NULL DEFAULT 1,
+                last_used TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS snapshots (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                content TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_snapshots_session_id
+            ON snapshots(session_id)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         // Additive migrations for databases created before these columns existed.
         self.ensure_column("sessions", "shared", "INTEGER NOT NULL DEFAULT 0")
             .await?;
         self.ensure_column("sessions", "workspace", "TEXT").await?;
+        self.ensure_column("sessions", "pinned", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
+        self.ensure_column("sessions", "parent_id", "TEXT").await?;
 
         Ok(())
     }
@@ -121,19 +188,29 @@ impl Database {
 
     /// Create a new session.
     pub async fn create_session(&self, name: &str) -> Result<Session> {
+        self.create_session_with_parent(name, None).await
+    }
+
+    /// Create a new session, optionally linked to a parent session (for forks).
+    pub async fn create_session_with_parent(
+        &self,
+        name: &str,
+        parent_id: Option<Uuid>,
+    ) -> Result<Session> {
         let now = Utc::now();
         let id = Uuid::new_v4();
 
         sqlx::query(
             r#"
-            INSERT INTO sessions (id, name, created_at, updated_at, is_active)
-            VALUES (?, ?, ?, ?, 1)
+            INSERT INTO sessions (id, name, created_at, updated_at, is_active, parent_id)
+            VALUES (?, ?, ?, ?, 1, ?)
             "#,
         )
         .bind(id.to_string())
         .bind(name)
         .bind(now.to_rfc3339())
         .bind(now.to_rfc3339())
+        .bind(parent_id.map(|p| p.to_string()))
         .execute(&self.pool)
         .await?;
 
@@ -146,6 +223,7 @@ impl Database {
             metadata: None,
             shared: false,
             workspace: None,
+            parent_id,
         })
     }
 
@@ -277,7 +355,7 @@ impl Database {
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
         let rows = sqlx::query(
             r#"
-            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active,
+            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active, s.pinned, s.parent_id,
                    COUNT(m.id) as message_count
             FROM sessions s
             LEFT JOIN messages m ON m.session_id = s.id
@@ -307,6 +385,66 @@ impl Database {
                     .with_timezone(&chrono::Utc),
                     message_count: row.get("message_count"),
                     is_active: row.get::<i32, _>("is_active") != 0,
+                    pinned: row.get::<i32, _>("pinned") != 0,
+                    parent_id: row
+                        .get::<Option<String>, _>("parent_id")
+                        .and_then(|s| Uuid::parse_str(&s).ok()),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(summaries)
+    }
+
+    /// Set the pinned flag on a session.
+    pub async fn set_session_pinned(&self, session_id: &str, pinned: bool) -> Result<()> {
+        sqlx::query("UPDATE sessions SET pinned = ? WHERE id = ?")
+            .bind(if pinned { 1 } else { 0 })
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// List pinned sessions, ordered by most recently updated first.
+    pub async fn list_pinned_sessions(&self) -> Result<Vec<SessionSummary>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active, s.pinned, s.parent_id,
+                   COUNT(m.id) as message_count
+            FROM sessions s
+            LEFT JOIN messages m ON m.session_id = s.id
+            WHERE s.pinned = 1
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let summaries = rows
+            .iter()
+            .map(|row| -> Result<SessionSummary> {
+                Ok(SessionSummary {
+                    id: Uuid::parse_str(row.get::<&str, _>("id"))
+                        .map_err(|e| Error::Session(e.to_string()))?,
+                    name: row.get("name"),
+                    created_at: chrono::DateTime::parse_from_rfc3339(
+                        row.get::<&str, _>("created_at"),
+                    )
+                    .map_err(|e| Error::Session(e.to_string()))?
+                    .with_timezone(&chrono::Utc),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(
+                        row.get::<&str, _>("updated_at"),
+                    )
+                    .map_err(|e| Error::Session(e.to_string()))?
+                    .with_timezone(&chrono::Utc),
+                    message_count: row.get("message_count"),
+                    is_active: row.get::<i32, _>("is_active") != 0,
+                    pinned: true,
+                    parent_id: row
+                        .get::<Option<String>, _>("parent_id")
+                        .and_then(|s| Uuid::parse_str(&s).ok()),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -610,9 +748,328 @@ impl Database {
         Ok(())
     }
 
+    /// Set (or clear) the parent session of a session (used by `/fork`).
+    pub async fn set_parent(&self, session_id: Uuid, parent_id: Option<Uuid>) -> Result<()> {
+        sqlx::query("UPDATE sessions SET parent_id = ? WHERE id = ?")
+            .bind(parent_id.map(|p| p.to_string()))
+            .bind(session_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Get the parent session id of a session, if any.
+    pub async fn get_parent(&self, session_id: Uuid) -> Result<Option<Uuid>> {
+        let row = sqlx::query("SELECT parent_id FROM sessions WHERE id = ?")
+            .bind(session_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row
+            .and_then(|r| r.get::<Option<String>, _>("parent_id"))
+            .and_then(|s| Uuid::parse_str(&s).ok()))
+    }
+
+    /// List the child sessions (direct forks) of a session.
+    pub async fn get_children(&self, session_id: Uuid) -> Result<Vec<SessionSummary>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active, s.pinned, s.parent_id,
+                   COUNT(m.id) as message_count
+            FROM sessions s
+            LEFT JOIN messages m ON m.session_id = s.id
+            WHERE s.parent_id = ?
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC
+            "#,
+        )
+        .bind(session_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let summaries = rows
+            .iter()
+            .map(|row| -> Result<SessionSummary> {
+                Ok(SessionSummary {
+                    id: Uuid::parse_str(row.get::<&str, _>("id"))
+                        .map_err(|e| Error::Session(e.to_string()))?,
+                    name: row.get("name"),
+                    created_at: chrono::DateTime::parse_from_rfc3339(
+                        row.get::<&str, _>("created_at"),
+                    )
+                    .map_err(|e| Error::Session(e.to_string()))?
+                    .with_timezone(&chrono::Utc),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(
+                        row.get::<&str, _>("updated_at"),
+                    )
+                    .map_err(|e| Error::Session(e.to_string()))?
+                    .with_timezone(&chrono::Utc),
+                    message_count: row.get("message_count"),
+                    is_active: row.get::<i32, _>("is_active") != 0,
+                    pinned: row.get::<i32, _>("pinned") != 0,
+                    parent_id: row
+                        .get::<Option<String>, _>("parent_id")
+                        .and_then(|s| Uuid::parse_str(&s).ok()),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(summaries)
+    }
+
+    /// Add a new todo to a session.
+    pub async fn add_todo(
+        &self,
+        session_id: Uuid,
+        content: &str,
+        status: &str,
+        priority: Option<&str>,
+    ) -> Result<Todo> {
+        let now = Utc::now();
+        let todo = Todo {
+            id: Uuid::new_v4(),
+            session_id,
+            content: content.to_string(),
+            status: status.to_string(),
+            priority: priority.map(|p| p.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO todos (id, session_id, content, status, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(todo.id.to_string())
+        .bind(todo.session_id.to_string())
+        .bind(&todo.content)
+        .bind(&todo.status)
+        .bind(&todo.priority)
+        .bind(todo.created_at.to_rfc3339())
+        .bind(todo.updated_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(todo)
+    }
+
+    /// Update a todo's status and/or content.
+    pub async fn update_todo(
+        &self,
+        todo_id: Uuid,
+        content: Option<&str>,
+        status: Option<&str>,
+        priority: Option<&str>,
+    ) -> Result<()> {
+        let now = Utc::now();
+        sqlx::query(
+            r#"
+            UPDATE todos
+            SET content = COALESCE(?, content),
+                status = COALESCE(?, status),
+                priority = COALESCE(?, priority),
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(content)
+        .bind(status)
+        .bind(priority)
+        .bind(now.to_rfc3339())
+        .bind(todo_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete a todo by id.
+    pub async fn delete_todo(&self, todo_id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM todos WHERE id = ?")
+            .bind(todo_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// List all todos for a session, ordered by creation time.
+    pub async fn list_todos(&self, session_id: Uuid) -> Result<Vec<Todo>> {
+        let rows = sqlx::query(
+            "SELECT id, session_id, content, status, priority, created_at, updated_at \
+             FROM todos WHERE session_id = ? ORDER BY created_at ASC",
+        )
+        .bind(session_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut todos = Vec::with_capacity(rows.len());
+        for row in rows {
+            todos.push(Todo {
+                id: Uuid::parse_str(&row.get::<String, _>("id")).unwrap_or_default(),
+                session_id: Uuid::parse_str(&row.get::<String, _>("session_id"))
+                    .unwrap_or_default(),
+                content: row.get("content"),
+                status: row.get("status"),
+                priority: row.get("priority"),
+                created_at: DateTime::parse_from_rfc3339(&row.get::<String, _>("created_at"))
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                updated_at: DateTime::parse_from_rfc3339(&row.get::<String, _>("updated_at"))
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            });
+        }
+        Ok(todos)
+    }
+
+    /// Record that a model was used, incrementing its usage count and updating
+    /// its last-used timestamp. If the model is new, it is inserted.
+    pub async fn record_model_usage(&self, model: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            r#"
+            INSERT INTO model_usage (model, count, last_used)
+            VALUES (?, 1, ?)
+            ON CONFLICT(model) DO UPDATE SET
+                count = count + 1,
+                last_used = excluded.last_used
+            "#,
+        )
+        .bind(model)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// List models ordered by usage frequency (count desc), then by recency
+    /// (last_used desc). Returns `(model, count)` pairs.
+    pub async fn list_model_frecency(&self) -> Result<Vec<(String, usize)>> {
+        let rows =
+            sqlx::query("SELECT model, count FROM model_usage ORDER BY count DESC, last_used DESC")
+                .fetch_all(&self.pool)
+                .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push((row.get("model"), row.get::<i64, _>("count") as usize));
+        }
+        Ok(out)
+    }
+
     /// Close the database connection.
     pub async fn close(self) -> Result<()> {
         self.pool.close().await;
+        Ok(())
+    }
+
+    /// Create a snapshot of a session's current conversation state.
+    ///
+    /// The `content` field stores the serialized JSON array of the session's
+    /// messages so the state can be restored later via [`Database::get_snapshot`].
+    pub async fn create_snapshot(
+        &self,
+        session_id: Uuid,
+        name: &str,
+        content: &str,
+    ) -> Result<Snapshot> {
+        let messages = self.get_session_messages(session_id).await?;
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+
+        sqlx::query(
+            r#"
+            INSERT INTO snapshots (id, session_id, name, created_at, message_count, content)
+            VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(id.to_string())
+        .bind(session_id.to_string())
+        .bind(name)
+        .bind(now.to_rfc3339())
+        .bind(messages.len() as i64)
+        .bind(content)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(Snapshot {
+            id,
+            session_id,
+            name: name.to_string(),
+            created_at: now,
+            message_count: messages.len() as i64,
+            content: content.to_string(),
+        })
+    }
+
+    /// List all snapshots for a session, newest first.
+    pub async fn list_snapshots(&self, session_id: Uuid) -> Result<Vec<Snapshot>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, session_id, name, created_at, message_count, content
+            FROM snapshots
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(session_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter()
+            .map(|row| -> Result<Snapshot> {
+                Ok(Snapshot {
+                    id: Uuid::parse_str(row.get::<&str, _>("id"))
+                        .map_err(|e| Error::Session(e.to_string()))?,
+                    session_id: Uuid::parse_str(row.get::<&str, _>("session_id"))
+                        .map_err(|e| Error::Session(e.to_string()))?,
+                    name: row.get("name"),
+                    created_at: chrono::DateTime::parse_from_rfc3339(
+                        row.get::<&str, _>("created_at"),
+                    )
+                    .map_err(|e| Error::Session(e.to_string()))?
+                    .with_timezone(&chrono::Utc),
+                    message_count: row.get("message_count"),
+                    content: row.get("content"),
+                })
+            })
+            .collect()
+    }
+
+    /// Get a single snapshot by id.
+    pub async fn get_snapshot(&self, snapshot_id: Uuid) -> Result<Option<Snapshot>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, session_id, name, created_at, message_count, content
+            FROM snapshots
+            WHERE id = ?
+            "#,
+        )
+        .bind(snapshot_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+
+        Ok(Some(Snapshot {
+            id: Uuid::parse_str(row.get::<&str, _>("id"))
+                .map_err(|e| Error::Session(e.to_string()))?,
+            session_id: Uuid::parse_str(row.get::<&str, _>("session_id"))
+                .map_err(|e| Error::Session(e.to_string()))?,
+            name: row.get("name"),
+            created_at: chrono::DateTime::parse_from_rfc3339(row.get::<&str, _>("created_at"))
+                .map_err(|e| Error::Session(e.to_string()))?
+                .with_timezone(&chrono::Utc),
+            message_count: row.get("message_count"),
+            content: row.get("content"),
+        }))
+    }
+
+    /// Delete a snapshot by id.
+    pub async fn delete_snapshot(&self, snapshot_id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM snapshots WHERE id = ?")
+            .bind(snapshot_id.to_string())
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }
@@ -928,5 +1385,181 @@ mod tests {
         let names2: Vec<String> = cols2.iter().map(|r| r.get::<String, _>("name")).collect();
         assert_eq!(names2.iter().filter(|n| *n == "shared").count(), 1);
         assert_eq!(names2.iter().filter(|n| *n == "workspace").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_todo_crud() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Database::open(&db_path).await.unwrap();
+        let session = db.create_session("todo-session").await.unwrap();
+
+        // Add
+        let t1 = db
+            .add_todo(session.id, "Write tests", "pending", Some("high"))
+            .await
+            .unwrap();
+        let t2 = db
+            .add_todo(session.id, "Fix bug", "pending", None)
+            .await
+            .unwrap();
+        assert_eq!(t1.status, "pending");
+        assert_eq!(t1.priority.as_deref(), Some("high"));
+
+        // List
+        let todos = db.list_todos(session.id).await.unwrap();
+        assert_eq!(todos.len(), 2);
+        assert_eq!(todos[0].content, "Write tests");
+
+        // Update
+        db.update_todo(t1.id, None, Some("in_progress"), None)
+            .await
+            .unwrap();
+        let todos = db.list_todos(session.id).await.unwrap();
+        assert_eq!(todos[0].status, "in_progress");
+
+        // Delete
+        db.delete_todo(t2.id).await.unwrap();
+        let todos = db.list_todos(session.id).await.unwrap();
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].id, t1.id);
+    }
+
+    #[tokio::test]
+    async fn test_model_frecency() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Database::open(&db_path).await.unwrap();
+
+        // Initially empty.
+        assert!(db.list_model_frecency().await.unwrap().is_empty());
+
+        // Record usage.
+        db.record_model_usage("claude-sonnet-4").await.unwrap();
+        db.record_model_usage("claude-sonnet-4").await.unwrap();
+        db.record_model_usage("gpt-4o").await.unwrap();
+
+        let frecency = db.list_model_frecency().await.unwrap();
+        // Most-used first.
+        assert_eq!(frecency[0].0, "claude-sonnet-4");
+        assert_eq!(frecency[0].1, 2);
+        assert_eq!(frecency[1].0, "gpt-4o");
+        assert_eq!(frecency[1].1, 1);
+    }
+
+    #[tokio::test]
+    async fn test_session_pinning() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Database::open(&db_path).await.unwrap();
+        let s1 = db.create_session("one").await.unwrap();
+        let s2 = db.create_session("two").await.unwrap();
+
+        // Initially nothing pinned.
+        assert!(db.list_pinned_sessions().await.unwrap().is_empty());
+
+        // Pin s1.
+        db.set_session_pinned(&s1.id.to_string(), true)
+            .await
+            .unwrap();
+        let pinned = db.list_pinned_sessions().await.unwrap();
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].id, s1.id);
+        assert!(pinned[0].pinned);
+
+        // Pin s2 too; both listed.
+        db.set_session_pinned(&s2.id.to_string(), true)
+            .await
+            .unwrap();
+        assert_eq!(db.list_pinned_sessions().await.unwrap().len(), 2);
+
+        // Unpin s1.
+        db.set_session_pinned(&s1.id.to_string(), false)
+            .await
+            .unwrap();
+        let pinned = db.list_pinned_sessions().await.unwrap();
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].id, s2.id);
+
+        // list_sessions reflects the pinned flag.
+        let all = db.list_sessions().await.unwrap();
+        let s1_summary = all.iter().find(|s| s.id == s1.id).unwrap();
+        assert!(!s1_summary.pinned);
+        let s2_summary = all.iter().find(|s| s.id == s2.id).unwrap();
+        assert!(s2_summary.pinned);
+    }
+
+    #[tokio::test]
+    async fn test_session_parent_children() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Database::open(&db_path).await.unwrap();
+
+        let parent = db.create_session("parent").await.unwrap();
+        assert_eq!(parent.parent_id, None);
+
+        // Create a child linked to the parent at creation time.
+        let child = db
+            .create_session_with_parent("child", Some(parent.id))
+            .await
+            .unwrap();
+        assert_eq!(child.parent_id, Some(parent.id));
+
+        // get_parent resolves the link.
+        assert_eq!(db.get_parent(child.id).await.unwrap(), Some(parent.id));
+        assert_eq!(db.get_parent(parent.id).await.unwrap(), None);
+
+        // get_children lists direct forks.
+        let children = db.get_children(parent.id).await.unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].id, child.id);
+        assert_eq!(children[0].parent_id, Some(parent.id));
+
+        // set_parent can re-link or clear.
+        let other = db.create_session("other").await.unwrap();
+        db.set_parent(child.id, Some(other.id)).await.unwrap();
+        assert_eq!(db.get_parent(child.id).await.unwrap(), Some(other.id));
+        assert!(db.get_children(parent.id).await.unwrap().is_empty());
+        assert_eq!(db.get_children(other.id).await.unwrap().len(), 1);
+
+        db.set_parent(child.id, None).await.unwrap();
+        assert_eq!(db.get_parent(child.id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_crud() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Database::open(&db_path).await.unwrap();
+
+        let session = db.create_session("snap-session").await.unwrap();
+        db.store_message(session.id, "user", "user", "Hello", None)
+            .await
+            .unwrap();
+        db.store_message(session.id, "assistant", "assistant", "Hi", None)
+            .await
+            .unwrap();
+
+        let snap = db
+            .create_snapshot(session.id, "checkpoint", r#"[{"role":"user"}]"#)
+            .await
+            .unwrap();
+        assert_eq!(snap.name, "checkpoint");
+        assert_eq!(snap.message_count, 2);
+        assert_eq!(snap.session_id, session.id);
+
+        // list returns the snapshot.
+        let listed = db.list_snapshots(session.id).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, snap.id);
+
+        // get by id.
+        let fetched = db.get_snapshot(snap.id).await.unwrap().expect("snapshot");
+        assert_eq!(fetched.content, r#"[{"role":"user"}]"#);
+
+        // delete removes it.
+        db.delete_snapshot(snap.id).await.unwrap();
+        assert!(db.get_snapshot(snap.id).await.unwrap().is_none());
+        assert!(db.list_snapshots(session.id).await.unwrap().is_empty());
     }
 }

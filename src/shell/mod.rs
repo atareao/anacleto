@@ -203,6 +203,73 @@ pub fn inventory() -> &'static ToolInventory {
     INVENTORY.get_or_init(|| ToolInventory::detect(default_tools()))
 }
 
+/// Build the `git worktree add` command for the given workspace.
+///
+/// Split out from [`git_worktree_add`] so tests can verify the argument format
+/// without executing real git.
+fn git_worktree_add_cmd(
+    workspace: &Path,
+    path: &str,
+    branch: Option<&str>,
+) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("worktree").arg("add").arg(path);
+    if let Some(b) = branch {
+        cmd.arg("-b").arg(b);
+    }
+    cmd.current_dir(workspace);
+    cmd
+}
+
+/// Build the `git worktree list` command for the given workspace.
+fn git_worktree_list_cmd(workspace: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("worktree").arg("list");
+    cmd.current_dir(workspace);
+    cmd
+}
+
+/// Build the `git worktree remove` command for the given workspace.
+fn git_worktree_remove_cmd(workspace: &Path, path: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("worktree").arg("remove").arg(path);
+    cmd.current_dir(workspace);
+    cmd
+}
+
+/// Run a git command, returning stdout on success or stderr on failure.
+fn run_git(mut cmd: std::process::Command) -> Result<String, String> {
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run git: {e}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+/// Add a git worktree in `workspace` at `path`, optionally creating a new
+/// branch `branch`. Returns the git output on success.
+pub fn git_worktree_add(
+    workspace: &Path,
+    path: &str,
+    branch: Option<&str>,
+) -> Result<String, String> {
+    run_git(git_worktree_add_cmd(workspace, path, branch))
+}
+
+/// List the git worktrees in `workspace`. Returns the git output on success.
+pub fn git_worktree_list(workspace: &Path) -> Result<String, String> {
+    run_git(git_worktree_list_cmd(workspace))
+}
+
+/// Remove the git worktree at `path` in `workspace`. Returns the git output on
+/// success.
+pub fn git_worktree_remove(workspace: &Path, path: &str) -> Result<String, String> {
+    run_git(git_worktree_remove_cmd(workspace, path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +333,49 @@ mod tests {
         let new_tool = ToolInfo::new("delta", "diff", "modern diff viewer");
         let merged = merge_tools(defaults, &[new_tool]);
         assert!(merged.iter().any(|t| t.name == "delta"));
+    }
+
+    #[test]
+    fn test_git_worktree_add_args_with_branch() {
+        let cmd = git_worktree_add_cmd(Path::new("/ws"), "feature", Some("feat/x"));
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["worktree", "add", "feature", "-b", "feat/x"]);
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/ws")));
+    }
+
+    #[test]
+    fn test_git_worktree_add_args_without_branch() {
+        let cmd = git_worktree_add_cmd(Path::new("/ws"), "feature", None);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["worktree", "add", "feature"]);
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/ws")));
+    }
+
+    #[test]
+    fn test_git_worktree_list_args() {
+        let cmd = git_worktree_list_cmd(Path::new("/ws"));
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["worktree", "list"]);
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/ws")));
+    }
+
+    #[test]
+    fn test_git_worktree_remove_args() {
+        let cmd = git_worktree_remove_cmd(Path::new("/ws"), "feature");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["worktree", "remove", "feature"]);
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/ws")));
     }
 }

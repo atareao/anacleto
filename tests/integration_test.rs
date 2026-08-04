@@ -101,6 +101,7 @@ fn test_config_merge_does_not_merge_agents() {
             subagents: vec![],
             system_prompt: "You are root.".into(),
             max_steps: 60,
+            subagent_depth: 3,
         }],
         ..Default::default()
     };
@@ -117,6 +118,7 @@ fn test_config_merge_does_not_merge_agents() {
             subagents: vec!["reviewer".into()],
             system_prompt: "You are the new root.".into(),
             max_steps: 60,
+            subagent_depth: 3,
         }],
         ..Default::default()
     };

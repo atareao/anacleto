@@ -27,6 +27,18 @@ pub struct Config {
     #[serde(default)]
     pub shell: ShellConfig,
 
+    /// Keybinding overrides for the TUI keymap.
+    #[serde(default)]
+    pub keymap: Option<KeymapConfig>,
+
+    /// External editor command (overrides `$EDITOR`/`$VISUAL`).
+    #[serde(default)]
+    pub editor: Option<String>,
+
+    /// Model picker dialog configuration.
+    #[serde(default)]
+    pub model_picker: ModelPickerConfig,
+
     /// Agent definitions.
     ///
     /// Agents are no longer defined in `config.yaml`. They are loaded from
@@ -303,6 +315,12 @@ pub struct AgentConfig {
     /// is forced to stop and mark the task as incomplete.
     #[serde(default = "default_max_steps")]
     pub max_steps: u32,
+
+    /// Maximum depth of dynamic subagent delegation via the `task` tool.
+    /// When an agent's delegation depth reaches this limit, further `task`
+    /// tool calls are rejected to prevent runaway nesting.
+    #[serde(default = "default_subagent_depth")]
+    pub subagent_depth: u32,
 }
 
 fn default_role() -> AgentRole {
@@ -311,6 +329,10 @@ fn default_role() -> AgentRole {
 
 fn default_max_steps() -> u32 {
     90
+}
+
+pub fn default_subagent_depth() -> u32 {
+    3
 }
 
 /// Permission configuration for an agent.
@@ -350,4 +372,23 @@ pub struct ShellToolConfig {
     /// Short description of the tool.
     #[serde(default)]
     pub description: String,
+}
+
+/// Keybinding overrides for the TUI keymap.
+///
+/// Maps an action name (e.g. `ToggleSidebar`) to a list of key strings
+/// (e.g. `ctrl+b`, `f2`, `enter`, `ctrl+shift+p`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KeymapConfig {
+    /// Action name → list of key strings.
+    #[serde(default)]
+    pub bindings: HashMap<String, Vec<String>>,
+}
+
+/// Configuration for the model picker dialog.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelPickerConfig {
+    /// Models shown in the "Favorites" tab.
+    #[serde(default)]
+    pub favorites: Vec<String>,
 }

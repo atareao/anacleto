@@ -1,23 +1,34 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::{
     Frame, Terminal,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Gauge, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap},
 };
 use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
 
 use crate::agent::types::{AgentId, AgentRole, AgentStatus};
+use crate::config::Config;
 use crate::db::models::SessionSummary;
 use crate::engine::orchestrator::{
     EngineCommand, EngineEvent, ExportFormat, InitAnswers, McpStatus, SkillInfo, StatusInfo,
     TimelineEntry,
 };
+use crate::tui::diff_viewer::DiffViewer;
+use crate::tui::keymap::{Action, Keymap};
+use crate::tui::model_picker::ModelPicker;
+use crate::tui::toast::{ToastKind, ToastQueue};
+use crate::tui::which_key::WhichKeyPopup;
 
 /// All slash commands with a short description, used by the fuzzy command
 /// palette and Tab autocomplete.
@@ -34,9 +45,12 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/rename", "Rename a session"),
     ("/agents", "List agents"),
     ("/a", "List agents (alias)"),
+    ("/agent", "Switch active agent"),
     ("/subagents", "List subagents"),
     ("/sa", "List subagents (alias)"),
     ("/copy", "Copy chat to clipboard"),
+    ("/export-editor", "Export chat to external editor"),
+    ("/ee", "Export chat to external editor (alias)"),
     ("/compact", "Compact conversation context"),
     ("/c", "Compact conversation context (alias)"),
     ("/debug", "Toggle debug mode"),
@@ -59,12 +73,23 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/warp", "Set the working directory"),
     ("/workspaces", "List workspaces"),
     ("/move", "Move session to another workspace"),
+    ("/worktree", "Manage git worktrees (add|list|remove)"),
     ("/timeline", "Show session timeline"),
     ("/themes", "Change color theme"),
     ("/timestamps", "Toggle timestamps"),
     ("/thinking", "Toggle thinking display"),
     ("/stash", "Stash the current prompt"),
     ("/editor", "Open external editor"),
+    // ── FASE 1 y 2: build, jobs y snapshots ─────────────────────────
+    ("/build", "Hand off the plan to build mode"),
+    ("/jobs", "List running background jobs"),
+    ("/parent", "Navigate to the parent session"),
+    ("/children", "List child sessions"),
+    ("/snapshot", "Create a snapshot of the session"),
+    ("/revert", "Revert the session to a snapshot"),
+    ("/stage", "Stage the conversation as a pending snapshot"),
+    ("/clear", "Clear the staged snapshot"),
+    ("/commit", "Commit the staged snapshot"),
 ];
 
 #[derive(Debug, Clone)]
@@ -86,6 +111,22 @@ struct AgentInfo {
 struct ApprovalRequest {
     id: String,
     operation: String,
+}
+
+/// State for an inline question dialog (`/question` tool).
+struct QuestionState {
+    /// Question id (matches the engine's pending_questions key).
+    id: String,
+    /// The question text.
+    question: String,
+    /// Optional multiple-choice options.
+    options: Vec<String>,
+    /// Optional recommended default answer.
+    recommended: Option<String>,
+    /// Index of the currently selected option (if options present).
+    selected: usize,
+    /// Free-text answer being typed.
+    answer_input: String,
 }
 
 /// Color themes selectable via `/themes`.
@@ -178,10 +219,16 @@ pub struct App {
     pub show_agents: bool,
     /// Whether to show the subagent tree overlay.
     pub show_subagents: bool,
+    /// Name of the currently active agent (for display).
+    pub active_agent: String,
 
     // ── Human-in-the-loop approval ────────────────────────────────────
     /// Pending approval request (None if no pending request).
     pending_approval: Option<ApprovalRequest>,
+
+    // ── Inline question dialog (`/question` tool) ─────────────────────
+    /// Pending question from the agent (None if no pending question).
+    pending_question: Option<QuestionState>,
 
     // ── Right panel data ──────────────────────────────────────────────
     /// Total tokens consumed in the current session.
@@ -252,6 +299,30 @@ pub struct App {
     mcps_index: usize,
     /// Active `/init` flow (None when not running).
     init_flow: Option<InitFlow>,
+    /// Todo list for the active session (from the `todo` tool).
+    todos: Vec<crate::db::models::Todo>,
+
+    // ── FASE 4: keymap / which-key / toasts ─────────────────────────
+    /// Central keymap dispatching actions to keys.
+    pub keymap: Keymap,
+    /// Which-key popup state.
+    pub which_key: WhichKeyPopup,
+    /// Transient toast notifications.
+    pub toasts: ToastQueue,
+    /// Whether the right-hand sidebar panels are visible.
+    pub show_sidebar: bool,
+    /// Diff viewer overlay state.
+    pub diff_viewer: DiffViewer,
+    /// Model picker overlay state.
+    pub model_picker: ModelPicker,
+    /// External editor command (from config, overrides `$EDITOR`/`$VISUAL`).
+    pub editor: Option<String>,
+    /// Queue of pending prompts (FASE 4.6).
+    pub prompt_queue: Vec<String>,
+    /// Whether the prompt queue popup is visible.
+    pub show_prompt_queue: bool,
+    /// Selected index in the prompt queue popup.
+    pub prompt_queue_index: usize,
 }
 
 impl App {
@@ -259,11 +330,19 @@ impl App {
         cmd_tx: mpsc::Sender<EngineCommand>,
         event_rx: mpsc::Receiver<EngineEvent>,
         kb_supported: bool,
+        config: &Config,
     ) -> Self {
         let working_dir = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| String::from("(unknown)"));
         let lang = std::env::var("LANG").unwrap_or_default();
+
+        let mut keymap = Keymap::default();
+        if let Some(overrides) = &config.keymap {
+            keymap.apply_overrides(overrides);
+        }
+        let mut model_picker = ModelPicker::default();
+        model_picker.set_favorites(config.model_picker.favorites.clone());
 
         Self {
             cmd_tx,
@@ -280,7 +359,9 @@ impl App {
             agents: Vec::new(),
             show_agents: false,
             show_subagents: false,
+            active_agent: String::new(),
             pending_approval: None,
+            pending_question: None,
             total_tokens: 0,
             context_window_pct: 0.0,
             total_cost: 0.0,
@@ -314,6 +395,17 @@ impl App {
             show_mcps: false,
             mcps_index: 0,
             init_flow: None,
+            todos: Vec::new(),
+            keymap,
+            which_key: WhichKeyPopup::new(),
+            toasts: ToastQueue::default(),
+            show_sidebar: true,
+            diff_viewer: DiffViewer::new(),
+            model_picker,
+            editor: config.editor.clone(),
+            prompt_queue: Vec::new(),
+            show_prompt_queue: false,
+            prompt_queue_index: 0,
         }
     }
 
@@ -330,6 +422,8 @@ impl App {
                 self.debug_mode = debug;
                 self.push_msg("Anacleto started.");
                 self.chat_scroll = 0;
+                self.toasts
+                    .push("Anacleto listo — pulsa ? para atajos", ToastKind::Info);
             }
             EngineEvent::ModelChanged { model } => {
                 self.current_model = model.clone();
@@ -433,6 +527,11 @@ impl App {
                 self.push_msg(format!("Switched to session: {}", name));
                 self.chat_scroll = 0;
             }
+            EngineEvent::AgentSwitched { name } => {
+                self.active_agent = name.clone();
+                self.push_msg(format!("Agente activo: {}", name));
+                self.chat_scroll = 0;
+            }
             EngineEvent::SessionDeleted { id } => {
                 self.push_msg(format!("Session {} deleted.", &id[..8]));
                 self.chat_scroll = 0;
@@ -457,6 +556,23 @@ impl App {
             }
             EngineEvent::ApprovalRequired { id, operation } => {
                 self.pending_approval = Some(ApprovalRequest { id, operation });
+                self.toasts
+                    .push("Aprobación requerida (Y/N)", ToastKind::Info);
+            }
+            EngineEvent::Question {
+                id,
+                question,
+                options,
+                recommended,
+            } => {
+                self.pending_question = Some(QuestionState {
+                    id,
+                    question,
+                    options,
+                    recommended,
+                    selected: 0,
+                    answer_input: String::new(),
+                });
             }
             EngineEvent::TokenUsage {
                 total_tokens,
@@ -632,12 +748,105 @@ impl App {
                 self.push_msg(format!("\u{26a0} Error: {}", msg));
                 self.chat_scroll = 0;
             }
+            EngineEvent::WorktreeResult(result) => {
+                self.push_msg(format!("\u{1f4c2} Worktree: {}", result));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::TodosUpdated(todos) => {
+                self.todos = todos;
+            }
+            EngineEvent::DiffAvailable { text, title } => {
+                self.diff_viewer.push_diff(&text, &title);
+                self.toasts
+                    .push("Diff disponible — pulsa Ctrl+G", ToastKind::Info);
+            }
+            EngineEvent::ModelsFrecency(frecency) => {
+                let recent = frecency.into_iter().map(|(m, _)| m).collect();
+                self.model_picker.set_recent(recent);
+            }
+            // ── FASE 1 y 2: build, jobs y snapshots ─────────────────
+            EngineEvent::SubagentFinished { task_id, summary } => {
+                self.push_msg(format!(
+                    "\u{1f4c4} Tarea '{}' finalizada: {}",
+                    task_id, summary
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::BuildDone => {
+                self.push_msg("\u{1f3d7} Build completado.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SessionTree(sessions) => {
+                if sessions.is_empty() {
+                    self.push_msg("\u{1f5c2} Sin sesiones hijas.");
+                } else {
+                    self.push_msg(format!("\u{1f5c2} Árbol de sesiones ({}):", sessions.len()));
+                    for s in &sessions {
+                        let parent = s
+                            .parent_id
+                            .map(|p| format!(" (padre: {})", &p.to_string()[..8]))
+                            .unwrap_or_default();
+                        self.push_msg(format!(
+                            "  \u{251c} {} — {} mensajes{}",
+                            s.name, s.message_count, parent
+                        ));
+                    }
+                }
+                self.chat_scroll = 0;
+            }
+            EngineEvent::JobsListed(jobs) => {
+                if jobs.is_empty() {
+                    self.push_msg("\u{1f4cb} Sin jobs activos.");
+                } else {
+                    self.push_msg(format!("\u{1f4cb} {} job(s) activo(s):", jobs.len()));
+                    for job in &jobs {
+                        self.push_msg(format!("  \u{2022} {}", job));
+                    }
+                }
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SnapshotCreated { snapshot } => {
+                self.push_msg(format!(
+                    "\u{1f4be} Snapshot '{}' creado ({} mensajes).",
+                    snapshot.name, snapshot.message_count
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SnapshotReverted { snapshot_id } => {
+                self.push_msg(format!(
+                    "\u{21a9} Sesión revertida al snapshot {}.",
+                    &snapshot_id.to_string()[..8]
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SnapshotsListed(snapshots) => {
+                if snapshots.is_empty() {
+                    self.push_msg("\u{1f4be} Sin snapshots para esta sesión.");
+                } else {
+                    self.push_msg(format!("\u{1f4be} {} snapshot(s):", snapshots.len()));
+                    for s in &snapshots {
+                        self.push_msg(format!(
+                            "  \u{2022} {} — {} mensajes",
+                            s.name, s.message_count
+                        ));
+                    }
+                }
+                self.chat_scroll = 0;
+            }
             _ => {}
         }
     }
 
     /// Handle a key event.
     pub fn handle_key(&mut self, key: KeyCode, modifiers: KeyModifiers) {
+        let key_event = KeyEvent::new(key, modifiers);
+
+        // If the which-key popup is open, any key press closes it.
+        if self.which_key.visible {
+            self.which_key.visible = false;
+            return;
+        }
+
         // If approval dialog is active, Y/N are handled specially
         if self.pending_approval.is_some() {
             match key {
@@ -647,6 +856,7 @@ impl App {
                         let _ = self
                             .cmd_tx
                             .try_send(EngineCommand::ApprovalResponse { id, approved: true });
+                        self.toasts.push("Aprobado", ToastKind::Success);
                     }
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -656,6 +866,84 @@ impl App {
                             id,
                             approved: false,
                         });
+                        self.toasts.push("Denegado", ToastKind::Info);
+                    }
+                }
+                _ if self.keymap.matches(key_event, Action::Approve) => {
+                    if let Some(ref approval) = self.pending_approval.take() {
+                        let id = approval.id.clone();
+                        let _ = self
+                            .cmd_tx
+                            .try_send(EngineCommand::ApprovalResponse { id, approved: true });
+                        self.toasts.push("Aprobado", ToastKind::Success);
+                    }
+                }
+                _ if self.keymap.matches(key_event, Action::Deny) => {
+                    if let Some(ref approval) = self.pending_approval.take() {
+                        let id = approval.id.clone();
+                        let _ = self.cmd_tx.try_send(EngineCommand::ApprovalResponse {
+                            id,
+                            approved: false,
+                        });
+                        self.toasts.push("Denegado", ToastKind::Info);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Inline question dialog (`/question` tool): capture answer.
+        if self.pending_question.is_some() {
+            match key {
+                KeyCode::Enter => {
+                    if let Some(q) = self.pending_question.take() {
+                        let answer = if !q.options.is_empty() {
+                            q.options.get(q.selected).cloned().unwrap_or_default()
+                        } else {
+                            q.answer_input.trim().to_string()
+                        };
+                        let id = q.id.clone();
+                        let _ = self
+                            .cmd_tx
+                            .try_send(EngineCommand::QuestionAnswer { id, answer });
+                    }
+                }
+                KeyCode::Esc => {
+                    if let Some(q) = self.pending_question.take() {
+                        let id = q.id.clone();
+                        let _ = self.cmd_tx.try_send(EngineCommand::QuestionAnswer {
+                            id,
+                            answer: String::new(),
+                        });
+                    }
+                }
+                KeyCode::Up => {
+                    if let Some(q) = self.pending_question.as_mut() {
+                        if !q.options.is_empty() {
+                            q.selected = q.selected.saturating_sub(1);
+                        }
+                    }
+                }
+                KeyCode::Down => {
+                    if let Some(q) = self.pending_question.as_mut() {
+                        if !q.options.is_empty() {
+                            q.selected = (q.selected + 1) % q.options.len();
+                        }
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(q) = self.pending_question.as_mut() {
+                        if q.options.is_empty() {
+                            q.answer_input.push(c);
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(q) = self.pending_question.as_mut() {
+                        if q.options.is_empty() {
+                            q.answer_input.pop();
+                        }
                     }
                 }
                 _ => {}
@@ -726,6 +1014,161 @@ impl App {
                 _ => {}
             }
             return;
+        }
+
+        // ── Model picker navigation ──────────────────────────────────
+        if self.model_picker.visible {
+            match key {
+                KeyCode::Up => self.model_picker.previous(),
+                KeyCode::Down => self.model_picker.next(),
+                KeyCode::Tab | KeyCode::Right => self.model_picker.next_mode(),
+                KeyCode::Left => self.model_picker.previous_mode(),
+                KeyCode::Enter => {
+                    if let Some(model) = self.model_picker.selected_model() {
+                        let _ = self.cmd_tx.try_send(EngineCommand::SetModel(model.clone()));
+                        let _ = self.cmd_tx.try_send(EngineCommand::RecordModelUsage(model));
+                        self.toasts.push("Cambiando modelo…", ToastKind::Info);
+                    }
+                    self.model_picker.visible = false;
+                }
+                KeyCode::Esc => {
+                    self.model_picker.visible = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Diff viewer navigation ───────────────────────────────────
+        if self.diff_viewer.visible {
+            match key {
+                KeyCode::Up => self.diff_viewer.scroll_up(1),
+                KeyCode::Down => self.diff_viewer.scroll_down(1),
+                KeyCode::PageUp => self.diff_viewer.scroll_up(10),
+                KeyCode::PageDown => self.diff_viewer.scroll_down(10),
+                KeyCode::Esc => {
+                    self.diff_viewer.visible = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Prompt queue popup navigation ───────────────────────────
+        if self.show_prompt_queue {
+            match key {
+                KeyCode::Up => {
+                    self.prompt_queue_index = self.prompt_queue_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if self.prompt_queue_index + 1 < self.prompt_queue.len() {
+                        self.prompt_queue_index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(prompt) = self.prompt_queue.get(self.prompt_queue_index) {
+                        let text = prompt.clone();
+                        self.prompt_queue.remove(self.prompt_queue_index);
+                        if self.prompt_queue.is_empty() {
+                            self.show_prompt_queue = false;
+                        } else {
+                            self.prompt_queue_index =
+                                self.prompt_queue_index.min(self.prompt_queue.len() - 1);
+                        }
+                        let _ = self.cmd_tx.try_send(EngineCommand::UserInput(text));
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if !self.prompt_queue.is_empty() {
+                        self.prompt_queue.remove(self.prompt_queue_index);
+                        if self.prompt_queue.is_empty() {
+                            self.show_prompt_queue = false;
+                        } else {
+                            self.prompt_queue_index =
+                                self.prompt_queue_index.min(self.prompt_queue.len() - 1);
+                        }
+                    }
+                }
+                KeyCode::Esc => {
+                    self.show_prompt_queue = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Keymap-driven global actions ─────────────────────────────
+        // Only dispatch when the key is a special/modified key, or when the
+        // input is empty (so plain characters can still be typed normally).
+        if self.keymap_applies(key_event) {
+            if self.keymap.matches(key_event, Action::Quit) {
+                self.should_exit = true;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::OpenWhichKey) {
+                self.which_key.visible = true;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::ToggleSidebar) {
+                self.show_sidebar = !self.show_sidebar;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::ToggleDiffViewer) {
+                self.diff_viewer.visible = !self.diff_viewer.visible;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::OpenModelPicker) {
+                self.model_picker.visible = true;
+                let _ = self.cmd_tx.try_send(EngineCommand::ListModelFrecency);
+                return;
+            }
+            if self.keymap.matches(key_event, Action::OpenEditor) {
+                self.open_editor();
+                return;
+            }
+            if self.keymap.matches(key_event, Action::ClearInput) {
+                self.input.clear();
+                return;
+            }
+            if self.keymap.matches(key_event, Action::OpenPromptQueue) {
+                self.show_prompt_queue = true;
+                self.prompt_queue_index = 0;
+                return;
+            }
+            // Quick slots 1..9 resume the pinned session at that index.
+            let quick_slots = [
+                Action::QuickSlot1,
+                Action::QuickSlot2,
+                Action::QuickSlot3,
+                Action::QuickSlot4,
+                Action::QuickSlot5,
+                Action::QuickSlot6,
+                Action::QuickSlot7,
+                Action::QuickSlot8,
+                Action::QuickSlot9,
+            ];
+            for (idx, action) in quick_slots.iter().enumerate() {
+                if self.keymap.matches(key_event, *action) {
+                    self.resume_quick_slot(idx);
+                    return;
+                }
+            }
+            if self.keymap.matches(key_event, Action::ScrollUp) {
+                self.chat_scroll = self.chat_scroll.saturating_add(1);
+                return;
+            }
+            if self.keymap.matches(key_event, Action::ScrollDown) {
+                self.chat_scroll = self.chat_scroll.saturating_sub(1);
+                return;
+            }
+            if self.keymap.matches(key_event, Action::PageUp) {
+                self.chat_scroll = self.chat_scroll.saturating_add(10);
+                return;
+            }
+            if self.keymap.matches(key_event, Action::PageDown) {
+                self.chat_scroll = self.chat_scroll.saturating_sub(10);
+                return;
+            }
         }
 
         match key {
@@ -969,7 +1412,56 @@ impl App {
                         .push("Usage: /rename <session-id> <new-name>".into());
                 }
             }
+            // ── Session pinning (FASE 4.5) ─────────────────────────
+            "/pin" => {
+                if let Some(id) = parts.get(1) {
+                    self.push_msg(format!("> /pin {}", id));
+                    let _ = self.cmd_tx.try_send(EngineCommand::SetSessionPinned {
+                        id: id.to_string(),
+                        pinned: true,
+                    });
+                } else {
+                    self.push_msg("Usage: /pin <session-id>");
+                }
+            }
+            "/unpin" => {
+                if let Some(id) = parts.get(1) {
+                    self.push_msg(format!("> /unpin {}", id));
+                    let _ = self.cmd_tx.try_send(EngineCommand::SetSessionPinned {
+                        id: id.to_string(),
+                        pinned: false,
+                    });
+                } else {
+                    self.push_msg("Usage: /unpin <session-id>");
+                }
+            }
+            // ── Prompt queue (FASE 4.6) ────────────────────────────
+            "/queue" => {
+                self.push_msg("> /queue");
+                self.show_prompt_queue = true;
+                self.prompt_queue_index = 0;
+            }
+            "/enqueue" => {
+                let text = parts.get(1).unwrap_or(&"").trim();
+                if text.is_empty() {
+                    self.push_msg("Usage: /enqueue <prompt text>");
+                } else {
+                    self.prompt_queue.push(text.to_string());
+                    self.push_msg(format!("> /enqueue ({} en cola)", self.prompt_queue.len()));
+                }
+            }
             // ── Agent info commands ────────────────────────────────
+            "/agent" => {
+                let name = parts.get(1).unwrap_or(&"").trim();
+                if name.is_empty() {
+                    self.push_msg("Usage: /agent <agent-name>");
+                } else {
+                    self.push_msg(format!("> /agent {}", name));
+                    let _ = self
+                        .cmd_tx
+                        .try_send(EngineCommand::SwitchAgent(name.to_string()));
+                }
+            }
             "/agents" | "/a" => {
                 self.push_msg("> /agents");
                 self.show_agents = !self.show_agents;
@@ -988,7 +1480,18 @@ impl App {
             }
             "/copy" => {
                 self.push_msg("> /copy");
-                let content = self.messages.join("\n");
+                let content = match parts.get(1).and_then(|n| n.parse::<usize>().ok()) {
+                    Some(n) => self
+                        .messages
+                        .iter()
+                        .rev()
+                        .take(n)
+                        .rev()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    None => self.messages.join("\n"),
+                };
                 match copy_to_clipboard(&content) {
                     Ok(()) => {
                         self.push_msg(format!(
@@ -999,6 +1502,21 @@ impl App {
                     Err(e) => {
                         self.push_msg(format!("Error copying chat: {}", e));
                     }
+                }
+            }
+            "/export-editor" | "/ee" => {
+                self.push_msg("> /export-editor");
+                let content = self.messages.join("\n");
+                let tmp = std::env::temp_dir()
+                    .join(format!("anacleto-export-{}.txt", std::process::id()));
+                if let Err(e) = std::fs::write(&tmp, &content) {
+                    self.push_msg(format!("Error writing export: {}", e));
+                } else {
+                    self.open_file_in_editor(&tmp);
+                    self.push_msg(format!(
+                        "Export opened in editor ({} lines).",
+                        self.messages.len()
+                    ));
                 }
             }
             "/compact" | "/c" => {
@@ -1150,6 +1668,38 @@ impl App {
                 self.show_timeline = true;
                 let _ = self.cmd_tx.try_send(EngineCommand::Timeline);
             }
+            "/worktree" => match parts.get(1).map(|s| s.to_string()) {
+                Some(sub) if sub == "list" => {
+                    self.push_msg("> /worktree list");
+                    let _ = self.cmd_tx.try_send(EngineCommand::WorktreeList);
+                }
+                Some(sub) if sub == "add" => {
+                    let path = parts.get(2).map(|s| s.to_string());
+                    let branch = parts.get(3).map(|s| s.to_string());
+                    match path {
+                        Some(p) => {
+                            self.push_msg(format!("> /worktree add {}", p));
+                            let _ = self
+                                .cmd_tx
+                                .try_send(EngineCommand::WorktreeAdd { path: p, branch });
+                        }
+                        None => self.push_msg("Usage: /worktree add <path> [branch]"),
+                    }
+                }
+                Some(sub) if sub == "remove" => {
+                    let path = parts.get(2).map(|s| s.to_string());
+                    match path {
+                        Some(p) => {
+                            self.push_msg(format!("> /worktree remove {}", p));
+                            let _ = self
+                                .cmd_tx
+                                .try_send(EngineCommand::WorktreeRemove { path: p });
+                        }
+                        None => self.push_msg("Usage: /worktree remove <path>"),
+                    }
+                }
+                _ => self.push_msg("Usage: /worktree add|list|remove"),
+            },
             "/themes" => {
                 self.theme = self.theme.next();
                 self.push_msg(format!("> /themes — theme: {}", self.theme.name()));
@@ -1204,6 +1754,49 @@ impl App {
                 self.push_msg("> /editor");
                 self.open_editor();
             }
+            // ── FASE 1 y 2: build, jobs y snapshots ────────────────
+            "/build" => {
+                self.push_msg("> /build");
+                let _ = self.cmd_tx.try_send(EngineCommand::Build);
+            }
+            "/jobs" => {
+                self.push_msg("> /jobs");
+                let _ = self.cmd_tx.try_send(EngineCommand::ListJobs);
+            }
+            "/parent" => {
+                self.push_msg("> /parent");
+                let _ = self.cmd_tx.try_send(EngineCommand::Parent);
+            }
+            "/children" => {
+                self.push_msg("> /children");
+                let _ = self.cmd_tx.try_send(EngineCommand::Children);
+            }
+            "/snapshot" => {
+                let name = parts.get(1).map(|s| s.to_string());
+                self.push_msg(format!("> /snapshot {}", name.as_deref().unwrap_or("")));
+                let _ = self.cmd_tx.try_send(EngineCommand::Snapshot { name });
+            }
+            "/revert" => match parts.get(1).and_then(|s| s.parse::<uuid::Uuid>().ok()) {
+                Some(snapshot_id) => {
+                    self.push_msg(format!("> /revert {}", snapshot_id));
+                    let _ = self.cmd_tx.try_send(EngineCommand::Revert { snapshot_id });
+                }
+                None => self.push_msg("Usage: /revert <snapshot-id>"),
+            },
+            "/stage" => {
+                let name = parts.get(1).map(|s| s.to_string());
+                self.push_msg(format!("> /stage {}", name.as_deref().unwrap_or("")));
+                let _ = self.cmd_tx.try_send(EngineCommand::Stage { name });
+            }
+            "/clear" => {
+                self.push_msg("> /clear");
+                let _ = self.cmd_tx.try_send(EngineCommand::Clear);
+            }
+            "/commit" => {
+                let name = parts.get(1).map(|s| s.to_string());
+                self.push_msg(format!("> /commit {}", name.as_deref().unwrap_or("")));
+                let _ = self.cmd_tx.try_send(EngineCommand::Commit { name });
+            }
             _ => {
                 self.messages
                     .push(format!("Unknown command: {}. Try /help", cmd));
@@ -1213,26 +1806,56 @@ impl App {
 
     /// Open the external editor ($EDITOR) with the current input buffer.
     fn open_editor(&mut self) {
-        let editor = std::env::var("EDITOR")
-            .or_else(|_| std::env::var("VISUAL"))
-            .unwrap_or_else(|_| "vi".to_string());
         let tmp = std::env::temp_dir().join(format!("anacleto-edit-{}.txt", std::process::id()));
-        let _ = std::fs::write(&tmp, &self.input);
-        let status = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("{} \"{}\"", editor, tmp.display()))
-            .status();
-        match status {
-            Ok(_) => {
-                if let Ok(contents) = std::fs::read_to_string(&tmp) {
-                    self.input = contents;
-                }
-            }
-            Err(e) => {
-                self.push_msg(format!("Error launching editor: {}", e));
-            }
+        if std::fs::write(&tmp, &self.input).is_err() {
+            self.push_msg("Error: could not write temp file for editor".to_string());
+            return;
+        }
+        self.open_file_in_editor(&tmp);
+        if let Ok(contents) = std::fs::read_to_string(&tmp) {
+            self.input = contents.trim_end_matches('\n').to_string();
         }
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Open an arbitrary file in the external editor, suspending raw mode.
+    fn open_file_in_editor(&mut self, path: &std::path::Path) {
+        let editor = self
+            .editor
+            .clone()
+            .or_else(|| std::env::var("EDITOR").ok())
+            .or_else(|| std::env::var("VISUAL").ok())
+            .unwrap_or_else(|| "vi".to_string());
+        // Suspend raw mode and leave the alternate screen so the editor
+        // can take over the terminal cleanly.
+        let suspended =
+            disable_raw_mode().is_ok() && execute!(std::io::stdout(), LeaveAlternateScreen).is_ok();
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{} \"{}\"", editor, path.display()))
+            .status();
+        // Restore the terminal before reporting the result.
+        if suspended {
+            let _ = execute!(std::io::stdout(), EnterAlternateScreen);
+            let _ = enable_raw_mode();
+        }
+        if let Err(e) = status {
+            self.push_msg(format!("Error launching editor: {}", e));
+        }
+    }
+
+    /// Resume the pinned session at the given quick-slot index (0-based).
+    fn resume_quick_slot(&mut self, index: usize) {
+        let pinned: Vec<&SessionSummary> = self.session_list.iter().filter(|s| s.pinned).collect();
+        if let Some(session) = pinned.get(index) {
+            let id = session.id;
+            self.push_msg(format!("> quick-slot {}: resume {}", index + 1, id));
+            let _ = self
+                .cmd_tx
+                .try_send(EngineCommand::ResumeSession(id.to_string()));
+        } else {
+            self.push_msg(format!("No pinned session in quick slot {}", index + 1));
+        }
     }
 
     /// Advance the `/init` flow with the current input buffer.
@@ -1295,6 +1918,18 @@ impl App {
         self.show_timeline = false;
         self.show_mcps = false;
     }
+
+    /// Whether a key event should be dispatched through the keymap.
+    ///
+    /// Special keys (Enter, Esc, PageUp, ...) and modified keys (Ctrl+...) are
+    /// always dispatched. Plain character keys are only dispatched when the
+    /// input buffer is empty, so that typing normally is never intercepted.
+    fn keymap_applies(&self, key_event: KeyEvent) -> bool {
+        match key_event.code {
+            KeyCode::Char(_) => key_event.modifiers != KeyModifiers::NONE || self.input.is_empty(),
+            _ => true,
+        }
+    }
 }
 
 /// Run the TUI event loop.
@@ -1319,6 +1954,7 @@ pub async fn run_tui<B: ratatui::backend::Backend<Error = std::io::Error>>(
 
         // Draw the UI (now with up-to-date state)
         app.frame_count = app.frame_count.wrapping_add(1);
+        app.toasts.tick(Instant::now());
         terminal.draw(|f| render(f, app))?;
 
         // Check for keyboard input (with timeout for responsiveness)
@@ -1375,6 +2011,62 @@ fn render(f: &mut Frame, app: &mut App) {
     if app.pending_approval.is_some() {
         render_approval_dialog(f, f.area(), app);
     }
+
+    // Render inline question dialog on top if pending
+    if app.pending_question.is_some() {
+        render_question_dialog(f, f.area(), app);
+    }
+
+    // Render the which-key popup on top if visible.
+    app.which_key.render(f, f.area());
+
+    // Render the diff viewer and model picker overlays if visible.
+    app.diff_viewer.render(f, f.area());
+    app.model_picker.render(f, f.area());
+
+    // Render the prompt queue popup if visible.
+    render_prompt_queue(f, f.area(), app);
+
+    // Render transient toasts in the bottom-right corner.
+    app.toasts.render(f, f.area());
+}
+
+/// Render the prompt queue popup (FASE 4.6).
+fn render_prompt_queue(f: &mut Frame, area: Rect, app: &App) {
+    if !app.show_prompt_queue {
+        return;
+    }
+    let items: Vec<ListItem> = app
+        .prompt_queue
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let style = if i == app.prompt_queue_index {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!("{:>2}. {}", i + 1, p),
+                style,
+            )))
+        })
+        .collect();
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Cola de prompts "),
+    );
+    let popup = Rect {
+        x: area.width.saturating_sub(60) / 2,
+        y: area.height.saturating_sub(20) / 2,
+        width: 60.min(area.width),
+        height: 20.min(area.height),
+    };
+    f.render_widget(Clear, popup);
+    f.render_widget(list, popup);
 }
 
 /// Render the top status bar with agent/session info.
@@ -1430,6 +2122,17 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(Color::Cyan),
     ));
     all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+
+    // Active agent indicator
+    if !app.active_agent.is_empty() {
+        all_spans.push(Span::styled(
+            format!(" @{} ", app.active_agent),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ));
+        all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+    }
 
     // Debug mode indicator
     if app.debug_mode {
@@ -1488,13 +2191,18 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
 
 /// Render the main content area: left (chat/overlays) and right (status panels).
 fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
-        .split(area);
+    if app.show_sidebar {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
+            .split(area);
 
-    render_left_panel(f, chunks[0], app);
-    render_right_panels(f, chunks[1], app);
+        render_left_panel(f, chunks[0], app);
+        render_right_panels(f, chunks[1], app);
+    } else {
+        // Sidebar hidden: left panel takes the full width.
+        render_left_panel(f, area, app);
+    }
 }
 
 /// Render the left panel: session list, agent list, subagent tree, or chat.
@@ -2307,6 +3015,7 @@ fn render_session_list(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 ""
             };
+            let pinned_marker = if s.pinned { "📌" } else { "  " };
             let style = if Some(s.id.to_string()) == app.session_id {
                 Style::default().fg(Color::Green)
             } else {
@@ -2314,7 +3023,8 @@ fn render_session_list(f: &mut Frame, area: Rect, app: &App) {
             };
             ListItem::new(Line::from(Span::styled(
                 format!(
-                    "{}  msgs:{}  {}  {}{}",
+                    "{} {}  msgs:{}  {}  {}{}",
+                    pinned_marker,
                     &s.id.to_string()[..8],
                     s.message_count,
                     s.name,
@@ -2723,6 +3433,82 @@ fn render_approval_dialog(f: &mut Frame, area: Rect, app: &App) {
                 .style(Style::default().bg(Color::Rgb(40, 30, 0))),
         )
         .alignment(ratatui::layout::Alignment::Center);
+
+    f.render_widget(dialog, dialog_area);
+}
+
+/// Render the inline question dialog (`/question` tool).
+fn render_question_dialog(f: &mut Frame, area: Rect, app: &App) {
+    let Some(ref q) = app.pending_question else {
+        return;
+    };
+
+    let dialog_width = area.width.min(70);
+    let dialog_height = 12;
+    let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+    let overlay = ratatui::widgets::Clear;
+    f.render_widget(overlay, dialog_area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            " ❓ Question ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(&q.question, Style::default().fg(Color::White))),
+        Line::from(Span::raw("")),
+    ];
+
+    if !q.options.is_empty() {
+        for (i, opt) in q.options.iter().enumerate() {
+            let marker = if i == q.selected { "▸" } else { " " };
+            let style = if i == q.selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(Span::styled(
+                format!(" {} {}", marker, opt),
+                style,
+            )));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            format!(" ❯ {}", q.answer_input),
+            Style::default().fg(Color::Green),
+        )));
+    }
+
+    if let Some(rec) = &q.recommended {
+        lines.push(Line::from(Span::styled(
+            format!(" (recomendado: {})", rec),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        " Enter: submit  |  Esc: cancel  |  ↑/↓: select option ",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Cyan))
+                .style(Style::default().bg(Color::Rgb(0, 30, 40))),
+        )
+        .alignment(ratatui::layout::Alignment::Left);
 
     f.render_widget(dialog, dialog_area);
 }

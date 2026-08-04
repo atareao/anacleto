@@ -117,6 +117,21 @@ pub fn merge_configs(base: &mut Config, override_cfg: Config) {
         base.session.max_steps = override_cfg.session.max_steps;
     }
 
+    // Merge keymap overrides (project wins over global).
+    if override_cfg.keymap.is_some() {
+        base.keymap = override_cfg.keymap;
+    }
+
+    // Merge editor override.
+    if override_cfg.editor.is_some() {
+        base.editor = override_cfg.editor;
+    }
+
+    // Merge model picker favorites.
+    if !override_cfg.model_picker.favorites.is_empty() {
+        base.model_picker.favorites = override_cfg.model_picker.favorites;
+    }
+
     // NOTE: Agents are NOT merged here. They are defined exclusively as
     // Markdown files and loaded by crate::agent::loader::load_agents().
 }
