@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["DiffLineKind"],"fn":["parse_unified_diff"],"struct":["DiffEntry","DiffHunk","DiffLine","DiffViewer"]};

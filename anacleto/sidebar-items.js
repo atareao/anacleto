@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["agent","config","db","engine","error","filesystem","llm","mcp","permissions","shell","skill","tui"]};
+window.SIDEBAR_ITEMS = {"mod":["agent","config","db","engine","error","filesystem","llm","lsp","mcp","permissions","shell","skill","tools","tui"]};

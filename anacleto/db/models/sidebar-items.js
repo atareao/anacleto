@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ExportFormat"],"struct":["ExportData","ExportMessage","Session","SessionSummary","StoredMessage"]};
+window.SIDEBAR_ITEMS = {"enum":["ExportFormat"],"struct":["ExportData","ExportMessage","Session","SessionSummary","Snapshot","StoredMessage","Todo"]};

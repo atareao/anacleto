@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["execute_mcp_list_resource_templates_tool","execute_mcp_list_resources_tool","execute_mcp_read_resource_tool","mcp_list_resource_templates_tool_definition","mcp_list_resources_tool_definition","mcp_read_resource_tool_definition"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["WORKSPACE_INSTRUCTION_FILES"],"fn":["load_workspace_instructions"],"struct":["FileSource"],"trait":["Source"]};

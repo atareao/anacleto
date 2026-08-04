@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["glob","grep","lsp","mcp","pattern","read","web"]};

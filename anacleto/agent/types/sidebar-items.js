@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["AgentMessage","AgentRole","AgentStatus","MessageRole"],"struct":["Agent","AgentId","MessageEntry"]};
+window.SIDEBAR_ITEMS = {"enum":["AgentMessage","AgentMode","AgentRole","AgentStatus","MessageRole","TaskMode"],"struct":["Agent","AgentId","MessageEntry"]};

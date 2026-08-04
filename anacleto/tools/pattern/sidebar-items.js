@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["glob_match","regex_is_match"]};

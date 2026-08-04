@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PatchOpKind"],"fn":["apply_patch_batch","batch_to_unified_diff","detect_encoding","encode_content","parse_patch_batch","resolve_patch_path","resolve_within_workspace"],"struct":["FileEncoding","PatchBatch","PatchOp"]};

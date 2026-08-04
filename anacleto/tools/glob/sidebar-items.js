@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["execute_glob_tool","glob_tool_definition"]};

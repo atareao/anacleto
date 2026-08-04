@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["default_tools","detect_shell","init","inventory","merge_tools"],"struct":["ShellInfo","ToolInfo","ToolInventory"]};
+window.SIDEBAR_ITEMS = {"fn":["default_tools","detect_shell","git_worktree_add","git_worktree_list","git_worktree_remove","init","inventory","merge_tools"],"struct":["ShellInfo","ToolInfo","ToolInventory"]};

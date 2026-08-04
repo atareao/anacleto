@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["orchestrator"]};
+window.SIDEBAR_ITEMS = {"mod":["apply_patch","jobs","orchestrator"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["LspQueryType"],"fn":["default_server_for_extension","path_to_uri"],"struct":["LspClient","LspPosition"]};

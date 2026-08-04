@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["app"]};
+window.SIDEBAR_ITEMS = {"mod":["app","diff_viewer","keymap","model_picker","toast","which_key"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["AgentConfig","Config","McpDefinition","ModelsConfig","OllamaConfig","PermissionConfig","ProviderConfig","RetryConfig","SessionConfig","ShellConfig","ShellToolConfig"]};
+window.SIDEBAR_ITEMS = {"fn":["default_subagent_depth"],"struct":["AgentConfig","Config","KeymapConfig","McpDefinition","ModelPickerConfig","ModelsConfig","OllamaConfig","PermissionConfig","ProviderConfig","RetryConfig","SessionConfig","ShellConfig","ShellToolConfig"]};

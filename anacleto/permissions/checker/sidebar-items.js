@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["check_command_run","check_env_read","check_fs_read","check_fs_write","check_mcp_use","check_net_http","check_permission","check_skill_use"]};
+window.SIDEBAR_ITEMS = {"fn":["check_command_run","check_env_read","check_fs_external","check_fs_read","check_fs_write","check_mcp_use","check_net_http","check_permission","check_skill_use"]};
