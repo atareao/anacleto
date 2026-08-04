@@ -323,9 +323,9 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (handler + `EngineEvent::TodosUpdated`)
 - Modificar: `src/tui/app.rs` (sidebar en vivo)
 
-- [ ] **Paso 1:** Añadir variante `Todo` con operaciones `add/update/delete/list`.
-- [ ] **Paso 2:** Persistir lista por sesión en `db` (tabla `todos`).
-- [ ] **Paso 3:** Emitir `EngineEvent::TodosUpdated`; la TUI muestra sidebar en vivo.
+- [x] **Paso 1:** Añadir variante `Todo` con operaciones `add/update/delete/list`.
+- [x] **Paso 2:** Persistir lista por sesión en `db` (tabla `todos`).
+- [x] **Paso 3:** Emitir `EngineEvent::TodosUpdated`; la TUI muestra sidebar en vivo.
 
 **Criterio de aceptación:** El modelo gestiona una lista de tareas persistida por sesión; la TUI la muestra en vivo.
 
@@ -336,9 +336,9 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (pausa de turno, `EngineEvent::Question`, `EngineEvent::QuestionAnswer`)
 - Modificar: `src/tui/app.rs` (diálogo estructurado)
 
-- [ ] **Paso 1:** Añadir variante `Question` con opciones múltiples, default recomendado, custom.
-- [ ] **Paso 2:** Pausar el turno y emitir `EngineEvent::Question` a la TUI.
-- [ ] **Paso 3:** La respuesta vuelve como `EngineEvent::QuestionAnswer` y se inyecta como `ToolResult`.
+- [x] **Paso 1:** Añadir variante `Question` con opciones múltiples, default recomendado, custom.
+- [x] **Paso 2:** Pausar el turno y emitir `EngineEvent::Question` a la TUI.
+- [x] **Paso 3:** La respuesta vuelve como `EngineEvent::QuestionAnswer` y se inyecta como `ToolResult`.
 
 **Criterio de aceptación:** El agente puede preguntar al usuario a mitad de turno; la respuesta se inyecta al modelo.
 
@@ -350,9 +350,9 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/permissions/checker.rs` (aprobación en lote)
 - Modificar: `src/engine/orchestrator.rs` (handler)
 
-- [ ] **Paso 1:** Definir formato de patch batch (add/update/delete).
-- [ ] **Paso 2:** Agrupar archivos y solicitar una sola aprobación de permisos en lote antes de leer.
-- [ ] **Paso 3:** Aplicar secuencialmente con detección/preservación de BOM y CRLF.
+- [x] **Paso 1:** Definir formato de patch batch (add/update/delete).
+- [x] **Paso 2:** Agrupar archivos y solicitar una sola aprobación de permisos en lote antes de leer.
+- [x] **Paso 3:** Aplicar secuencialmente con detección/preservación de BOM y CRLF.
 
 **Criterio de aceptación:** `apply_patch` aplica cambios en lote con una sola aprobación; preserva BOM/CRLF por archivo.
 
@@ -364,10 +364,10 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (registro de tools)
 - Modificar: `src/permissions/checker.rs` (permiso `net.http` para web)
 
-- [ ] **Paso 1:** Definir schemas JSON estrictos para cada tool.
-- [ ] **Paso 2:** Implementar paginación en `read` (2000 líneas/50KB con offset).
-- [ ] **Paso 3:** Implementar `grep` con ripgrep.
-- [ ] **Paso 4:** Implementar `webfetch`/`websearch` con permiso `net.http`.
+- [x] **Paso 1:** Definir schemas JSON estrictos para cada tool.
+- [x] **Paso 2:** Implementar paginación en `read` (2000 líneas/50KB con offset).
+- [x] **Paso 3:** Implementar `grep` con ripgrep.
+- [x] **Paso 4:** Implementar `webfetch`/`websearch` con permiso `net.http`.
 
 **Criterio de aceptación:** Las tools estructuradas validan schemas, pagan resultados y respetan permisos web.
 
@@ -378,8 +378,8 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/config/types.rs` (permiso en schema)
 - Modificar: `src/engine/orchestrator.rs` (chequeo en ediciones fuera del workspace)
 
-- [ ] **Paso 1:** Añadir permiso `fs.external` separado de `fs.write`.
-- [ ] **Paso 2:** Requerir este permiso para cualquier edición fuera del workspace.
+- [x] **Paso 1:** Añadir permiso `fs.external` separado de `fs.write`.
+- [x] **Paso 2:** Requerir este permiso para cualquier edición fuera del workspace.
 
 **Criterio de aceptación:** Editar fuera del workspace requiere el permiso `fs.external` explícito.
 
@@ -390,8 +390,8 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/agent/types.rs` (variantes `McpListResources`, `McpReadResource`)
 - Modificar: `src/engine/orchestrator.rs` (handler)
 
-- [ ] **Paso 1:** Exponer `mcp_list_resources` y `mcp_read_resource` como tools.
-- [ ] **Paso 2:** Manejar mime binario (base64 + metadatos).
+- [x] **Paso 1:** Exponer `mcp_list_resources` y `mcp_read_resource` como tools.
+- [x] **Paso 2:** Manejar mime binario (base64 + metadatos).
 
 **Criterio de aceptación:** El modelo puede listar y leer resources/templates MCP; los binarios se devuelven con mime.
 
@@ -402,8 +402,8 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (diagnósticos → `EngineEvent::Diagnostics`)
 - Modificar: `src/tui/app.rs` (mostrar diagnósticos)
 
-- [ ] **Paso 1:** Lanzar language server por lenguaje (config).
-- [ ] **Paso 2:** Recoger diagnósticos y emitirlos al loop del agente y a la TUI.
+- [x] **Paso 1:** Lanzar language server por lenguaje (config).
+- [x] **Paso 2:** Recoger diagnósticos y emitirlos al loop del agente y a la TUI.
 
 **Criterio de aceptación:** Los diagnósticos LSP llegan al agente y se muestran en la TUI (opcional, prioridad baja).
 
@@ -417,8 +417,8 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Crear: `src/tui/diff_viewer.rs`
 - Modificar: `src/tui/app.rs` (comando `/diff`, integración)
 
-- [ ] **Paso 1:** Implementar árbol de archivos y navegación de hunks.
-- [ ] **Paso 2:** Modos split/unified y fuentes git/branch/last-turn.
+- [x] **Paso 1:** Implementar árbol de archivos y navegación de hunks.
+- [x] **Paso 2:** Modos split/unified y fuentes git/branch/last-turn.
 
 **Criterio de aceptación:** El diff viewer muestra árbol de archivos, hunks, split/unified y modos git/branch/last-turn.
 
@@ -429,9 +429,9 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Crear: `src/tui/which_key.rs` (overlay)
 - Modificar: `src/tui/app.rs` (prefijo `ctrl+x`, chording)
 
-- [ ] **Paso 1:** Definir `Keymap` (HashMap<Vec<Key>, Action>) con chording.
-- [ ] **Paso 2:** Implementar prefijo `ctrl+x` y overlay which-key descubrible.
-- [ ] **Paso 3:** Registrar ~100 keybindings.
+- [x] **Paso 1:** Definir `Keymap` (HashMap<Vec<Key>, Action>) con chording.
+- [x] **Paso 2:** Implementar prefijo `ctrl+x` y overlay which-key descubrible.
+- [x] **Paso 3:** Registrar ~100 keybindings.
 
 **Criterio de aceptación:** El prefijo `ctrl+x` habilita key chording; el overlay which-key muestra bindings disponibles.
 
@@ -442,8 +442,8 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/config/loader.rs` (parseo)
 - Modificar: `src/tui/keymap.rs` (carga desde config)
 
-- [ ] **Paso 1:** Serializar `Keymap` en config YAML.
-- [ ] **Paso 2:** Cargar y aplicar el keymap desde config al arrancar la TUI.
+- [x] **Paso 1:** Serializar `Keymap` en config YAML.
+- [x] **Paso 2:** Cargar y aplicar el keymap desde config al arrancar la TUI.
 
 **Criterio de aceptación:** Todos los keybindings son rebindables vía config YAML.
 
@@ -454,8 +454,8 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/db/mod.rs` (persistir frecency)
 - Modificar: `src/tui/app.rs` (ctrl+f, f2, ctrl+a)
 
-- [ ] **Paso 1:** Implementar popup con favoritos (ctrl+f), recientes (f2), providers (ctrl+a).
-- [ ] **Paso 2:** Implementar ranking frecency (frecuencia × recencia) persistido.
+- [x] **Paso 1:** Implementar popup con favoritos (ctrl+f), recientes (f2), providers (ctrl+a).
+- [x] **Paso 2:** Implementar ranking frecency (frecuencia × recencia) persistido.
 
 **Criterio de aceptación:** Los diálogos de modelo muestran favoritos/recientes/providers con ranking frecency.
 
@@ -465,8 +465,8 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/tui/app.rs` (sidebar)
 - Modificar: `src/db/mod.rs` (persistir pin)
 
-- [ ] **Paso 1:** Implementar pinning de sesiones.
-- [ ] **Paso 2:** Implementar quick slots `<leader>1..9`.
+- [x] **Paso 1:** Implementar pinning de sesiones.
+- [x] **Paso 2:** Implementar quick slots `<leader>1..9`.
 
 **Criterio de aceptación:** Las sesiones se pueden fijar y acceder con `<leader>1..9`.
 
@@ -475,7 +475,7 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 **Archivos:**
 - Modificar: `src/tui/app.rs` (cola de prompts, `<leader>q`)
 
-- [ ] **Paso 1:** Implementar cola de prompts pendientes y su gestión.
+- [x] **Paso 1:** Implementar cola de prompts pendientes y su gestión.
 
 **Criterio de aceptación:** Los prompts se pueden encolar y gestionar con `<leader>q`.
 
@@ -485,7 +485,7 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Crear: `src/tui/toast.rs`
 - Modificar: `src/tui/app.rs` (cola de toasts)
 
-- [ ] **Paso 1:** Implementar cola de toasts (jobs, subagentes, errores).
+- [x] **Paso 1:** Implementar cola de toasts (jobs, subagentes, errores).
 
 **Criterio de aceptación:** Las notificaciones (jobs, subagentes, errores) se muestran como toasts.
 
@@ -496,8 +496,8 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/tui/app.rs` (comando `<leader>e`)
 - Modificar: `src/shell/mod.rs` (lanzar editor)
 
-- [ ] **Paso 1:** Configurar editor externo.
-- [ ] **Paso 2:** Implementar `<leader>e`: abrir editor, capturar buffer, enviar como input.
+- [x] **Paso 1:** Configurar editor externo.
+- [x] **Paso 2:** Implementar `<leader>e`: abrir editor, capturar buffer, enviar como input.
 
 **Criterio de aceptación:** `<leader>e` abre el editor externo y el contenido editado se envía como input.
 
@@ -512,7 +512,7 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (comando `/move` mejorado)
 - Modificar: `src/tui/app.rs` (comando)
 
-- [ ] **Paso 1:** Ampliar re-homing: re-resolver rutas al mover la sesión a otro directorio.
+- [x] **Paso 1:** Ampliar re-homing: re-resolver rutas al mover la sesión a otro directorio.
 
 **Criterio de aceptación:** Una sesión se mueve a otro directorio y sus rutas se re-resuelven.
 
@@ -522,8 +522,8 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/tui/app.rs` (comando `/copy` ampliado, `/export-editor`)
 - Modificar: `src/shell/mod.rs` (portapapeles)
 
-- [ ] **Paso 1:** Ampliar `/copy` para copiar la transcripción al portapapeles.
-- [ ] **Paso 2:** Implementar `/export-editor` para exportar a editor externo.
+- [x] **Paso 1:** Ampliar `/copy` para copiar la transcripción al portapapeles.
+- [x] **Paso 2:** Implementar `/export-editor` para exportar a editor externo.
 
 **Criterio de aceptación:** La transcripción se copia al portapapeles o se exporta al editor.
 
@@ -534,7 +534,7 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (comandos `/worktree add|list|remove`)
 - Modificar: `src/tui/app.rs` (comandos)
 
-- [ ] **Paso 1:** Implementar `/worktree add|list|remove` delegando en git.
+- [x] **Paso 1:** Implementar `/worktree add|list|remove` delegando en git.
 
 **Criterio de aceptación:** Los worktrees se gestionan desde la TUI.
 
@@ -544,8 +544,8 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (comando `/review` ampliado)
 - Modificar: `src/tui/diff_viewer.rs` (fuente branch/VCS)
 
-- [ ] **Paso 1:** Ampliar `/review` para diff vs branch/VCS.
-- [ ] **Paso 2:** Integrar con el diff viewer (fuente branch).
+- [x] **Paso 1:** Ampliar `/review` para diff vs branch/VCS.
+- [x] **Paso 2:** Integrar con el diff viewer (fuente branch).
 
 **Criterio de aceptación:** `/review` muestra diffs vs branch/VCS en el diff viewer.
 
@@ -690,29 +690,29 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - [ ] AGENTS.md/CLAUDE.md/CONTEXT.md se descubren e inyectan.
 
 **FASE 3**
-- [ ] El modelo gestiona la lista de tareas; el sidebar se actualiza en vivo.
-- [ ] El agente pregunta al usuario a mitad de turno y usa la respuesta.
-- [ ] `apply_patch` aplica en lote con una aprobación; preserva BOM/CRLF.
-- [ ] read/grep/glob/webfetch/websearch validan schemas y pagan resultados.
-- [ ] Editar fuera del workspace requiere `fs.external`.
-- [ ] El modelo lista/lee resources MCP; binarios con mime.
-- [ ] Los diagnósticos LSP llegan al agente y a la TUI.
+- [x] El modelo gestiona la lista de tareas; el sidebar se actualiza en vivo.
+- [x] El agente pregunta al usuario a mitad de turno y usa la respuesta.
+- [x] `apply_patch` aplica en lote con una aprobación; preserva BOM/CRLF.
+- [x] read/grep/glob/webfetch/websearch validan schemas y pagan resultados.
+- [x] Editar fuera del workspace requiere `fs.external`.
+- [x] El modelo lista/lee resources MCP; binarios con mime.
+- [x] Los diagnósticos LSP llegan al agente y a la TUI.
 
 **FASE 4**
-- [ ] El diff viewer muestra árbol, hunks, split/unified, git/branch/last-turn.
-- [ ] `ctrl+x` habilita key chording; el overlay which-key es descubrible.
-- [ ] Todos los keybindings son rebindables en config.
-- [ ] Los diálogos de modelo muestran favoritos/recientes/providers con frecency.
-- [ ] Las sesiones se fijan y se accede con `<leader>1..9`.
-- [ ] Los prompts se encolan con `<leader>q`.
-- [ ] Los toasts muestran jobs/subagentes/errores.
-- [ ] `<leader>e` hace round-trip con el editor externo.
+- [x] El diff viewer muestra árbol, hunks, split/unified, git/branch/last-turn.
+- [x] `ctrl+x` habilita key chording; el overlay which-key es descubrible.
+- [x] Todos los keybindings son rebindables en config.
+- [x] Los diálogos de modelo muestran favoritos/recientes/providers con frecency.
+- [x] Las sesiones se fijan y se accede con `<leader>1..9`.
+- [x] Los prompts se encolan con `<leader>q`.
+- [x] Los toasts muestran jobs/subagentes/errores.
+- [x] `<leader>e` hace round-trip con el editor externo.
 
 **FASE 5**
-- [ ] Una sesión se mueve a otro directorio y re-resuelve rutas.
-- [ ] La transcripción se copia al portapapeles o se exporta al editor.
-- [ ] Los worktrees se gestionan desde la TUI.
-- [ ] `/review` muestra diffs vs branch/VCS.
+- [x] Una sesión se mueve a otro directorio y re-resuelve rutas.
+- [x] La transcripción se copia al portapapeles o se exporta al editor.
+- [x] Los worktrees se gestionan desde la TUI.
+- [x] `/review` muestra diffs vs branch/VCS.
 
 **FASE 6**
 - [ ] `cache:auto` inyecta cache_control en los breakpoints correctos con TTL.
