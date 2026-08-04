@@ -26,7 +26,7 @@ Anacleto needs a configuration system that supports global defaults and per-proj
   - `max_steps` is the maximum number of turns (LLM + tool iterations) an agent may run per task before being forced to stop and mark the task as incomplete. The default comes from `config.yaml` → `session.max_steps` (default `90`) and can be overridden per agent in the frontmatter.
   - Agents are discovered by scanning the `agents/` directory (same pattern as skills).
   - Project agents override global agents with the same name.
-  - Exactly one agent must declare `role: root`.
+  - At least one agent must declare `role: root`. Multiple root agents are allowed — each is a user-invocable coordinator with its own subagent team.
 
 ## Consequences
 
