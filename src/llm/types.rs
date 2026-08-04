@@ -46,6 +46,19 @@ pub struct ToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
+/// Prompt caching policy.
+///
+/// This is a provider-aware hint: Anthropic uses explicit `cache_control`
+/// breakpoints, while OpenAI/OpenRouter cache automatically and ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheControl {
+    /// Enable prompt caching (inject breakpoints where the provider supports it).
+    Auto,
+    /// Disable prompt caching.
+    Off,
+}
+
 /// Request to the LLM.
 #[derive(Debug, Clone, Serialize)]
 pub struct LlmRequest {
@@ -55,6 +68,10 @@ pub struct LlmRequest {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub stream: bool,
+    /// Per-request prompt caching policy override. When `None`, the provider's
+    /// configured default is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 /// Response from the LLM.
@@ -64,6 +81,10 @@ pub struct LlmResponse {
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: String,
     pub usage: Option<LlmUsage>,
+    /// Intermediate reasoning/thinking text (e.g. Anthropic extended thinking).
+    /// Kept separate from `content` so consumers can choose to surface or drop it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 /// Token usage information.
@@ -90,6 +111,12 @@ pub enum LlmProviderType {
     OpenAI,
     OpenRouter,
     Ollama,
+    /// AWS Bedrock (OpenAI-compatible endpoint).
+    Bedrock,
+    /// Azure OpenAI (OpenAI-compatible endpoint).
+    Azure,
+    /// Google Gemini (OpenAI-compatible endpoint).
+    Google,
 }
 
 /// Configuration for an LLM provider.
@@ -102,4 +129,9 @@ pub struct LlmProviderConfig {
     pub context_window: usize,
     pub input_price_per_million: f64,
     pub output_price_per_million: f64,
+    /// Prompt caching policy for this provider.
+    pub cache_control: CacheControl,
+    /// Anthropic extended thinking budget (tokens). When `Some`, the request
+    /// enables extended thinking with this budget. Ignored by other providers.
+    pub thinking_budget_tokens: Option<u32>,
 }
