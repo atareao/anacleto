@@ -17,6 +17,7 @@ use crate::error::{Error, Result};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry, create_provider};
 use crate::llm::types::{LlmMessage, LlmProviderConfig, LlmProviderType, MessageRole};
 use crate::mcp::client::McpRegistry;
+use crate::shell::{git_worktree_add, git_worktree_list, git_worktree_remove};
 use crate::skill::loader::load_agent_skills;
 
 /// Events emitted by the engine for the TUI to display.
@@ -175,6 +176,8 @@ pub enum EngineEvent {
     DiffAvailable { text: String, title: String },
     /// Model usage frequency records (model, count) for the picker.
     ModelsFrecency(Vec<(String, usize)>),
+    /// Result of a git worktree operation (via `/worktree`).
+    WorktreeResult(String),
 }
 
 /// Output format for a session export.
@@ -366,6 +369,15 @@ pub enum EngineCommand {
     ListWorkspaces,
     /// Move the active session to another workspace.
     MoveSession { workspace: String },
+    /// Add a git worktree.
+    WorktreeAdd {
+        path: String,
+        branch: Option<String>,
+    },
+    /// List git worktrees.
+    WorktreeList,
+    /// Remove a git worktree.
+    WorktreeRemove { path: String },
     /// Produce the timeline of the active session.
     Timeline,
     /// Respond to an inline question asked by the agent (via the `question` tool).
@@ -712,6 +724,15 @@ impl Engine {
                             }
                             EngineCommand::MoveSession { workspace } => {
                                 self.handle_move_session(&workspace).await?;
+                            }
+                            EngineCommand::WorktreeAdd { path, branch } => {
+                                self.handle_worktree_add(&path, branch.as_deref()).await?;
+                            }
+                            EngineCommand::WorktreeList => {
+                                self.handle_worktree_list().await?;
+                            }
+                            EngineCommand::WorktreeRemove { path } => {
+                                self.handle_worktree_remove(&path).await?;
                             }
                             EngineCommand::Timeline => {
                                 self.handle_timeline().await?;
@@ -1361,12 +1382,23 @@ impl Engine {
     async fn handle_review(&mut self, target: Option<String>) -> Result<()> {
         let mut cmd = std::process::Command::new("git");
         cmd.arg("diff");
-        if let Some(t) = target {
+        if let Some(t) = &target {
             cmd.arg(t);
         }
         cmd.current_dir(&self.workspace);
         let output = cmd.output().map_err(Error::Io)?;
         let diff = String::from_utf8_lossy(&output.stdout).to_string();
+        let title = match &target {
+            Some(t) => format!("git diff {}", t),
+            None => "git diff".to_string(),
+        };
+        self.event_tx
+            .send(EngineEvent::DiffAvailable {
+                text: diff.clone(),
+                title,
+            })
+            .await
+            .ok();
         let prompt = if diff.trim().is_empty() {
             "No hay cambios sin commitear para revisar.".to_string()
         } else {
@@ -1418,11 +1450,49 @@ impl Engine {
             return Ok(());
         };
         db.set_session_workspace(session_id, workspace).await?;
+        // Re-home the engine workspace so paths re-resolve (FASE 5.1).
+        self.workspace = PathBuf::from(workspace);
+        self.event_tx
+            .send(EngineEvent::WorkspaceChanged(PathBuf::from(workspace)))
+            .await
+            .ok();
         self.event_tx
             .send(EngineEvent::SessionMoved {
                 session_id,
                 workspace: workspace.to_string(),
             })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/worktree add`: add a git worktree.
+    async fn handle_worktree_add(&self, path: &str, branch: Option<&str>) -> Result<()> {
+        let result = git_worktree_add(&self.workspace, path, branch)
+            .unwrap_or_else(|e| format!("error: {}", e));
+        self.event_tx
+            .send(EngineEvent::WorktreeResult(result))
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/worktree list`: list git worktrees.
+    async fn handle_worktree_list(&self) -> Result<()> {
+        let result = git_worktree_list(&self.workspace).unwrap_or_else(|e| format!("error: {}", e));
+        self.event_tx
+            .send(EngineEvent::WorktreeResult(result))
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/worktree remove`: remove a git worktree.
+    async fn handle_worktree_remove(&self, path: &str) -> Result<()> {
+        let result =
+            git_worktree_remove(&self.workspace, path).unwrap_or_else(|e| format!("error: {}", e));
+        self.event_tx
+            .send(EngineEvent::WorktreeResult(result))
             .await
             .ok();
         Ok(())
@@ -1759,6 +1829,15 @@ mod tests {
     async fn test_handle_move_session() {
         let (mut engine, session_id, mut rx, _dir) = test_engine_with_session().await;
         engine.handle_move_session("other-ws").await.unwrap();
+        // `/move` now also re-homes the engine workspace, so a WorkspaceChanged
+        // event is emitted before SessionMoved (FASE 5.1).
+        let ev = rx.try_recv().unwrap();
+        match ev {
+            EngineEvent::WorkspaceChanged(dir) => {
+                assert_eq!(dir, std::path::PathBuf::from("other-ws"));
+            }
+            _ => panic!("expected WorkspaceChanged event"),
+        }
         let ev = rx.try_recv().unwrap();
         match ev {
             EngineEvent::SessionMoved {

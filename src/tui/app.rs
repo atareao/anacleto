@@ -48,6 +48,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/subagents", "List subagents"),
     ("/sa", "List subagents (alias)"),
     ("/copy", "Copy chat to clipboard"),
+    ("/export-editor", "Export chat to external editor"),
+    ("/ee", "Export chat to external editor (alias)"),
     ("/compact", "Compact conversation context"),
     ("/c", "Compact conversation context (alias)"),
     ("/debug", "Toggle debug mode"),
@@ -70,6 +72,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/warp", "Set the working directory"),
     ("/workspaces", "List workspaces"),
     ("/move", "Move session to another workspace"),
+    ("/worktree", "Manage git worktrees (add|list|remove)"),
     ("/timeline", "Show session timeline"),
     ("/themes", "Change color theme"),
     ("/timestamps", "Toggle timestamps"),
@@ -726,6 +729,10 @@ impl App {
                 self.push_msg(format!("\u{26a0} Error: {}", msg));
                 self.chat_scroll = 0;
             }
+            EngineEvent::WorktreeResult(result) => {
+                self.push_msg(format!("\u{1f4c2} Worktree: {}", result));
+                self.chat_scroll = 0;
+            }
             EngineEvent::TodosUpdated(todos) => {
                 self.todos = todos;
             }
@@ -1374,7 +1381,18 @@ impl App {
             }
             "/copy" => {
                 self.push_msg("> /copy");
-                let content = self.messages.join("\n");
+                let content = match parts.get(1).and_then(|n| n.parse::<usize>().ok()) {
+                    Some(n) => self
+                        .messages
+                        .iter()
+                        .rev()
+                        .take(n)
+                        .rev()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    None => self.messages.join("\n"),
+                };
                 match copy_to_clipboard(&content) {
                     Ok(()) => {
                         self.push_msg(format!(
@@ -1385,6 +1403,21 @@ impl App {
                     Err(e) => {
                         self.push_msg(format!("Error copying chat: {}", e));
                     }
+                }
+            }
+            "/export-editor" | "/ee" => {
+                self.push_msg("> /export-editor");
+                let content = self.messages.join("\n");
+                let tmp = std::env::temp_dir()
+                    .join(format!("anacleto-export-{}.txt", std::process::id()));
+                if let Err(e) = std::fs::write(&tmp, &content) {
+                    self.push_msg(format!("Error writing export: {}", e));
+                } else {
+                    self.open_file_in_editor(&tmp);
+                    self.push_msg(format!(
+                        "Export opened in editor ({} lines).",
+                        self.messages.len()
+                    ));
                 }
             }
             "/compact" | "/c" => {
@@ -1536,6 +1569,38 @@ impl App {
                 self.show_timeline = true;
                 let _ = self.cmd_tx.try_send(EngineCommand::Timeline);
             }
+            "/worktree" => match parts.get(1).map(|s| s.to_string()) {
+                Some(sub) if sub == "list" => {
+                    self.push_msg("> /worktree list");
+                    let _ = self.cmd_tx.try_send(EngineCommand::WorktreeList);
+                }
+                Some(sub) if sub == "add" => {
+                    let path = parts.get(2).map(|s| s.to_string());
+                    let branch = parts.get(3).map(|s| s.to_string());
+                    match path {
+                        Some(p) => {
+                            self.push_msg(format!("> /worktree add {}", p));
+                            let _ = self
+                                .cmd_tx
+                                .try_send(EngineCommand::WorktreeAdd { path: p, branch });
+                        }
+                        None => self.push_msg("Usage: /worktree add <path> [branch]"),
+                    }
+                }
+                Some(sub) if sub == "remove" => {
+                    let path = parts.get(2).map(|s| s.to_string());
+                    match path {
+                        Some(p) => {
+                            self.push_msg(format!("> /worktree remove {}", p));
+                            let _ = self
+                                .cmd_tx
+                                .try_send(EngineCommand::WorktreeRemove { path: p });
+                        }
+                        None => self.push_msg("Usage: /worktree remove <path>"),
+                    }
+                }
+                _ => self.push_msg("Usage: /worktree add|list|remove"),
+            },
             "/themes" => {
                 self.theme = self.theme.next();
                 self.push_msg(format!("> /themes — theme: {}", self.theme.name()));
@@ -1599,41 +1664,42 @@ impl App {
 
     /// Open the external editor ($EDITOR) with the current input buffer.
     fn open_editor(&mut self) {
+        let tmp = std::env::temp_dir().join(format!("anacleto-edit-{}.txt", std::process::id()));
+        if std::fs::write(&tmp, &self.input).is_err() {
+            self.push_msg("Error: could not write temp file for editor".to_string());
+            return;
+        }
+        self.open_file_in_editor(&tmp);
+        if let Ok(contents) = std::fs::read_to_string(&tmp) {
+            self.input = contents.trim_end_matches('\n').to_string();
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Open an arbitrary file in the external editor, suspending raw mode.
+    fn open_file_in_editor(&mut self, path: &std::path::Path) {
         let editor = self
             .editor
             .clone()
             .or_else(|| std::env::var("EDITOR").ok())
             .or_else(|| std::env::var("VISUAL").ok())
             .unwrap_or_else(|| "vi".to_string());
-        let tmp = std::env::temp_dir().join(format!("anacleto-edit-{}.txt", std::process::id()));
-        if std::fs::write(&tmp, &self.input).is_err() {
-            self.push_msg("Error: could not write temp file for editor".to_string());
-            return;
-        }
         // Suspend raw mode and leave the alternate screen so the editor
         // can take over the terminal cleanly.
         let suspended =
             disable_raw_mode().is_ok() && execute!(std::io::stdout(), LeaveAlternateScreen).is_ok();
         let status = std::process::Command::new("sh")
             .arg("-c")
-            .arg(format!("{} \"{}\"", editor, tmp.display()))
+            .arg(format!("{} \"{}\"", editor, path.display()))
             .status();
         // Restore the terminal before reporting the result.
         if suspended {
             let _ = execute!(std::io::stdout(), EnterAlternateScreen);
             let _ = enable_raw_mode();
         }
-        match status {
-            Ok(_) => {
-                if let Ok(contents) = std::fs::read_to_string(&tmp) {
-                    self.input = contents.trim_end_matches('\n').to_string();
-                }
-            }
-            Err(e) => {
-                self.push_msg(format!("Error launching editor: {}", e));
-            }
+        if let Err(e) = status {
+            self.push_msg(format!("Error launching editor: {}", e));
         }
-        let _ = std::fs::remove_file(&tmp);
     }
 
     /// Resume the pinned session at the given quick-slot index (0-based).
