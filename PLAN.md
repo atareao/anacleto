@@ -43,15 +43,17 @@ Portar el conjunto completo de features de OpenCode al motor de orquestación de
 | 26 | Copiar transcripción al portapapeles / exportar a editor | TUI + Shell | Baja |
 | 27 | Gestión de git worktrees | Backend + Shell | Baja |
 | 28 | Review con diff vs branch / VCS diffs | Backend + TUI | Media |
+| **FASE 5.5 — Cambio de agente activo** | | | |
+| 29 | Cambio de agente activo (múltiples agentes root, selector `/agent`, enrutado al activo) | Backend + TUI | Alta |
 | **FASE 6 — LLM y providers** | | | |
-| 29 | Política de prompt-caching / cache-control breakpoints (cache:auto, buckets TTL, provider-aware) | LLM | Alta |
-| 30 | Anthropic extended thinking (budget tokens) | LLM | Media |
-| 31 | Plantillas de system-prompt por modelo/agente | LLM + Config | Media |
-| 32 | Catálogo ampliado de providers (Bedrock, Azure, Google, etc.) | LLM | Baja |
+| 30 | Política de prompt-caching / cache-control breakpoints (cache:auto, buckets TTL, provider-aware) | LLM | Alta |
+| 31 | Anthropic extended thinking (budget tokens) | LLM | Media |
+| 32 | Plantillas de system-prompt por modelo/agente | LLM + Config | Media |
+| 33 | Catálogo ampliado de providers (Bedrock, Azure, Google, etc.) | LLM | Baja |
 | **FASE 7 — Extensibilidad** | | | |
-| 33 | Sistema de plugins con hooks/transforms (agents, tools, commands) | Backend | Media |
-| 34 | Comandos slash personalizados con templating de variables (`{env:VAR}`, `{file:path}`) | Backend + TUI | Media |
-| 35 | Tools y providers personalizados en runtime | Backend | Baja |
+| 34 | Sistema de plugins con hooks/transforms (agents, tools, commands) | Backend | Media |
+| 35 | Comandos slash personalizados con templating de variables (`{env:VAR}`, `{file:path}`) | Backend + TUI | Media |
+| 36 | Tools y providers personalizados en runtime | Backend | Baja |
 
 ### Fuera de alcance (explícitamente NO se implementa)
 
@@ -551,6 +553,30 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 
 **Dependencia:** FASE 5 depende de FASE 4 (diff viewer) y de la infraestructura de sesiones existente.
 
+### FASE 5.5 — Cambio de agente activo
+
+#### Tarea 5.5.1: Enrutado al agente activo
+
+**Archivos:**
+- Modificar: `src/engine/orchestrator.rs` (campo `active_agent`, enrutado de input/modelo)
+
+- [ ] **Paso 1:** Añadir campo `active_agent: String` a `Engine` (inicializado al primer root).
+- [ ] **Paso 2:** `handle_user_input` y `handle_set_model` enrutan al agente activo en vez del primer root.
+
+**Criterio de aceptación:** El input del usuario llega al agente activo, no siempre al primer root.
+
+#### Tarea 5.5.2: Comando de cambio de agente en la TUI
+
+**Archivos:**
+- Modificar: `src/engine/orchestrator.rs` (`EngineCommand::SwitchAgent`, `EngineEvent::AgentSwitched`)
+- Modificar: `src/tui/app.rs` (comando `/agent`, indicador en barra de estado)
+
+- [ ] **Paso 1:** Añadir `EngineCommand::SwitchAgent(String)` + `EngineEvent::AgentSwitched { name }` y su handler.
+- [ ] **Paso 2:** Comando `/agent <nombre>` en la TUI; `/agents` lista los disponibles.
+- [ ] **Paso 3:** Mostrar el agente activo en la barra de estado.
+
+**Criterio de aceptación:** Se cambia de agente root con `/agent <nombre>` y el indicador se actualiza.
+
 ### FASE 6 — LLM y providers
 
 #### Tarea 6.1: Política de prompt-caching / cache-control breakpoints
@@ -714,6 +740,10 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - [x] Los worktrees se gestionan desde la TUI.
 - [x] `/review` muestra diffs vs branch/VCS.
 
+**FASE 5.5**
+- [ ] El input del usuario llega al agente activo, no siempre al primer root.
+- [ ] `/agent <nombre>` cambia de agente root y el indicador se actualiza.
+
 **FASE 6**
 - [ ] `cache:auto` inyecta cache_control en los breakpoints correctos con TTL.
 - [ ] Anthropic extended thinking recibe budget_tokens y se parsea.
@@ -727,7 +757,7 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 
 ### Cierre de la release v0.3.0
 
-- [ ] Todas las fases 1-7 completadas y verificadas.
+- [ ] Todas las fases 1-7 (incl. 5.5) completadas y verificadas.
 - [ ] `cargo doc --no-deps` genera sin errores.
 - [ ] Documentación de nuevas config (keymap, compaction, plugins, providers) actualizada.
 - [ ] Rama `develop` con commits atómicos por tarea, cada uno pasando fmt/clippy/test.
