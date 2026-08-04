@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["provider","types"]};
+window.SIDEBAR_ITEMS = {"mod":["azure","bedrock","google","provider","template","types"]};
