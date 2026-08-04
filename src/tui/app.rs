@@ -1,7 +1,8 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame, Terminal,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -18,6 +19,9 @@ use crate::engine::orchestrator::{
     EngineCommand, EngineEvent, ExportFormat, InitAnswers, McpStatus, SkillInfo, StatusInfo,
     TimelineEntry,
 };
+use crate::tui::keymap::{Action, Keymap};
+use crate::tui::toast::{ToastKind, ToastQueue};
+use crate::tui::which_key::WhichKeyPopup;
 
 /// All slash commands with a short description, used by the fuzzy command
 /// palette and Tab autocomplete.
@@ -274,6 +278,16 @@ pub struct App {
     init_flow: Option<InitFlow>,
     /// Todo list for the active session (from the `todo` tool).
     todos: Vec<crate::db::models::Todo>,
+
+    // ── FASE 4: keymap / which-key / toasts ─────────────────────────
+    /// Central keymap dispatching actions to keys.
+    pub keymap: Keymap,
+    /// Which-key popup state.
+    pub which_key: WhichKeyPopup,
+    /// Transient toast notifications.
+    pub toasts: ToastQueue,
+    /// Whether the right-hand sidebar panels are visible.
+    pub show_sidebar: bool,
 }
 
 impl App {
@@ -338,6 +352,10 @@ impl App {
             mcps_index: 0,
             init_flow: None,
             todos: Vec::new(),
+            keymap: Keymap::default(),
+            which_key: WhichKeyPopup::new(),
+            toasts: ToastQueue::default(),
+            show_sidebar: true,
         }
     }
 
@@ -354,6 +372,8 @@ impl App {
                 self.debug_mode = debug;
                 self.push_msg("Anacleto started.");
                 self.chat_scroll = 0;
+                self.toasts
+                    .push("Anacleto listo — pulsa ? para atajos", ToastKind::Info);
             }
             EngineEvent::ModelChanged { model } => {
                 self.current_model = model.clone();
@@ -481,6 +501,8 @@ impl App {
             }
             EngineEvent::ApprovalRequired { id, operation } => {
                 self.pending_approval = Some(ApprovalRequest { id, operation });
+                self.toasts
+                    .push("Aprobación requerida (Y/N)", ToastKind::Info);
             }
             EngineEvent::Question {
                 id,
@@ -680,6 +702,14 @@ impl App {
 
     /// Handle a key event.
     pub fn handle_key(&mut self, key: KeyCode, modifiers: KeyModifiers) {
+        let key_event = KeyEvent::new(key, modifiers);
+
+        // If the which-key popup is open, any key press closes it.
+        if self.which_key.visible {
+            self.which_key.visible = false;
+            return;
+        }
+
         // If approval dialog is active, Y/N are handled specially
         if self.pending_approval.is_some() {
             match key {
@@ -689,6 +719,7 @@ impl App {
                         let _ = self
                             .cmd_tx
                             .try_send(EngineCommand::ApprovalResponse { id, approved: true });
+                        self.toasts.push("Aprobado", ToastKind::Success);
                     }
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -698,6 +729,26 @@ impl App {
                             id,
                             approved: false,
                         });
+                        self.toasts.push("Denegado", ToastKind::Info);
+                    }
+                }
+                _ if self.keymap.matches(key_event, Action::Approve) => {
+                    if let Some(ref approval) = self.pending_approval.take() {
+                        let id = approval.id.clone();
+                        let _ = self
+                            .cmd_tx
+                            .try_send(EngineCommand::ApprovalResponse { id, approved: true });
+                        self.toasts.push("Aprobado", ToastKind::Success);
+                    }
+                }
+                _ if self.keymap.matches(key_event, Action::Deny) => {
+                    if let Some(ref approval) = self.pending_approval.take() {
+                        let id = approval.id.clone();
+                        let _ = self.cmd_tx.try_send(EngineCommand::ApprovalResponse {
+                            id,
+                            approved: false,
+                        });
+                        self.toasts.push("Denegado", ToastKind::Info);
                     }
                 }
                 _ => {}
@@ -826,6 +877,48 @@ impl App {
                 _ => {}
             }
             return;
+        }
+
+        // ── Keymap-driven global actions ─────────────────────────────
+        // Only dispatch when the key is a special/modified key, or when the
+        // input is empty (so plain characters can still be typed normally).
+        if self.keymap_applies(key_event) {
+            if self.keymap.matches(key_event, Action::Quit) {
+                self.should_exit = true;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::OpenWhichKey) {
+                self.which_key.visible = true;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::ToggleSidebar) {
+                self.show_sidebar = !self.show_sidebar;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::OpenEditor) {
+                self.open_editor();
+                return;
+            }
+            if self.keymap.matches(key_event, Action::ClearInput) {
+                self.input.clear();
+                return;
+            }
+            if self.keymap.matches(key_event, Action::ScrollUp) {
+                self.chat_scroll = self.chat_scroll.saturating_add(1);
+                return;
+            }
+            if self.keymap.matches(key_event, Action::ScrollDown) {
+                self.chat_scroll = self.chat_scroll.saturating_sub(1);
+                return;
+            }
+            if self.keymap.matches(key_event, Action::PageUp) {
+                self.chat_scroll = self.chat_scroll.saturating_add(10);
+                return;
+            }
+            if self.keymap.matches(key_event, Action::PageDown) {
+                self.chat_scroll = self.chat_scroll.saturating_sub(10);
+                return;
+            }
         }
 
         match key {
@@ -1395,6 +1488,18 @@ impl App {
         self.show_timeline = false;
         self.show_mcps = false;
     }
+
+    /// Whether a key event should be dispatched through the keymap.
+    ///
+    /// Special keys (Enter, Esc, PageUp, ...) and modified keys (Ctrl+...) are
+    /// always dispatched. Plain character keys are only dispatched when the
+    /// input buffer is empty, so that typing normally is never intercepted.
+    fn keymap_applies(&self, key_event: KeyEvent) -> bool {
+        match key_event.code {
+            KeyCode::Char(_) => key_event.modifiers != KeyModifiers::NONE || self.input.is_empty(),
+            _ => true,
+        }
+    }
 }
 
 /// Run the TUI event loop.
@@ -1419,6 +1524,7 @@ pub async fn run_tui<B: ratatui::backend::Backend<Error = std::io::Error>>(
 
         // Draw the UI (now with up-to-date state)
         app.frame_count = app.frame_count.wrapping_add(1);
+        app.toasts.tick(Instant::now());
         terminal.draw(|f| render(f, app))?;
 
         // Check for keyboard input (with timeout for responsiveness)
@@ -1480,6 +1586,12 @@ fn render(f: &mut Frame, app: &mut App) {
     if app.pending_question.is_some() {
         render_question_dialog(f, f.area(), app);
     }
+
+    // Render the which-key popup on top if visible.
+    app.which_key.render(f, f.area());
+
+    // Render transient toasts in the bottom-right corner.
+    app.toasts.render(f, f.area());
 }
 
 /// Render the top status bar with agent/session info.
@@ -1593,13 +1705,18 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
 
 /// Render the main content area: left (chat/overlays) and right (status panels).
 fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
-        .split(area);
+    if app.show_sidebar {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
+            .split(area);
 
-    render_left_panel(f, chunks[0], app);
-    render_right_panels(f, chunks[1], app);
+        render_left_panel(f, chunks[0], app);
+        render_right_panels(f, chunks[1], app);
+    } else {
+        // Sidebar hidden: left panel takes the full width.
+        render_left_panel(f, area, app);
+    }
 }
 
 /// Render the left panel: session list, agent list, subagent tree, or chat.
