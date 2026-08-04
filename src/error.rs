@@ -13,6 +13,9 @@ pub enum Error {
     #[error("MCP error: {0}")]
     Mcp(String),
 
+    #[error("LSP error: {0}")]
+    Lsp(String),
+
     #[error("LLM error: {0}")]
     Llm(String),
 

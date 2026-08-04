@@ -76,6 +76,9 @@ pub struct Agent {
     /// Maximum number of turns (LLM+tool iterations) per task before the agent
     /// is forced to stop and mark the task as incomplete.
     pub max_steps: u32,
+
+    /// Maximum depth of dynamic subagent delegation via the `task` tool.
+    pub subagent_depth: u32,
 }
 
 impl Agent {
@@ -93,6 +96,7 @@ impl Agent {
             subagent_names: config.subagents.clone(),
             parent_id: None,
             max_steps: config.max_steps,
+            subagent_depth: config.subagent_depth,
         }
     }
 
@@ -120,6 +124,7 @@ impl Agent {
             subagent_names: Vec::new(),
             parent_id: Some(parent_id),
             max_steps,
+            subagent_depth: 3,
         }
     }
 
@@ -164,8 +169,34 @@ pub enum AgentMessage {
     ClearHistory,
     /// Force compaction of the conversation context (summarize old messages).
     Compact,
+    /// A dynamic task delegation request (via the `task` tool).
+    Task {
+        task_id: String,
+        description: String,
+        mode: TaskMode,
+        model: Option<String>,
+        tools: Vec<String>,
+    },
     /// Shutdown signal.
     Shutdown,
+}
+
+/// Execution mode for a dynamically delegated task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskMode {
+    /// Run the subagent synchronously and wait for its result.
+    Foreground,
+    /// Launch the subagent in the background and return immediately.
+    Background,
+}
+
+/// The operational mode of an agent, controlling which tools are available.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentMode {
+    /// Read-only: write tools are disabled.
+    Plan,
+    /// Full read/write access.
+    Build,
 }
 
 /// A single entry in a message history.

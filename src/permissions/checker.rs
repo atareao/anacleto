@@ -16,6 +16,12 @@ pub fn check_fs_write(permissions: &Permissions) -> Result<()> {
     check_permission(permissions, &Permission::FsWrite)
 }
 
+/// Check if an agent has permission to read or write a file or directory
+/// outside the workspace.
+pub fn check_fs_external(permissions: &Permissions) -> Result<()> {
+    check_permission(permissions, &Permission::FsExternal)
+}
+
 /// Check if an agent has permission to make HTTP requests.
 pub fn check_net_http(permissions: &Permissions) -> Result<()> {
     check_permission(permissions, &Permission::NetHttp)
@@ -64,5 +70,36 @@ mod tests {
         };
         let perms = Permissions::from_config(&config);
         assert!(check_command_run(&perms).is_err());
+    }
+
+    #[test]
+    fn test_check_fs_external_denied_by_default() {
+        // Allow-by-default does NOT grant fs.external unless explicitly allowed.
+        let config = PermissionConfig {
+            deny: vec![],
+            allow: vec![],
+        };
+        let perms = Permissions::from_config(&config);
+        assert!(check_fs_external(&perms).is_err());
+    }
+
+    #[test]
+    fn test_check_fs_external_allowed_when_explicit() {
+        let config = PermissionConfig {
+            deny: vec![],
+            allow: vec!["fs.external".into()],
+        };
+        let perms = Permissions::from_config(&config);
+        assert!(check_fs_external(&perms).is_ok());
+    }
+
+    #[test]
+    fn test_check_fs_external_denied_when_explicitly_denied() {
+        let config = PermissionConfig {
+            deny: vec!["fs.external".into()],
+            allow: vec!["fs.external".into()],
+        };
+        let perms = Permissions::from_config(&config);
+        assert!(check_fs_external(&perms).is_err());
     }
 }
