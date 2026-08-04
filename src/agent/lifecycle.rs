@@ -6,6 +6,8 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::agent::retry::retry_with_backoff;
+use crate::agent::source::load_workspace_instructions;
+use crate::agent::tool_store::{ToolOutputStore, truncate_output};
 use crate::agent::types::{
     Agent, AgentId, AgentMessage, AgentMode, AgentRole, AgentStatus, TaskMode,
 };
@@ -41,10 +43,15 @@ use crate::tools::web::{
     websearch_tool_definition,
 };
 
+/// Maximum number of characters of a tool result passed to the LLM.
+///
+/// The full output is retained in the [`ToolOutputStore`]; only this many
+/// characters are sent to the model to keep the context window bounded.
+pub const TOOL_RESULT_MAX_CHARS: usize = 4000;
+
 /// Shared state for tracking pending human approvals.
 type PendingApprovals =
     Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>;
-
 /// Shared state for tracking pending inline questions awaiting a user answer.
 type PendingQuestions =
     Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>;
@@ -178,6 +185,10 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     tokio::spawn(async move {
         let mut conversation: Vec<LlmMessage> = Vec::new();
 
+        // Store of full tool outputs keyed by tool_call_id. The LLM receives a
+        // truncated version; the full output is retained here for re-query.
+        let mut tool_store = ToolOutputStore::new();
+
         // Context window budget
         let max_history_tokens =
             (provider.context_window() as f64 * history_limit_percent / 100.0) as usize;
@@ -211,6 +222,19 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                 tool_calls: None,
                 tool_call_id: None,
             });
+        }
+
+        // Inject workspace instruction files (AGENTS.md, CLAUDE.md, CONTEXT.md)
+        // as initial System context when they exist in the workspace.
+        if workspace.is_dir() {
+            for (name, content) in load_workspace_instructions(&workspace) {
+                conversation.push(LlmMessage {
+                    role: MessageRole::System,
+                    content: format!("[Instrucciones del workspace: {name}]\n{content}"),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
         }
 
         while let Some(msg) = rx.recv().await {
@@ -715,9 +739,16 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                         format!("Unknown tool or subagent: {}", tc.function.name)
                                     };
 
+                                    // Store the full tool output for later
+                                    // re-query, and pass a truncated version
+                                    // to the LLM to keep the context bounded.
+                                    tool_store.insert(tc.id.clone(), result.clone());
+                                    let llm_result =
+                                        truncate_output(&result, TOOL_RESULT_MAX_CHARS);
+
                                     conversation.push(LlmMessage {
                                         role: MessageRole::Tool,
-                                        content: result,
+                                        content: llm_result,
                                         tool_calls: None,
                                         tool_call_id: Some(tc.id.clone()),
                                     });
@@ -1412,14 +1443,7 @@ The task requested was: {}"#,
 
     // Emit tool result tracing event
     let summary = match &result {
-        Ok(r) => {
-            let truncated: String = r.chars().take(120).collect();
-            if r.len() > 120 {
-                format!("{}...", truncated)
-            } else {
-                truncated
-            }
-        }
+        Ok(r) => truncate_output(r, 120),
         Err(e) => e.clone(),
     };
     let _ = event_tx
@@ -1683,12 +1707,7 @@ async fn execute_web_fetch(task: &str) -> std::result::Result<String, String> {
         .map_err(|e| format!("Failed to read response body: {e}"))?;
 
     let mut result = format!("Content from {url}:\n\n");
-    if body.len() > 10_000 {
-        result.push_str(&body[..10_000]);
-        result.push_str("\n\n... (truncated at 10000 characters)");
-    } else {
-        result.push_str(&body);
-    }
+    result.push_str(&truncate_output(&body, 10_000));
 
     Ok(result)
 }
@@ -2305,6 +2324,65 @@ fn estimate_tokens(text: &str) -> usize {
     }
 }
 
+/// Fraction of the token budget at which compaction is triggered automatically.
+///
+/// When the conversation's estimated token count exceeds
+/// `max_tokens * COMPACTION_THRESHOLD_RATIO`, compaction runs even without an
+/// explicit `/compact` command.
+pub const COMPACTION_THRESHOLD_RATIO: f64 = 0.8;
+
+/// Whether the conversation should be compacted based on the token threshold.
+///
+/// Returns `true` when `total_tokens` exceeds `max_tokens * ratio`. A `ratio`
+/// of `1.0` (or greater) effectively disables threshold-based compaction.
+pub fn should_compact(total_tokens: usize, max_tokens: usize, ratio: f64) -> bool {
+    if max_tokens == 0 {
+        return false;
+    }
+    let threshold = (max_tokens as f64 * ratio) as usize;
+    total_tokens > threshold
+}
+
+/// The anchored marker prepended to a structured summary injected as a System
+/// message after compaction.
+pub const SUMMARY_ANCHOR_MARKER: &str = "[Resumen anclado de conversación anterior]";
+
+/// The structured summary template used to guide the LLM during compaction.
+///
+/// The LLM is asked to fill only these sections, in order, producing an
+/// anchored, structured summary rather than a free-form blob of text.
+pub const SUMMARY_TEMPLATE: &str = "\
+Resumen estructurado de la conversación. Rellena SOLO estas secciones, en este orden, sin añadir nada más:
+## Objetivo
+## Decisiones tomadas
+## Hechos y contexto clave
+## Código/patrones relevantes
+## Tareas pendientes
+## Riesgos o bloqueos";
+
+/// Build the summarization prompt for a set of messages to summarize.
+///
+/// The prompt instructs the LLM to produce a structured, anchored summary
+/// following [`SUMMARY_TEMPLATE`], preserving key facts, decisions, code
+/// patterns and context.
+fn build_summary_prompt(messages: &[LlmMessage]) -> String {
+    let summary_text: String = messages
+        .iter()
+        .map(|m| {
+            let role_label = match m.role {
+                MessageRole::User => "User",
+                MessageRole::Assistant => "Assistant",
+                MessageRole::Tool => "Tool",
+                MessageRole::System => "System",
+            };
+            format!("{}: {}", role_label, m.content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    format!("{SUMMARY_TEMPLATE}\n\nConversación a resumir:\n\n{summary_text}")
+}
+
 /// Trim conversation history to fit within a token budget.
 ///
 /// Always preserves:
@@ -2375,12 +2453,13 @@ async fn summarize_conversation(
     model: &str,
     force: bool,
 ) {
-    // Quick check: if already under budget, do nothing (unless forced)
+    // Quick check: if already under the compaction threshold, do nothing
+    // (unless forced). The threshold is `max_tokens * COMPACTION_THRESHOLD_RATIO`.
     let total: usize = conversation
         .iter()
         .map(|m| estimate_tokens(&m.content))
         .sum();
-    if !force && total <= max_tokens {
+    if !force && !should_compact(total, max_tokens, COMPACTION_THRESHOLD_RATIO) {
         return;
     }
 
@@ -2416,27 +2495,8 @@ async fn summarize_conversation(
     let to_summarize: Vec<LlmMessage> = non_system_msgs.drain(..split_at).collect();
     let recent = non_system_msgs;
 
-    // Build summarization prompt
-    let summary_text: String = to_summarize
-        .iter()
-        .map(|m| {
-            let role_label = match m.role {
-                MessageRole::User => "User",
-                MessageRole::Assistant => "Assistant",
-                MessageRole::Tool => "Tool",
-                MessageRole::System => "System",
-            };
-            format!("{}: {}", role_label, m.content)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
-    let summary_prompt = format!(
-        "Summarize the following conversation, preserving key facts, decisions, \
-         code patterns, and context. Be concise but thorough. \
-         Output only the summary, no preamble.\n\n{}",
-        summary_text
-    );
+    // Build summarization prompt using the structured, anchored template.
+    let summary_prompt = build_summary_prompt(&to_summarize);
 
     // Call LLM for summarization
     let request = LlmRequest {
@@ -2455,13 +2515,10 @@ async fn summarize_conversation(
 
     match prov.complete(request).await {
         Ok(response) => {
-            // Replace summarized messages with a summary system message
+            // Replace summarized messages with an anchored summary system message
             system_msgs.push(LlmMessage {
                 role: MessageRole::System,
-                content: format!(
-                    "[Summary of earlier conversation: {}]",
-                    response.content.trim()
-                ),
+                content: format!("{SUMMARY_ANCHOR_MARKER}\n{}", response.content.trim()),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -2489,6 +2546,47 @@ mod tests {
     use super::*;
     use crate::agent::types::AgentRole;
     use crate::llm::types::LlmUsage;
+
+    #[test]
+    fn test_build_summary_prompt_contains_anchored_sections() {
+        let messages = vec![LlmMessage {
+            role: MessageRole::User,
+            content: "Implement auth".into(),
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+        let prompt = build_summary_prompt(&messages);
+        for section in [
+            "## Objetivo",
+            "## Decisiones tomadas",
+            "## Hechos y contexto clave",
+            "## Código/patrones relevantes",
+            "## Tareas pendientes",
+            "## Riesgos o bloqueos",
+        ] {
+            assert!(
+                prompt.contains(section),
+                "prompt should contain anchored section '{section}'"
+            );
+        }
+        // The conversation content should also be included.
+        assert!(prompt.contains("Implement auth"));
+    }
+
+    #[test]
+    fn test_should_compact_threshold_logic() {
+        let max_tokens = 1000;
+        // Below the 0.8 ratio -> no compaction.
+        assert!(!should_compact(799, max_tokens, COMPACTION_THRESHOLD_RATIO));
+        // Exactly at the threshold (800) -> still not over it.
+        assert!(!should_compact(800, max_tokens, COMPACTION_THRESHOLD_RATIO));
+        // Over the threshold -> compact.
+        assert!(should_compact(801, max_tokens, COMPACTION_THRESHOLD_RATIO));
+        // A ratio of 1.0 effectively disables threshold-based compaction.
+        assert!(!should_compact(1000, max_tokens, 1.0));
+        // Zero max_tokens never compacts.
+        assert!(!should_compact(100, 0, COMPACTION_THRESHOLD_RATIO));
+    }
 
     #[test]
     fn test_agent_id_unique() {

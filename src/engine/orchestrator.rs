@@ -11,7 +11,7 @@ use crate::agent::lifecycle::{AgentHandle, SpawnAgentConfig, spawn_agent};
 use crate::agent::types::{Agent, AgentId, AgentMessage, AgentMode, AgentRole, AgentStatus};
 use crate::config::Config;
 use crate::config::types::{OllamaConfig, ProviderConfig};
-use crate::db::models::{SessionSummary, StoredMessage};
+use crate::db::models::{SessionSummary, Snapshot, StoredMessage};
 use crate::db::session::Database;
 use crate::engine::jobs::JobRegistry;
 use crate::error::{Error, Result};
@@ -190,6 +190,12 @@ pub enum EngineEvent {
     SessionTree(Vec<SessionSummary>),
     /// The list of running background jobs was produced (via `/jobs`).
     JobsListed(Vec<String>),
+    /// A snapshot of the active session was created (via `/snapshot`).
+    SnapshotCreated { snapshot: Snapshot },
+    /// The active session was reverted to a snapshot (via `/revert`).
+    SnapshotReverted { snapshot_id: Uuid },
+    /// The snapshots of the active session were listed (via `/snapshots`).
+    SnapshotsListed(Vec<Snapshot>),
 }
 
 /// Output format for a session export.
@@ -319,6 +325,8 @@ pub struct Engine {
     total_cost: f64,
     /// Registry of running background jobs (dynamic `task` tool delegations).
     job_registry: Arc<tokio::sync::Mutex<JobRegistry>>,
+    /// A staged snapshot (via `/stage`) awaiting commit (via `/commit`).
+    staged_snapshot: Option<Snapshot>,
 }
 
 /// Commands from the TUI to the engine.
@@ -410,6 +418,18 @@ pub enum EngineCommand {
     Parent,
     /// List the child sessions of the active session (via `/children`).
     Children,
+    /// Create a snapshot of the active session's conversation (via `/snapshot`).
+    Snapshot { name: Option<String> },
+    /// Revert the active session to a snapshot (via `/revert`).
+    Revert { snapshot_id: Uuid },
+    /// List the snapshots of the active session (via `/snapshots`).
+    ListSnapshots,
+    /// Stage the current conversation state as a pending snapshot (via `/stage`).
+    Stage { name: Option<String> },
+    /// Clear the staged snapshot (via `/clear`).
+    Clear,
+    /// Commit the staged snapshot (via `/commit`).
+    Commit { name: Option<String> },
     /// Shutdown the engine.
     Shutdown,
 }
@@ -456,6 +476,7 @@ impl Engine {
             total_tokens: 0,
             total_cost: 0.0,
             job_registry: Arc::new(tokio::sync::Mutex::new(JobRegistry::new())),
+            staged_snapshot: None,
         }
     }
 
@@ -791,6 +812,24 @@ impl Engine {
                             }
                             EngineCommand::Children => {
                                 self.handle_children().await?;
+                            }
+                            EngineCommand::Snapshot { name } => {
+                                self.handle_snapshot(name.as_deref()).await?;
+                            }
+                            EngineCommand::Revert { snapshot_id } => {
+                                self.handle_revert(snapshot_id).await?;
+                            }
+                            EngineCommand::ListSnapshots => {
+                                self.handle_list_snapshots().await?;
+                            }
+                            EngineCommand::Stage { name } => {
+                                self.handle_stage(name.as_deref()).await?;
+                            }
+                            EngineCommand::Clear => {
+                                self.handle_clear().await?;
+                            }
+                            EngineCommand::Commit { name } => {
+                                self.handle_commit(name.as_deref()).await?;
                             }
                             EngineCommand::Shutdown => unreachable!(),
                         }
@@ -1671,6 +1710,150 @@ impl Engine {
     async fn handle_list_jobs(&self) -> Result<()> {
         let ids = self.job_registry.lock().await.running_ids();
         self.event_tx.send(EngineEvent::JobsListed(ids)).await.ok();
+        Ok(())
+    }
+
+    /// Handle `/snapshot`: create a snapshot of the active session's conversation.
+    ///
+    /// The snapshot captures the serialized message list so it can be restored
+    /// later via `/revert`.
+    async fn handle_snapshot(&mut self, name: Option<&str>) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        let messages = db.get_session_messages(session_id).await?;
+        let content = serde_json::to_string(&messages)?;
+        let snapshot_name = name.unwrap_or("snapshot").to_string();
+        let snapshot = db
+            .create_snapshot(session_id, &snapshot_name, &content)
+            .await?;
+        self.event_tx
+            .send(EngineEvent::SnapshotCreated {
+                snapshot: snapshot.clone(),
+            })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/revert`: restore the active session to a snapshot's state.
+    ///
+    /// The current messages are deleted and replaced with the snapshot's
+    /// serialized message list, then the root agent's context is reloaded.
+    async fn handle_revert(&mut self, snapshot_id: Uuid) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        let Some(snapshot) = db.get_snapshot(snapshot_id).await? else {
+            return Err(Error::NotFound(format!(
+                "Snapshot '{snapshot_id}' not found"
+            )));
+        };
+        if snapshot.session_id != session_id {
+            return Err(Error::Session(format!(
+                "Snapshot '{snapshot_id}' does not belong to the active session"
+            )));
+        }
+        // Remove all current messages, then restore the snapshot's messages.
+        let current = db.get_session_messages(session_id).await?;
+        if !current.is_empty() {
+            db.delete_messages(session_id, current.len()).await?;
+        }
+        let restored: Vec<StoredMessage> = serde_json::from_str(&snapshot.content)?;
+        db.restore_messages(session_id, &restored).await?;
+        self.reload_history_to_root(session_id).await?;
+        self.event_tx
+            .send(EngineEvent::SnapshotReverted { snapshot_id })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/snapshots`: list the snapshots of the active session.
+    async fn handle_list_snapshots(&self) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        let snapshots = db.list_snapshots(session_id).await?;
+        self.event_tx
+            .send(EngineEvent::SnapshotsListed(snapshots))
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/stage`: capture the current conversation state as a staged
+    /// snapshot without persisting it. The staged snapshot can be committed
+    /// later via `/commit` or discarded via `/clear`.
+    async fn handle_stage(&mut self, name: Option<&str>) -> Result<()> {
+        let Some(session_id) = self.active_session_id else {
+            return Ok(());
+        };
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+        let messages = db.get_session_messages(session_id).await?;
+        let content = serde_json::to_string(&messages)?;
+        let snapshot_name = name.unwrap_or("staged").to_string();
+        let snapshot = db
+            .create_snapshot(session_id, &snapshot_name, &content)
+            .await?;
+        self.staged_snapshot = Some(snapshot.clone());
+        self.event_tx
+            .send(EngineEvent::SnapshotCreated { snapshot })
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Handle `/clear`: discard the staged snapshot.
+    async fn handle_clear(&mut self) -> Result<()> {
+        if let Some(staged) = self.staged_snapshot.take() {
+            if let Some(ref db) = self.database {
+                db.delete_snapshot(staged.id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle `/commit`: persist the staged snapshot as a named snapshot.
+    ///
+    /// The staged snapshot is renamed (if a name is provided) and kept; the
+    /// staging slot is cleared.
+    async fn handle_commit(&mut self, name: Option<&str>) -> Result<()> {
+        let Some(staged) = self.staged_snapshot.take() else {
+            return Err(Error::Session(
+                "No staged snapshot to commit. Use /stage first.".into(),
+            ));
+        };
+        if let Some(ref db) = self.database {
+            if let Some(new_name) = name {
+                // Rename by re-creating with the same content and deleting the old.
+                let content = staged.content.clone();
+                let renamed = db
+                    .create_snapshot(staged.session_id, new_name, &content)
+                    .await?;
+                db.delete_snapshot(staged.id).await?;
+                self.event_tx
+                    .send(EngineEvent::SnapshotCreated { snapshot: renamed })
+                    .await
+                    .ok();
+            } else {
+                self.event_tx
+                    .send(EngineEvent::SnapshotCreated { snapshot: staged })
+                    .await
+                    .ok();
+            }
+        }
         Ok(())
     }
 

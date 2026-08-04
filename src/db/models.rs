@@ -96,6 +96,27 @@ pub enum ExportFormat {
     Markdown,
 }
 
+/// A snapshot of a session's conversation state, used for revert/fork.
+///
+/// A snapshot captures the full ordered message list of a session at a point
+/// in time. The `content` field stores the serialized messages so the state
+/// can be restored later (via `/revert`) or forked into a new session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// Unique snapshot ID.
+    pub id: Uuid,
+    /// Session this snapshot belongs to.
+    pub session_id: Uuid,
+    /// Human-readable snapshot name.
+    pub name: String,
+    /// When the snapshot was created.
+    pub created_at: DateTime<Utc>,
+    /// Number of messages captured in this snapshot.
+    pub message_count: i64,
+    /// Serialized conversation state (JSON array of messages).
+    pub content: String,
+}
+
 /// A task tracked by the `todo` tool, persisted per session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Todo {
