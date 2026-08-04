@@ -252,6 +252,34 @@ pub fn apply_patch_batch(
     Ok(results)
 }
 
+/// Build a unified-diff-style text representation of a patch batch, suitable
+/// for display in the TUI diff viewer. Because `apply_patch` operates on whole
+/// file contents (not line hunks), added/updated files are shown as full
+/// additions and deleted files as a removal header.
+pub fn batch_to_unified_diff(batch: &PatchBatch) -> String {
+    let mut out = String::new();
+    for op in &batch.operations {
+        out.push_str(&format!("--- a/{}\n", op.path));
+        out.push_str(&format!("+++ b/{}\n", op.path));
+        match op.op {
+            PatchOpKind::Add | PatchOpKind::Update => {
+                let content = op.content.as_deref().unwrap_or("");
+                let lines: Vec<&str> = content.lines().collect();
+                let count = lines.len();
+                out.push_str(&format!("@@ -0,0 +1,{} @@\n", count));
+                for line in lines {
+                    out.push_str(&format!("+{}\n", line));
+                }
+            }
+            PatchOpKind::Delete => {
+                out.push_str("@@ -1,0 +0,0 @@\n");
+                out.push_str("-<file deleted>\n");
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

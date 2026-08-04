@@ -171,6 +171,8 @@ pub enum EngineEvent {
     },
     /// A command handler failed; the engine loop continues.
     CommandError(String),
+    /// A unified diff is available for display (e.g. after `apply_patch`).
+    DiffAvailable { text: String, title: String },
 }
 
 /// Output format for a session export.

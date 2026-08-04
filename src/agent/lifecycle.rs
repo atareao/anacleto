@@ -1289,6 +1289,16 @@ async fn execute_apply_patch_tool(
     }
 
     let results = crate::engine::apply_patch::apply_patch_batch(workspace, &batch, allow_external)?;
+
+    // Emit a unified diff for the TUI diff viewer.
+    let diff_text = crate::engine::apply_patch::batch_to_unified_diff(&batch);
+    let _ = event_tx
+        .send(EngineEvent::DiffAvailable {
+            text: diff_text,
+            title: format!("apply_patch — {}", agent_name),
+        })
+        .await;
+
     Ok(results.join("\n"))
 }
 

@@ -3,6 +3,10 @@ use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::{
     Frame, Terminal,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -19,7 +23,9 @@ use crate::engine::orchestrator::{
     EngineCommand, EngineEvent, ExportFormat, InitAnswers, McpStatus, SkillInfo, StatusInfo,
     TimelineEntry,
 };
+use crate::tui::diff_viewer::DiffViewer;
 use crate::tui::keymap::{Action, Keymap};
+use crate::tui::model_picker::ModelPicker;
 use crate::tui::toast::{ToastKind, ToastQueue};
 use crate::tui::which_key::WhichKeyPopup;
 
@@ -288,6 +294,10 @@ pub struct App {
     pub toasts: ToastQueue,
     /// Whether the right-hand sidebar panels are visible.
     pub show_sidebar: bool,
+    /// Diff viewer overlay state.
+    pub diff_viewer: DiffViewer,
+    /// Model picker overlay state.
+    pub model_picker: ModelPicker,
 }
 
 impl App {
@@ -356,6 +366,8 @@ impl App {
             which_key: WhichKeyPopup::new(),
             toasts: ToastQueue::default(),
             show_sidebar: true,
+            diff_viewer: DiffViewer::new(),
+            model_picker: ModelPicker::default(),
         }
     }
 
@@ -696,6 +708,11 @@ impl App {
             EngineEvent::TodosUpdated(todos) => {
                 self.todos = todos;
             }
+            EngineEvent::DiffAvailable { text, title } => {
+                self.diff_viewer.push_diff(&text, &title);
+                self.toasts
+                    .push("Diff disponible — pulsa Ctrl+G", ToastKind::Info);
+            }
             _ => {}
         }
     }
@@ -879,6 +896,41 @@ impl App {
             return;
         }
 
+        // ── Model picker navigation ──────────────────────────────────
+        if self.model_picker.visible {
+            match key {
+                KeyCode::Up => self.model_picker.previous(),
+                KeyCode::Down => self.model_picker.next(),
+                KeyCode::Enter => {
+                    if let Some(model) = self.model_picker.selected_model() {
+                        let _ = self.cmd_tx.try_send(EngineCommand::SetModel(model));
+                        self.toasts.push("Cambiando modelo…", ToastKind::Info);
+                    }
+                    self.model_picker.visible = false;
+                }
+                KeyCode::Esc => {
+                    self.model_picker.visible = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Diff viewer navigation ───────────────────────────────────
+        if self.diff_viewer.visible {
+            match key {
+                KeyCode::Up => self.diff_viewer.scroll_up(1),
+                KeyCode::Down => self.diff_viewer.scroll_down(1),
+                KeyCode::PageUp => self.diff_viewer.scroll_up(10),
+                KeyCode::PageDown => self.diff_viewer.scroll_down(10),
+                KeyCode::Esc => {
+                    self.diff_viewer.visible = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // ── Keymap-driven global actions ─────────────────────────────
         // Only dispatch when the key is a special/modified key, or when the
         // input is empty (so plain characters can still be typed normally).
@@ -893,6 +945,14 @@ impl App {
             }
             if self.keymap.matches(key_event, Action::ToggleSidebar) {
                 self.show_sidebar = !self.show_sidebar;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::ToggleDiffViewer) {
+                self.diff_viewer.visible = !self.diff_viewer.visible;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::OpenModelPicker) {
+                self.model_picker.visible = true;
                 return;
             }
             if self.keymap.matches(key_event, Action::OpenEditor) {
@@ -1410,15 +1470,27 @@ impl App {
             .or_else(|_| std::env::var("VISUAL"))
             .unwrap_or_else(|_| "vi".to_string());
         let tmp = std::env::temp_dir().join(format!("anacleto-edit-{}.txt", std::process::id()));
-        let _ = std::fs::write(&tmp, &self.input);
+        if std::fs::write(&tmp, &self.input).is_err() {
+            self.push_msg("Error: could not write temp file for editor".to_string());
+            return;
+        }
+        // Suspend raw mode and leave the alternate screen so the editor
+        // can take over the terminal cleanly.
+        let suspended =
+            disable_raw_mode().is_ok() && execute!(std::io::stdout(), LeaveAlternateScreen).is_ok();
         let status = std::process::Command::new("sh")
             .arg("-c")
             .arg(format!("{} \"{}\"", editor, tmp.display()))
             .status();
+        // Restore the terminal before reporting the result.
+        if suspended {
+            let _ = execute!(std::io::stdout(), EnterAlternateScreen);
+            let _ = enable_raw_mode();
+        }
         match status {
             Ok(_) => {
                 if let Ok(contents) = std::fs::read_to_string(&tmp) {
-                    self.input = contents;
+                    self.input = contents.trim_end_matches('\n').to_string();
                 }
             }
             Err(e) => {
@@ -1589,6 +1661,10 @@ fn render(f: &mut Frame, app: &mut App) {
 
     // Render the which-key popup on top if visible.
     app.which_key.render(f, f.area());
+
+    // Render the diff viewer and model picker overlays if visible.
+    app.diff_viewer.render(f, f.area());
+    app.model_picker.render(f, f.area());
 
     // Render transient toasts in the bottom-right corner.
     app.toasts.render(f, f.area());
