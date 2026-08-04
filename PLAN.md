@@ -191,12 +191,12 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (handler de ToolCall::Task)
 - Modificar: `src/config/types.rs` (`AgentConfig` → añadir `subagent_depth`)
 
-- [ ] **Paso 1:** Añadir variante `Task(TaskCall)` al enum `ToolCall` con campos `{ task_id, description, mode: Foreground|Background, model, tools }`.
-- [ ] **Paso 2:** Extender `SpawnAgentConfig` con `task_id: Option<String>`, `depth: u32`, y `permissions: Permissions` derivadas.
-- [ ] **Paso 3:** En el handler del engine, interceptar `ToolCall::Task`; si `mode == Foreground`, spawn + esperar resultado y devolver `ToolResult`; si `Background`, registrar job y devolver `task_id`.
-- [ ] **Paso 4:** Implementar derivación de permisos: `child.permissions = parent.permissions ∩ child.permissions` (deny del padre se propaga).
-- [ ] **Paso 5:** Implementar límite `subagent_depth`: si `depth > config.subagent_depth`, devolver error al modelo.
-- [ ] **Paso 6:** Implementar reanudación por `task_id`: cargar historial de la sesión del subagente vía `LoadHistory`.
+- [x] **Paso 1:** Añadir variante `Task(TaskCall)` al enum `ToolCall` con campos `{ task_id, description, mode: Foreground|Background, model, tools }`.
+- [x] **Paso 2:** Extender `SpawnAgentConfig` con `task_id: Option<String>`, `depth: u32`, y `permissions: Permissions` derivadas.
+- [x] **Paso 3:** En el handler del engine, interceptar `ToolCall::Task`; si `mode == Foreground`, spawn + esperar resultado y devolver `ToolResult`; si `Background`, registrar job y devolver `task_id`.
+- [x] **Paso 4:** Implementar derivación de permisos: `child.permissions = parent.permissions ∩ child.permissions` (deny del padre se propaga).
+- [x] **Paso 5:** Implementar límite `subagent_depth`: si `depth > config.subagent_depth`, devolver error al modelo.
+- [x] **Paso 6:** Implementar reanudación por `task_id`: cargar historial de la sesión del subagente vía `LoadHistory`.
 
 **Criterio de aceptación:** El modelo puede invocar `task` en foreground y background; el subagente hereda permisos restringidos del padre; `task_id` reanuda sesión existente; `subagent_depth` bloquea anidación excesiva.
 
@@ -208,10 +208,10 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/mod.rs` (exponer `jobs`)
 - Modificar: `src/tui/app.rs` (toast de finalización)
 
-- [ ] **Paso 1:** Crear `JobRegistry` con `HashMap<task_id, JoinHandle>` y canal `mpsc` de resultados.
-- [ ] **Paso 2:** Añadir el `rx` de resultados al `tokio::select!` del loop principal.
-- [ ] **Paso 3:** Al completar un job, emitir `EngineEvent::SubagentFinished(task_id, summary)`.
-- [ ] **Paso 4:** En la TUI, mostrar indicador de job activo y toast al completar.
+- [x] **Paso 1:** Crear `JobRegistry` con `HashMap<task_id, JoinHandle>` y canal `mpsc` de resultados.
+- [x] **Paso 2:** Añadir el `rx` de resultados al `tokio::select!` del loop principal.
+- [x] **Paso 3:** Al completar un job, emitir `EngineEvent::SubagentFinished(task_id, summary)`.
+- [x] **Paso 4:** En la TUI, mostrar indicador de job activo y toast al completar.
 
 **Criterio de aceptación:** Los subagentes background no bloquean el loop; la TUI muestra el estado del job y un toast al finalizar.
 
@@ -222,9 +222,9 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/agent/types.rs` (modo plan/build en estado del agente)
 - Modificar: `src/tui/app.rs` (comando `/build`)
 
-- [ ] **Paso 1:** Definir estado `plan`/`build` en el agente; en plan mode, todas las herramientas de escritura devuelven error.
-- [ ] **Paso 2:** Implementar `/build`: leer archivo markdown de plan, crear agente build con permisos de escritura.
-- [ ] **Paso 3:** Inyectar el contenido del plan como mensaje sintético de ejecución (`UserInput`/`System`).
+- [x] **Paso 1:** Definir estado `plan`/`build` en el agente; en plan mode, todas las herramientas de escritura devuelven error.
+- [x] **Paso 2:** Implementar `/build`: leer archivo markdown de plan, crear agente build con permisos de escritura.
+- [x] **Paso 3:** Inyectar el contenido del plan como mensaje sintético de ejecución (`UserInput`/`System`).
 
 **Criterio de aceptación:** Un agente plan solo-lectura genera un plan markdown; al aprobarse, un agente build lo ejecuta con el plan como contexto.
 
@@ -236,10 +236,10 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (fork con parentID, comandos `/parent`, `/children`)
 - Modificar: `src/tui/app.rs` (comandos + navegación)
 
-- [ ] **Paso 1:** Añadir columna `parent_id` vía `ensure_column` y campo en `Session`.
-- [ ] **Paso 2:** En `/fork`, registrar `parent_id = sesión actual`.
-- [ ] **Paso 3:** Implementar `/parent` y `/children` para navegar la jerarquía.
-- [ ] **Paso 4:** Mostrar jerarquía en el sidebar de sesiones.
+- [x] **Paso 1:** Añadir columna `parent_id` vía `ensure_column` y campo en `Session`.
+- [x] **Paso 2:** En `/fork`, registrar `parent_id = sesión actual`.
+- [x] **Paso 3:** Implementar `/parent` y `/children` para navegar la jerarquía.
+- [x] **Paso 4:** Mostrar jerarquía en el sidebar de sesiones.
 
 **Criterio de aceptación:** `/fork` crea sesión hija con parentID; se navega padre↔hijo; la jerarquía se persiste y se muestra en la TUI.
 
@@ -255,10 +255,10 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (disparo por umbral de contexto)
 - Modificar: `src/llm/provider.rs` (exponer `window` del modelo)
 
-- [ ] **Paso 1:** Definir plantilla Markdown fija (`## Objective / Important Details / Work State / Next Move / Relevant Files`).
-- [ ] **Paso 2:** Implementar fusión: parsear resumen previo por secciones; actualizar `Work State`, `Next Move`, `Relevant Files`; conservar `Objective`/`Important Details` salvo cambio.
-- [ ] **Paso 3:** Config `compaction = { mode: auto|manual, buffer, keep }`.
-- [ ] **Paso 4:** Disparar cuando `context_used > window − buffer`; compactar manteniendo `keep` tokens.
+- [x] **Paso 1:** Definir plantilla Markdown fija (`## Objective / Important Details / Work State / Next Move / Relevant Files`).
+- [x] **Paso 2:** Implementar fusión: parsear resumen previo por secciones; actualizar `Work State`, `Next Move`, `Relevant Files`; conservar `Objective`/`Important Details` salvo cambio.
+- [x] **Paso 3:** Config `compaction = { mode: auto|manual, buffer, keep }`.
+- [x] **Paso 4:** Disparar cuando `context_used > window − buffer`; compactar manteniendo `keep` tokens.
 
 **Criterio de aceptación:** La compactación actualiza (no regenera) el resumen anclado; respeta `buffer`/`keep`; se dispara automáticamente en modo `auto`.
 
@@ -269,9 +269,9 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (truncado en handler de ToolResult)
 - Modificar: `src/tui/app.rs` (colapso/expansión de salida larga)
 
-- [ ] **Paso 1:** Crear `ToolOutputStore` (mapa `tool_call_id → contenido completo`).
-- [ ] **Paso 2:** En el handler de `ToolResult`, truncar a ~2000 chars antes del modelo; guardar el completo en el store.
-- [ ] **Paso 3:** En la TUI, colapsar salidas largas con toggle para expandir (lee del store).
+- [x] **Paso 1:** Crear `ToolOutputStore` (mapa `tool_call_id → contenido completo`).
+- [x] **Paso 2:** En el handler de `ToolResult`, truncar a ~2000 chars antes del modelo; guardar el completo en el store.
+- [x] **Paso 3:** En la TUI, colapsar salidas largas con toggle para expandir (lee del store).
 
 **Criterio de aceptación:** El modelo recibe salidas truncadas; el contenido completo está disponible en la TUI vía toggle.
 
@@ -283,9 +283,9 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (comandos `/revert`, `/stage`, `/clear`, `/commit`)
 - Modificar: `src/tui/app.rs` (comandos)
 
-- [ ] **Paso 1:** Implementar snapshot content-addressed del árbol de archivos por turno de asistente.
-- [ ] **Paso 2:** Persistir snapshots en `db` con referencia al turno.
-- [ ] **Paso 3:** Implementar `/revert` (restaurar desde snapshot previo), `/stage`, `/clear`, `/commit`.
+- [x] **Paso 1:** Implementar snapshot content-addressed del árbol de archivos por turno de asistente.
+- [x] **Paso 2:** Persistir snapshots en `db` con referencia al turno.
+- [x] **Paso 3:** Implementar `/revert` (restaurar desde snapshot previo), `/stage`, `/clear`, `/commit`.
 
 **Criterio de aceptación:** Cada turno de asistente genera un snapshot; `/revert` restaura archivos desde un snapshot previo; stage/clear/commit operan sobre el snapshot.
 
@@ -295,9 +295,9 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Crear: `src/engine/source.rs` (trait `Source<A>`)
 - Modificar: `src/engine/orchestrator.rs` (registro de fuentes, baseline/delta)
 
-- [ ] **Paso 1:** Definir trait `Source<A>` con `baseline()` y `delta()`.
-- [ ] **Paso 2:** Mantener registro de fuentes y su estado; reinyectar solo las cambiadas.
-- [ ] **Paso 3:** Enviar baseline una vez; deltas en turnos siguientes.
+- [x] **Paso 1:** Definir trait `Source<A>` con `baseline()` y `delta()`.
+- [x] **Paso 2:** Mantener registro de fuentes y su estado; reinyectar solo las cambiadas.
+- [x] **Paso 3:** Enviar baseline una vez; deltas en turnos siguientes.
 
 **Criterio de aceptación:** Solo las fuentes cuyo estado cambió se reinyectan; el baseline se envía una vez.
 
@@ -308,8 +308,8 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 - Modificar: `src/engine/orchestrator.rs` (inyección por turnos)
 - Modificar: `src/config/paths.rs` (rutas global + proyecto)
 
-- [ ] **Paso 1:** Descubrir `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md` en workspace y config global.
-- [ ] **Paso 2:** Inyectar como contexto de sistema por turnos (con cache-control en FASE 6).
+- [x] **Paso 1:** Descubrir `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md` en workspace y config global.
+- [x] **Paso 2:** Inyectar como contexto de sistema por turnos (con cache-control en FASE 6).
 
 **Criterio de aceptación:** Los archivos de instrucción se descubren automáticamente y se inyectan en el contexto.
 
