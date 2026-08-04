@@ -370,6 +370,8 @@ pub enum EngineCommand {
     Timeline,
     /// Respond to an inline question asked by the agent (via the `question` tool).
     QuestionAnswer { id: String, answer: String },
+    /// Pin or unpin a session (shown at the top of the sidebar).
+    SetSessionPinned { id: String, pinned: bool },
     /// Shutdown the engine.
     Shutdown,
 }
@@ -714,6 +716,9 @@ impl Engine {
                             EngineCommand::Timeline => {
                                 self.handle_timeline().await?;
                             }
+                            EngineCommand::SetSessionPinned { id, pinned } => {
+                                self.handle_set_session_pinned(&id, pinned).await?;
+                            }
                             EngineCommand::Shutdown => unreachable!(),
                         }
                         Ok(())
@@ -955,6 +960,19 @@ impl Engine {
     /// Handle listing all sessions.
     async fn handle_list_sessions(&self) -> Result<()> {
         if let Some(ref db) = self.database {
+            let sessions = db.list_sessions().await?;
+            self.event_tx
+                .send(EngineEvent::SessionList(sessions))
+                .await
+                .ok();
+        }
+        Ok(())
+    }
+
+    /// Handle pinning/unpinning a session, then refresh the session list.
+    async fn handle_set_session_pinned(&self, id: &str, pinned: bool) -> Result<()> {
+        if let Some(ref db) = self.database {
+            db.set_session_pinned(id, pinned).await?;
             let sessions = db.list_sessions().await?;
             self.event_tx
                 .send(EngineEvent::SessionList(sessions))

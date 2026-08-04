@@ -51,6 +51,8 @@ pub struct SessionSummary {
     pub updated_at: DateTime<Utc>,
     pub message_count: i64,
     pub is_active: bool,
+    /// Whether the session is pinned (shown at the top of the sidebar).
+    pub pinned: bool,
 }
 
 /// A single message in an exported session transcript.

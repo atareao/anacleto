@@ -54,7 +54,8 @@ impl Database {
                 is_active INTEGER NOT NULL DEFAULT 1,
                 metadata TEXT,
                 shared INTEGER NOT NULL DEFAULT 0,
-                workspace TEXT
+                workspace TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0
             )
             "#,
         )
@@ -129,6 +130,8 @@ impl Database {
         self.ensure_column("sessions", "shared", "INTEGER NOT NULL DEFAULT 0")
             .await?;
         self.ensure_column("sessions", "workspace", "TEXT").await?;
+        self.ensure_column("sessions", "pinned", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
 
         Ok(())
     }
@@ -315,7 +318,7 @@ impl Database {
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
         let rows = sqlx::query(
             r#"
-            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active,
+            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active, s.pinned,
                    COUNT(m.id) as message_count
             FROM sessions s
             LEFT JOIN messages m ON m.session_id = s.id
@@ -345,6 +348,60 @@ impl Database {
                     .with_timezone(&chrono::Utc),
                     message_count: row.get("message_count"),
                     is_active: row.get::<i32, _>("is_active") != 0,
+                    pinned: row.get::<i32, _>("pinned") != 0,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(summaries)
+    }
+
+    /// Set the pinned flag on a session.
+    pub async fn set_session_pinned(&self, session_id: &str, pinned: bool) -> Result<()> {
+        sqlx::query("UPDATE sessions SET pinned = ? WHERE id = ?")
+            .bind(if pinned { 1 } else { 0 })
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// List pinned sessions, ordered by most recently updated first.
+    pub async fn list_pinned_sessions(&self) -> Result<Vec<SessionSummary>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT s.id, s.name, s.created_at, s.updated_at, s.is_active, s.pinned,
+                   COUNT(m.id) as message_count
+            FROM sessions s
+            LEFT JOIN messages m ON m.session_id = s.id
+            WHERE s.pinned = 1
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let summaries = rows
+            .iter()
+            .map(|row| -> Result<SessionSummary> {
+                Ok(SessionSummary {
+                    id: Uuid::parse_str(row.get::<&str, _>("id"))
+                        .map_err(|e| Error::Session(e.to_string()))?,
+                    name: row.get("name"),
+                    created_at: chrono::DateTime::parse_from_rfc3339(
+                        row.get::<&str, _>("created_at"),
+                    )
+                    .map_err(|e| Error::Session(e.to_string()))?
+                    .with_timezone(&chrono::Utc),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(
+                        row.get::<&str, _>("updated_at"),
+                    )
+                    .map_err(|e| Error::Session(e.to_string()))?
+                    .with_timezone(&chrono::Utc),
+                    message_count: row.get("message_count"),
+                    is_active: row.get::<i32, _>("is_active") != 0,
+                    pinned: true,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -1164,5 +1221,47 @@ mod tests {
         assert_eq!(frecency[0].1, 2);
         assert_eq!(frecency[1].0, "gpt-4o");
         assert_eq!(frecency[1].1, 1);
+    }
+
+    #[tokio::test]
+    async fn test_session_pinning() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Database::open(&db_path).await.unwrap();
+        let s1 = db.create_session("one").await.unwrap();
+        let s2 = db.create_session("two").await.unwrap();
+
+        // Initially nothing pinned.
+        assert!(db.list_pinned_sessions().await.unwrap().is_empty());
+
+        // Pin s1.
+        db.set_session_pinned(&s1.id.to_string(), true)
+            .await
+            .unwrap();
+        let pinned = db.list_pinned_sessions().await.unwrap();
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].id, s1.id);
+        assert!(pinned[0].pinned);
+
+        // Pin s2 too; both listed.
+        db.set_session_pinned(&s2.id.to_string(), true)
+            .await
+            .unwrap();
+        assert_eq!(db.list_pinned_sessions().await.unwrap().len(), 2);
+
+        // Unpin s1.
+        db.set_session_pinned(&s1.id.to_string(), false)
+            .await
+            .unwrap();
+        let pinned = db.list_pinned_sessions().await.unwrap();
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].id, s2.id);
+
+        // list_sessions reflects the pinned flag.
+        let all = db.list_sessions().await.unwrap();
+        let s1_summary = all.iter().find(|s| s.id == s1.id).unwrap();
+        assert!(!s1_summary.pinned);
+        let s2_summary = all.iter().find(|s| s.id == s2.id).unwrap();
+        assert!(s2_summary.pinned);
     }
 }

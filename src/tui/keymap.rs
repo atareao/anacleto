@@ -43,6 +43,18 @@ pub enum Action {
     FocusChat,
     /// Clear the current input buffer.
     ClearInput,
+    /// Open the prompt queue popup.
+    OpenPromptQueue,
+    /// Resume the pinned session in quick slot 1..9.
+    QuickSlot1,
+    QuickSlot2,
+    QuickSlot3,
+    QuickSlot4,
+    QuickSlot5,
+    QuickSlot6,
+    QuickSlot7,
+    QuickSlot8,
+    QuickSlot9,
 }
 
 /// Central mapping of actions to the key events that trigger them.
@@ -158,6 +170,16 @@ impl Default for Keymap {
         km.bind(Action::FocusSidebar, vec![key_event('s', false)]);
         km.bind(Action::FocusChat, vec![key_event('c', false)]);
         km.bind(Action::ClearInput, vec![key_event('c', true)]);
+        km.bind(Action::OpenPromptQueue, vec![key_event('q', true)]);
+        km.bind(Action::QuickSlot1, vec![key_event('1', true)]);
+        km.bind(Action::QuickSlot2, vec![key_event('2', true)]);
+        km.bind(Action::QuickSlot3, vec![key_event('3', true)]);
+        km.bind(Action::QuickSlot4, vec![key_event('4', true)]);
+        km.bind(Action::QuickSlot5, vec![key_event('5', true)]);
+        km.bind(Action::QuickSlot6, vec![key_event('6', true)]);
+        km.bind(Action::QuickSlot7, vec![key_event('7', true)]);
+        km.bind(Action::QuickSlot8, vec![key_event('8', true)]);
+        km.bind(Action::QuickSlot9, vec![key_event('9', true)]);
         km
     }
 }
@@ -195,6 +217,16 @@ pub fn format_keymap_table() -> String {
         (Action::FocusSidebar, "Enfocar sidebar"),
         (Action::FocusChat, "Enfocar chat"),
         (Action::ClearInput, "Limpiar input"),
+        (Action::OpenPromptQueue, "Cola de prompts"),
+        (Action::QuickSlot1, "Quick slot 1"),
+        (Action::QuickSlot2, "Quick slot 2"),
+        (Action::QuickSlot3, "Quick slot 3"),
+        (Action::QuickSlot4, "Quick slot 4"),
+        (Action::QuickSlot5, "Quick slot 5"),
+        (Action::QuickSlot6, "Quick slot 6"),
+        (Action::QuickSlot7, "Quick slot 7"),
+        (Action::QuickSlot8, "Quick slot 8"),
+        (Action::QuickSlot9, "Quick slot 9"),
     ];
 
     let mut out = String::new();
@@ -247,6 +279,16 @@ fn parse_action(name: &str) -> Option<Action> {
         Action::FocusSidebar,
         Action::FocusChat,
         Action::ClearInput,
+        Action::OpenPromptQueue,
+        Action::QuickSlot1,
+        Action::QuickSlot2,
+        Action::QuickSlot3,
+        Action::QuickSlot4,
+        Action::QuickSlot5,
+        Action::QuickSlot6,
+        Action::QuickSlot7,
+        Action::QuickSlot8,
+        Action::QuickSlot9,
     ] {
         if to_snake_case(&format!("{action:?}")) == lower {
             return Some(action);

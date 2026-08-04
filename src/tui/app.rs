@@ -12,7 +12,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Gauge, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap},
 };
 use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
@@ -301,6 +301,12 @@ pub struct App {
     pub model_picker: ModelPicker,
     /// External editor command (from config, overrides `$EDITOR`/`$VISUAL`).
     pub editor: Option<String>,
+    /// Queue of pending prompts (FASE 4.6).
+    pub prompt_queue: Vec<String>,
+    /// Whether the prompt queue popup is visible.
+    pub show_prompt_queue: bool,
+    /// Selected index in the prompt queue popup.
+    pub prompt_queue_index: usize,
 }
 
 impl App {
@@ -380,6 +386,9 @@ impl App {
             diff_viewer: DiffViewer::new(),
             model_picker,
             editor: config.editor.clone(),
+            prompt_queue: Vec::new(),
+            show_prompt_queue: false,
+            prompt_queue_index: 0,
         }
     }
 
@@ -950,6 +959,49 @@ impl App {
             return;
         }
 
+        // ── Prompt queue popup navigation ───────────────────────────
+        if self.show_prompt_queue {
+            match key {
+                KeyCode::Up => {
+                    self.prompt_queue_index = self.prompt_queue_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if self.prompt_queue_index + 1 < self.prompt_queue.len() {
+                        self.prompt_queue_index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(prompt) = self.prompt_queue.get(self.prompt_queue_index) {
+                        let text = prompt.clone();
+                        self.prompt_queue.remove(self.prompt_queue_index);
+                        if self.prompt_queue.is_empty() {
+                            self.show_prompt_queue = false;
+                        } else {
+                            self.prompt_queue_index =
+                                self.prompt_queue_index.min(self.prompt_queue.len() - 1);
+                        }
+                        let _ = self.cmd_tx.try_send(EngineCommand::UserInput(text));
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if !self.prompt_queue.is_empty() {
+                        self.prompt_queue.remove(self.prompt_queue_index);
+                        if self.prompt_queue.is_empty() {
+                            self.show_prompt_queue = false;
+                        } else {
+                            self.prompt_queue_index =
+                                self.prompt_queue_index.min(self.prompt_queue.len() - 1);
+                        }
+                    }
+                }
+                KeyCode::Esc => {
+                    self.show_prompt_queue = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // ── Keymap-driven global actions ─────────────────────────────
         // Only dispatch when the key is a special/modified key, or when the
         // input is empty (so plain characters can still be typed normally).
@@ -982,6 +1034,29 @@ impl App {
             if self.keymap.matches(key_event, Action::ClearInput) {
                 self.input.clear();
                 return;
+            }
+            if self.keymap.matches(key_event, Action::OpenPromptQueue) {
+                self.show_prompt_queue = true;
+                self.prompt_queue_index = 0;
+                return;
+            }
+            // Quick slots 1..9 resume the pinned session at that index.
+            let quick_slots = [
+                Action::QuickSlot1,
+                Action::QuickSlot2,
+                Action::QuickSlot3,
+                Action::QuickSlot4,
+                Action::QuickSlot5,
+                Action::QuickSlot6,
+                Action::QuickSlot7,
+                Action::QuickSlot8,
+                Action::QuickSlot9,
+            ];
+            for (idx, action) in quick_slots.iter().enumerate() {
+                if self.keymap.matches(key_event, *action) {
+                    self.resume_quick_slot(idx);
+                    return;
+                }
             }
             if self.keymap.matches(key_event, Action::ScrollUp) {
                 self.chat_scroll = self.chat_scroll.saturating_add(1);
@@ -1240,6 +1315,44 @@ impl App {
                 } else {
                     self.messages
                         .push("Usage: /rename <session-id> <new-name>".into());
+                }
+            }
+            // ── Session pinning (FASE 4.5) ─────────────────────────
+            "/pin" => {
+                if let Some(id) = parts.get(1) {
+                    self.push_msg(format!("> /pin {}", id));
+                    let _ = self.cmd_tx.try_send(EngineCommand::SetSessionPinned {
+                        id: id.to_string(),
+                        pinned: true,
+                    });
+                } else {
+                    self.push_msg("Usage: /pin <session-id>");
+                }
+            }
+            "/unpin" => {
+                if let Some(id) = parts.get(1) {
+                    self.push_msg(format!("> /unpin {}", id));
+                    let _ = self.cmd_tx.try_send(EngineCommand::SetSessionPinned {
+                        id: id.to_string(),
+                        pinned: false,
+                    });
+                } else {
+                    self.push_msg("Usage: /unpin <session-id>");
+                }
+            }
+            // ── Prompt queue (FASE 4.6) ────────────────────────────
+            "/queue" => {
+                self.push_msg("> /queue");
+                self.show_prompt_queue = true;
+                self.prompt_queue_index = 0;
+            }
+            "/enqueue" => {
+                let text = parts.get(1).unwrap_or(&"").trim();
+                if text.is_empty() {
+                    self.push_msg("Usage: /enqueue <prompt text>");
+                } else {
+                    self.prompt_queue.push(text.to_string());
+                    self.push_msg(format!("> /enqueue ({} en cola)", self.prompt_queue.len()));
                 }
             }
             // ── Agent info commands ────────────────────────────────
@@ -1523,6 +1636,20 @@ impl App {
         let _ = std::fs::remove_file(&tmp);
     }
 
+    /// Resume the pinned session at the given quick-slot index (0-based).
+    fn resume_quick_slot(&mut self, index: usize) {
+        let pinned: Vec<&SessionSummary> = self.session_list.iter().filter(|s| s.pinned).collect();
+        if let Some(session) = pinned.get(index) {
+            let id = session.id;
+            self.push_msg(format!("> quick-slot {}: resume {}", index + 1, id));
+            let _ = self
+                .cmd_tx
+                .try_send(EngineCommand::ResumeSession(id.to_string()));
+        } else {
+            self.push_msg(format!("No pinned session in quick slot {}", index + 1));
+        }
+    }
+
     /// Advance the `/init` flow with the current input buffer.
     fn collect_init_answer(&mut self) {
         let Some(mut flow) = self.init_flow.take() else {
@@ -1689,8 +1816,49 @@ fn render(f: &mut Frame, app: &mut App) {
     app.diff_viewer.render(f, f.area());
     app.model_picker.render(f, f.area());
 
+    // Render the prompt queue popup if visible.
+    render_prompt_queue(f, f.area(), app);
+
     // Render transient toasts in the bottom-right corner.
     app.toasts.render(f, f.area());
+}
+
+/// Render the prompt queue popup (FASE 4.6).
+fn render_prompt_queue(f: &mut Frame, area: Rect, app: &App) {
+    if !app.show_prompt_queue {
+        return;
+    }
+    let items: Vec<ListItem> = app
+        .prompt_queue
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let style = if i == app.prompt_queue_index {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!("{:>2}. {}", i + 1, p),
+                style,
+            )))
+        })
+        .collect();
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Cola de prompts "),
+    );
+    let popup = Rect {
+        x: area.width.saturating_sub(60) / 2,
+        y: area.height.saturating_sub(20) / 2,
+        width: 60.min(area.width),
+        height: 20.min(area.height),
+    };
+    f.render_widget(Clear, popup);
+    f.render_widget(list, popup);
 }
 
 /// Render the top status bar with agent/session info.
@@ -2628,6 +2796,7 @@ fn render_session_list(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 ""
             };
+            let pinned_marker = if s.pinned { "📌" } else { "  " };
             let style = if Some(s.id.to_string()) == app.session_id {
                 Style::default().fg(Color::Green)
             } else {
@@ -2635,7 +2804,8 @@ fn render_session_list(f: &mut Frame, area: Rect, app: &App) {
             };
             ListItem::new(Line::from(Span::styled(
                 format!(
-                    "{}  msgs:{}  {}  {}{}",
+                    "{} {}  msgs:{}  {}  {}{}",
+                    pinned_marker,
                     &s.id.to_string()[..8],
                     s.message_count,
                     s.name,
