@@ -480,6 +480,17 @@ impl Engine {
         }
     }
 
+    /// Return the configs of agents that should be spawned as roots at startup.
+    ///
+    /// Per ADR-0001, only agents declaring `role: root` are spawned; subagents
+    /// are created on-demand by their parent and are never spawned here,
+    /// regardless of whether a parent references them.
+    fn root_agent_configs(
+        agents: &[crate::config::AgentConfig],
+    ) -> impl Iterator<Item = &crate::config::AgentConfig> {
+        agents.iter().filter(|a| a.role == AgentRole::Root)
+    }
+
     /// Initialize the engine: load config, create providers and agents, connect MCPs.
     pub async fn initialize(&mut self) -> Result<()> {
         // Sync debug flag from config (--debug CLI flag sets this)
@@ -565,14 +576,6 @@ impl Engine {
             }
         }
 
-        // Collect all subagent names (agents that are listed as subagents of another agent)
-        let subagent_names: std::collections::HashSet<String> = self
-            .config
-            .agents
-            .iter()
-            .flat_map(|a| a.subagents.iter().cloned())
-            .collect();
-
         // Build a name-to-config map for quick lookup
         let config_by_name: std::collections::HashMap<String, &crate::config::AgentConfig> = self
             .config
@@ -581,13 +584,11 @@ impl Engine {
             .map(|a| (a.name.clone(), a))
             .collect();
 
-        // Only spawn root agents — subagents are spawned on-demand by their parent
-        for agent_config in &self.config.agents {
-            if subagent_names.contains(&agent_config.name) {
-                // Skip — this is a subagent, spawned on-demand
-                continue;
-            }
-
+        // Only spawn root agents — subagents are spawned on-demand by their parent.
+        // An agent is a root iff it declares `role: root` (ADR-0001). Agents
+        // declared as subagents are never spawned at startup, regardless of
+        // whether a parent references them.
+        for agent_config in Self::root_agent_configs(&self.config.agents) {
             let agent = Agent::from_config(agent_config, AgentRole::Root);
             let name = agent.name.clone();
             let id = agent.id.clone();
@@ -1963,6 +1964,45 @@ fn ollama_config_to_llm(cfg: &OllamaConfig) -> LlmProviderConfig {
 mod tests {
     use super::*;
     use crate::config::types::AgentConfig;
+
+    #[test]
+    fn test_root_agent_configs_only_returns_role_root() {
+        // Only agents declaring `role: root` are spawned at startup (ADR-0001).
+        // Subagents — even those not referenced by any parent — are excluded.
+        let configs = vec![
+            AgentConfig {
+                name: "root".into(),
+                description: "root agent".into(),
+                role: AgentRole::Root,
+                model: "claude-sonnet-4".into(),
+                skills: vec![],
+                mcps: vec![],
+                permissions: crate::config::types::PermissionConfig::default(),
+                subagents: vec!["tech-writer".into()],
+                system_prompt: String::new(),
+                max_steps: 90,
+                subagent_depth: 3,
+            },
+            AgentConfig {
+                name: "tech-writer".into(),
+                description: "subagent".into(),
+                role: AgentRole::SubAgent,
+                model: "claude-sonnet-4".into(),
+                skills: vec![],
+                mcps: vec![],
+                permissions: crate::config::types::PermissionConfig::default(),
+                subagents: vec![],
+                system_prompt: String::new(),
+                max_steps: 90,
+                subagent_depth: 3,
+            },
+        ];
+
+        let roots: Vec<String> = Engine::root_agent_configs(&configs)
+            .map(|a| a.name.clone())
+            .collect();
+        assert_eq!(roots, vec!["root"]);
+    }
 
     #[tokio::test]
     async fn test_engine_creation() {
