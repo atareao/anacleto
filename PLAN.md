@@ -889,10 +889,10 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 **Archivos:**
 - Modificar: `src/tui/keymap.rs` (enum `Action`, `Keymap::default()`, `format_keymap_table()`, `parse_action()`)
 
-- [ ] **Paso 1:** Añadir variantes de edición de input al enum `Action`: `CursorLeft`, `CursorRight`, `CursorWordLeft`, `CursorWordRight`, `CursorHome`, `CursorEnd`, `DeleteChar`, `DeleteWordBefore`, `DeleteToStart`, `DeleteToEnd`, `HistoryUp`, `HistoryDown`, `TabComplete`, `InsertNewline` (nota: `ClearInput` ya existe).
-- [ ] **Paso 2:** Añadir variantes de navegación al enum `Action`: `ChatTop` (gg), `ChatBottom` (G), `ListTop` (gg), `ListBottom` (G).
-- [ ] **Paso 3:** En `Keymap::default()`, enlazar las nuevas variantes a sus atajos por defecto (Left/Right, Ctrl+Left/Alt+Left, Ctrl+Right/Alt+Right, Home/End, Delete, Ctrl+W, Ctrl+U, Ctrl+K, Ctrl+A/E, Up/Down, Tab, Ctrl+J, j/k, gg/G, PageUp/PageDown, Ctrl+U/D, Esc).
-- [ ] **Paso 4:** Añadir las nuevas variantes a `format_keymap_table()` (filas con descripción) y a la lista de `parse_action()`.
+- [x] **Paso 1:** Añadir variantes de edición de input al enum `Action`: `CursorLeft`, `CursorRight`, `CursorWordLeft`, `CursorWordRight`, `CursorHome`, `CursorEnd`, `DeleteChar`, `DeleteWordBefore`, `DeleteToStart`, `DeleteToEnd`, `HistoryUp`, `HistoryDown`, `TabComplete`, `InsertNewline` (nota: `ClearInput` ya existe).
+- [x] **Paso 2:** Añadir variantes de navegación al enum `Action`: `ChatTop` (gg), `ChatBottom` (G), `ListTop` (gg), `ListBottom` (G).
+- [x] **Paso 3:** En `Keymap::default()`, enlazar las nuevas variantes a sus atajos por defecto (Left/Right, Ctrl+Left/Alt+Left, Ctrl+Right/Alt+Right, Home/End, Delete, Ctrl+W, Ctrl+U, Ctrl+K, Ctrl+A/E, Up/Down, Tab, Ctrl+J, j/k, gg/G, PageUp/PageDown, Ctrl+U/D, Esc).
+- [x] **Paso 4:** Añadir las nuevas variantes a `format_keymap_table()` (filas con descripción) y a la lista de `parse_action()`.
 
 **Criterio de aceptación:** Todas las variantes nuevas existen en `Action`, tienen binding por defecto, aparecen en la tabla which-key y se parsean desde string en `parse_action`.
 
@@ -901,10 +901,10 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 **Archivos:**
 - Modificar: `src/tui/app.rs` (`handle_input_key` línea 1304, `handle_chat_key` línea 1535, `handle_list_nav_key` línea 1609)
 
-- [ ] **Paso 1:** En `handle_input_key` (línea 1304), sustituir las comparaciones hardcodeadas de `KeyCode`/`KeyModifiers` por consultas a `self.keymap.matches(key_event, Action::CursorLeft)` (y análogas para cada variante nueva).
-- [ ] **Paso 2:** En `handle_chat_key` (línea 1535), sustituir j/k, gg/G, PageUp/PageDown, Ctrl+U/D, Home/End por consultas a `self.keymap.matches`.
-- [ ] **Paso 3:** En `handle_list_nav_key` (línea 1609), sustituir j/k, gg/G, Home/End, Esc por consultas a `self.keymap.matches`.
-- [ ] **Paso 4:** Eliminar cualquier rama de `KeyCode::Char`/`KeyModifiers` que ahora quede cubierta por el keymap, manteniendo el comportamiento idéntico.
+- [x] **Paso 1:** En `handle_input_key` (línea 1304), sustituir las comparaciones hardcodeadas de `KeyCode`/`KeyModifiers` por consultas a `self.keymap.matches(key_event, Action::CursorLeft)` (y análogas para cada variante nueva).
+- [x] **Paso 2:** En `handle_chat_key` (línea 1535), sustituir j/k, gg/G, PageUp/PageDown, Ctrl+U/D, Home/End por consultas a `self.keymap.matches`.
+- [x] **Paso 3:** En `handle_list_nav_key` (línea 1609), sustituir j/k, gg/G, Home/End, Esc por consultas a `self.keymap.matches`.
+- [x] **Paso 4:** Eliminar cualquier rama de `KeyCode::Char`/`KeyModifiers` que ahora quede cubierta por el keymap, manteniendo el comportamiento idéntico.
 
 **Criterio de aceptación:** Los tres handlers consultan `self.keymap.matches` y no comparan `KeyCode`/`KeyModifiers` hardcodeados; el comportamiento por defecto es idéntico al previo.
 
@@ -915,9 +915,9 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - Modificar: `docs/example-global-config.yaml` (sección `keymap`)
 - Modificar: `README.md` (documentación de bindings configurables)
 
-- [ ] **Paso 1:** Asegurar que `Keymap::apply_overrides` (en `src/config/types.rs`) cubre todas las variantes nuevas (que `parse_action` las reconoce y `parse_key` las enlaza).
-- [ ] **Paso 2:** Documentar en `docs/example-global-config.yaml` el formato de `keymap.bindings` con ejemplos de las nuevas acciones (p.ej. `CursorWordLeft: ["ctrl+left", "alt+left"]`).
-- [ ] **Paso 3:** Documentar en `README.md` que todos los atajos (edición de Input y navegación Vim) son rebindables desde config.
+- [x] **Paso 1:** Asegurar que `Keymap::apply_overrides` (en `src/config/types.rs`) cubre todas las variantes nuevas (que `parse_action` las reconoce y `parse_key` las enlaza).
+- [x] **Paso 2:** Documentar en `docs/example-global-config.yaml` el formato de `keymap.bindings` con ejemplos de las nuevas acciones (p.ej. `CursorWordLeft: ["ctrl+left", "alt+left"]`).
+- [x] **Paso 3:** Documentar en `README.md` que todos los atajos (edición de Input y navegación Vim) son rebindables desde config.
 
 **Criterio de aceptación:** `apply_overrides` acepta overrides de todas las variantes nuevas; la documentación de config y README refleja el formato completo.
 
@@ -926,19 +926,19 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 **Archivos:**
 - Modificar: `src/tui/keymap.rs` (módulo `#[cfg(test)] mod tests`)
 
-- [ ] **Paso 1:** Añadir tests que verifiquen que cada variante nueva resuelve a su binding por defecto (p.ej. `km.matches(KeyEvent::new(KeyCode::Left, NONE), Action::CursorLeft)`).
-- [ ] **Paso 2:** Añadir tests de `apply_overrides` que sobrescriban un binding por defecto y verifiquen el nuevo mapeo.
-- [ ] **Paso 3:** Añadir un test de `parse_action`/`parse_key` round-trip para las variantes nuevas.
+- [x] **Paso 1:** Añadir tests que verifiquen que cada variante nueva resuelve a su binding por defecto (p.ej. `km.matches(KeyEvent::new(KeyCode::Left, NONE), Action::CursorLeft)`).
+- [x] **Paso 2:** Añadir tests de `apply_overrides` que sobrescriban un binding por defecto y verifiquen el nuevo mapeo.
+- [x] **Paso 3:** Añadir un test de `parse_action`/`parse_key` round-trip para las variantes nuevas.
 
 **Criterio de aceptación:** Los tests unitarios nuevos pasan y cubren bindings por defecto, overrides y parseo round-trip.
 
 **Criterios de aceptación de FASE 9:**
-- [ ] Todos los atajos de edición de Input y navegación Vim son configurables desde `config.keymap.bindings`.
-- [ ] `handle_input_key`, `handle_chat_key` y `handle_list_nav_key` consultan `self.keymap.matches` (sin `KeyCode`/`KeyModifiers` hardcodeados).
-- [ ] `apply_overrides` cubre todas las variantes nuevas.
-- [ ] `docs/example-global-config.yaml` y `README.md` documentan el formato.
-- [ ] Tests unitarios nuevos en keymap.rs pasan.
-- [ ] `cargo fmt --check && cargo clippy && cargo test` pasan.
+- [x] Todos los atajos de edición de Input y navegación Vim son configurables desde `config.keymap.bindings`.
+- [x] `handle_input_key`, `handle_chat_key` y `handle_list_nav_key` consultan `self.keymap.matches` (sin `KeyCode`/`KeyModifiers` hardcodeados).
+- [x] `apply_overrides` cubre todas las variantes nuevas.
+- [x] `docs/example-global-config.yaml` y `README.md` documentan el formato.
+- [x] Tests unitarios nuevos en keymap.rs pasan.
+- [x] `cargo fmt --check && cargo clippy && cargo test` pasan.
 
 **Dependencia:** FASE 9 depende de FASE 4 (keymap/which-key) y de FASE 8 (variantes `Focus*` y handlers de foco).
 
@@ -953,10 +953,10 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 **Archivos:**
 - Modificar: `src/tui/keymap.rs` (`Keymap::default()`, `format_keymap_table()`)
 
-- [ ] **Paso 1:** Eliminar el binding de `Quit` a `q` sin modificador; `Quit` pasa a ser solo `Ctrl+q` (o con confirmación).
-- [ ] **Paso 2:** Eliminar los bindings de letra sin modificador de `FocusChat` (`c`), `FocusInput` (`i`) y `FocusSidebar` (`s`); el cambio de foco ya se cubre con Alt+1..5.
-- [ ] **Paso 3:** Eliminar el binding de `OpenWhichKey` a `?` sin modificador (mantener el acceso vía `Ctrl+x` o similar).
-- [ ] **Paso 4:** Actualizar `format_keymap_table()` para reflejar los nuevos bindings.
+- [x] **Paso 1:** Eliminar el binding de `Quit` a `q` sin modificador; `Quit` pasa a ser solo `Ctrl+q` (o con confirmación).
+- [x] **Paso 2:** Eliminar los bindings de letra sin modificador de `FocusChat` (`c`), `FocusInput` (`i`) y `FocusSidebar` (`s`); el cambio de foco ya se cubre con Alt+1..5.
+- [x] **Paso 3:** Eliminar el binding de `OpenWhichKey` a `?` sin modificador (mantener el acceso vía `Ctrl+x` o similar).
+- [x] **Paso 4:** Actualizar `format_keymap_table()` para reflejar los nuevos bindings.
 
 **Criterio de aceptación:** Ninguna acción global queda enlazada a una letra sin modificador; `Quit` solo responde a `Ctrl+q`.
 
@@ -965,9 +965,9 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 **Archivos:**
 - Modificar: `src/tui/app.rs` (`handle_key` línea 954, `keymap_applies` línea 2514)
 
-- [ ] **Paso 1:** Modificar `keymap_applies` (línea 2514) o el flujo de `handle_key` (línea 954) para que, cuando `self.focus == Focus::Input`, las teclas de carácter sin modificador SIEMPRE vayan a `handle_input_key` y nunca a acciones globales.
-- [ ] **Paso 2:** Asegurar que las teclas de carácter con modificador (p.ej. `Ctrl+q`) sigan disparando acciones globales incluso con foco en Input.
-- [ ] **Paso 3:** Mantener el comportamiento de las demás ventanas (Chat, MCPs, Skills, Agents) sin cambios.
+- [x] **Paso 1:** Modificar `keymap_applies` (línea 2514) o el flujo de `handle_key` (línea 954) para que, cuando `self.focus == Focus::Input`, las teclas de carácter sin modificador SIEMPRE vayan a `handle_input_key` y nunca a acciones globales.
+- [x] **Paso 2:** Asegurar que las teclas de carácter con modificador (p.ej. `Ctrl+q`) sigan disparando acciones globales incluso con foco en Input.
+- [x] **Paso 3:** Mantener el comportamiento de las demás ventanas (Chat, MCPs, Skills, Agents) sin cambios.
 
 **Criterio de aceptación:** Con foco en Input, una letra sin modificador nunca dispara una acción global; con modificador sí.
 
@@ -976,8 +976,8 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 **Archivos:**
 - Modificar: `src/tui/app.rs` (`handle_input_key` línea 1304)
 
-- [ ] **Paso 1:** Verificar que `handle_input_key` inserta cualquier `KeyCode::Char` sin modificador en la posición del cursor, incluido como primer carácter con input vacío.
-- [ ] **Paso 2:** Confirmar que 'q' y 'N' (y cualquier letra) se insertan y no disparan `Quit` ni otras acciones.
+- [x] **Paso 1:** Verificar que `handle_input_key` inserta cualquier `KeyCode::Char` sin modificador en la posición del cursor, incluido como primer carácter con input vacío.
+- [x] **Paso 2:** Confirmar que 'q' y 'N' (y cualquier letra) se insertan y no disparan `Quit` ni otras acciones.
 
 **Criterio de aceptación:** Escribir 'q' o 'N' con input vacío inserta el carácter y no dispara ninguna acción global.
 
@@ -986,19 +986,19 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 **Archivos:**
 - Modificar: `src/tui/app.rs` (módulo `#[cfg(test)] mod tests`)
 
-- [ ] **Paso 1:** Añadir un test de regresión: con `focus == Focus::Input` e input vacío, teclear 'q' inserta el carácter y no dispara `Quit`.
-- [ ] **Paso 2:** Añadir un test de regresión análogo para 'N' (y al menos una letra más).
-- [ ] **Paso 3:** Añadir un test que verifique que `Ctrl+q` con foco en Input sí dispara `Quit`.
+- [x] **Paso 1:** Añadir un test de regresión: con `focus == Focus::Input` e input vacío, teclear 'q' inserta el carácter y no dispara `Quit`.
+- [x] **Paso 2:** Añadir un test de regresión análogo para 'N' (y al menos una letra más).
+- [x] **Paso 3:** Añadir un test que verifique que `Ctrl+q` con foco en Input sí dispara `Quit`.
 
 **Criterio de aceptación:** Los tests de regresión pasan y cubren el caso de letra como primer carácter y el de `Ctrl+q`.
 
 **Criterios de aceptación de FASE 10:**
-- [ ] Ninguna acción global está enlazada a una letra sin modificador.
-- [ ] Con foco en Input, cualquier tecla de carácter sin modificador se escribe siempre, incluso con input vacío.
-- [ ] 'q' y 'N' se pueden teclear como primer carácter sin disparar acciones.
-- [ ] `Ctrl+q` sigue disparando `Quit` con foco en Input.
-- [ ] Tests de regresión nuevos pasan.
-- [ ] `cargo fmt --check && cargo clippy && cargo test` pasan.
+- [x] Ninguna acción global está enlazada a una letra sin modificador.
+- [x] Con foco en Input, cualquier tecla de carácter sin modificador se escribe siempre, incluso con input vacío.
+- [x] 'q' y 'N' se pueden teclear como primer carácter sin disparar acciones.
+- [x] `Ctrl+q` sigue disparando `Quit` con foco en Input.
+- [x] Tests de regresión nuevos pasan.
+- [x] `cargo fmt --check && cargo clippy && cargo test` pasan.
 
 **Dependencia:** FASE 10 depende de FASE 9 (keymap configurable) y de FASE 8 (modelo de foco).
 
@@ -1020,13 +1020,13 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - Crear: `src/tui/render.rs` (o submodulo `render/`) para las funciones `render_*` restantes
 - Modificar: `src/tui/app.rs` (eliminar el código movido)
 
-- [ ] **Paso 1:** Crear `src/tui/input.rs` y mover `handle_input_key` (línea 1304) y los helpers de cursor.
-- [ ] **Paso 2:** Crear `src/tui/navigation.rs` y mover `handle_chat_key` (línea 1535), `handle_mcp/skill/agent_panel_key`, `handle_list_nav_key` (línea 1609) e `is_double_g`.
-- [ ] **Paso 3:** Crear `src/tui/commands.rs` y mover `handle_command` (líneas 1940-2398) y `process_input`.
-- [ ] **Paso 4:** Crear `src/tui/palette.rs` y mover `update_command_palette`/`update_agent_palette`/`update_model_palette` y sus `render_*_palette`.
-- [ ] **Paso 5:** Crear `src/tui/markdown.rs` y mover `render_markdown_line`, `parse_inline`, `visual_line_count` y `select_visible_start`.
-- [ ] **Paso 6:** Crear `src/tui/theme.rs` y mover `Theme`.
-- [ ] **Paso 7:** Crear `src/tui/render.rs` (o submodulo `render/`) y mover las funciones `render_*` restantes (`render`, `render_chat`, `render_input`, `render_mcp_panel`, `render_skill_panel`, `render_agent_panel`, `render_approval_dialog`, `render_question_dialog`).
+- [x] **Paso 1:** Crear `src/tui/input.rs` y mover `handle_input_key` (línea 1304) y los helpers de cursor.
+- [x] **Paso 2:** Crear `src/tui/navigation.rs` y mover `handle_chat_key` (línea 1535), `handle_mcp/skill/agent_panel_key`, `handle_list_nav_key` (línea 1609) e `is_double_g`.
+- [x] **Paso 3:** Crear `src/tui/commands.rs` y mover `handle_command` (líneas 1940-2398) y `process_input`.
+- [x] **Paso 4:** Crear `src/tui/palette.rs` y mover `update_command_palette`/`update_agent_palette`/`update_model_palette` y sus `render_*_palette`.
+- [x] **Paso 5:** Crear `src/tui/markdown.rs` y mover `render_markdown_line`, `parse_inline`, `visual_line_count` y `select_visible_start`.
+- [x] **Paso 6:** Crear `src/tui/theme.rs` y mover `Theme`.
+- [x] **Paso 7:** Crear `src/tui/render.rs` (o submodulo `render/`) y mover las funciones `render_*` restantes (`render`, `render_chat`, `render_input`, `render_mcp_panel`, `render_skill_panel`, `render_agent_panel`, `render_approval_dialog`, `render_question_dialog`).
 
 **Criterio de aceptación:** `app.rs` queda reducido a la struct `App`, el estado y el enrutado; cada grupo de funciones vive en su módulo cohesivo.
 
@@ -1036,9 +1036,9 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - Modificar: `src/tui/mod.rs` (declaraciones `mod`)
 - Modificar: los nuevos módulos (`pub(crate)`/`pub` en funciones y tipos)
 
-- [ ] **Paso 1:** Añadir las declaraciones `mod input; mod navigation; mod commands; mod palette; mod markdown; mod theme; mod render;` en `src/tui/mod.rs`.
-- [ ] **Paso 2:** Ajustar la visibilidad de funciones y tipos movidos a `pub(crate)`/`pub` según lo que consuma `app.rs` y el resto del crate.
-- [ ] **Paso 3:** Ajustar los accesos a campos de `App` y tipos compartidos (p.ej. `Focus`, `Action`) para que los módulos nuevos compilen.
+- [x] **Paso 1:** Añadir las declaraciones `mod input; mod navigation; mod commands; mod palette; mod markdown; mod theme; mod render;` en `src/tui/mod.rs`.
+- [x] **Paso 2:** Ajustar la visibilidad de funciones y tipos movidos a `pub(crate)`/`pub` según lo que consuma `app.rs` y el resto del crate.
+- [x] **Paso 3:** Ajustar los accesos a campos de `App` y tipos compartidos (p.ej. `Focus`, `Action`) para que los módulos nuevos compilen.
 
 **Criterio de aceptación:** El crate compila con los módulos nuevos y la visibilidad correcta.
 
@@ -1047,10 +1047,10 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 **Archivos:**
 - Modificar: los módulos nuevos y `src/tui/app.rs`
 
-- [ ] **Paso 1:** Reducir clonaciones innecesarias (usar referencias/`Cow` donde aplique).
-- [ ] **Paso 2:** Usar tipos correctos (p.ej. `usize` para índices, `saturating_sub`/`clamp` para navegación).
-- [ ] **Paso 3:** Manejo de errores idiomático (propagar con `anyhow`/`Result` en lugar de `unwrap`/`expect` donde sea posible).
-- [ ] **Paso 4:** Eliminar código muerto y añadir doc-comments a los módulos y funciones públicas.
+- [x] **Paso 1:** Reducir clonaciones innecesarias (usar referencias/`Cow` donde aplique).
+- [x] **Paso 2:** Usar tipos correctos (p.ej. `usize` para índices, `saturating_sub`/`clamp` para navegación).
+- [x] **Paso 3:** Manejo de errores idiomático (propagar con `anyhow`/`Result` en lugar de `unwrap`/`expect` donde sea posible).
+- [x] **Paso 4:** Eliminar código muerto y añadir doc-comments a los módulos y funciones públicas.
 
 **Criterio de aceptación:** El código movido sigue las mejores prácticas de Rust sin cambios de comportamiento.
 
@@ -1059,18 +1059,18 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 **Archivos:**
 - Modificar: `src/tui/app.rs` (módulo `#[cfg(test)] mod tests` si es necesario)
 
-- [ ] **Paso 1:** Ejecutar `cargo fmt --check` y corregir el formato.
-- [ ] **Paso 2:** Ejecutar `cargo clippy` y corregir warnings.
-- [ ] **Paso 3:** Ejecutar `cargo test` y asegurar que todos los tests pasan (sin cambios de comportamiento).
-- [ ] **Paso 4:** Verificar que los tests existentes (incluidos los de FASE 8/9/10) siguen pasando tras la división.
+- [x] **Paso 1:** Ejecutar `cargo fmt --check` y corregir el formato.
+- [x] **Paso 2:** Ejecutar `cargo clippy` y corregir warnings.
+- [x] **Paso 3:** Ejecutar `cargo test` y asegurar que todos los tests pasan (sin cambios de comportamiento).
+- [x] **Paso 4:** Verificar que los tests existentes (incluidos los de FASE 8/9/10) siguen pasando tras la división.
 
 **Criterio de aceptación:** `cargo fmt --check && cargo clippy && cargo test` pasan en verde tras la división, sin cambios de comportamiento.
 
 **Criterios de aceptación de FASE 11:**
-- [ ] `src/tui/app.rs` queda dividido en módulos cohesivos (`input`, `navigation`, `commands`, `palette`, `markdown`, `theme`, `render`).
-- [ ] `src/tui/mod.rs` declara los módulos nuevos con visibilidad correcta.
-- [ ] Se aplican mejores prácticas de Rust (menos clonaciones, tipos correctos, errores idiomáticos, sin código muerto).
-- [ ] `cargo fmt --check && cargo clippy && cargo test` pasan sin cambios de comportamiento.
-- [ ] Los tests existentes (incluidos los de FASE 8/9/10) siguen pasando.
+- [x] `src/tui/app.rs` queda dividido en módulos cohesivos (`input`, `navigation`, `commands`, `palette`, `markdown`, `theme`, `render`).
+- [x] `src/tui/mod.rs` declara los módulos nuevos con visibilidad correcta.
+- [x] Se aplican mejores prácticas de Rust (menos clonaciones, tipos correctos, errores idiomáticos, sin código muerto).
+- [x] `cargo fmt --check && cargo clippy && cargo test` pasan sin cambios de comportamiento.
+- [x] Los tests existentes (incluidos los de FASE 8/9/10) siguen pasando.
 
 **Dependencia:** FASE 11 depende de FASE 8, FASE 9 y FASE 10 (refactoriza el código ya modificado por esas fases).
