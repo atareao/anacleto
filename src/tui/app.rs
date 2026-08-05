@@ -1301,307 +1301,262 @@ impl App {
     }
 
     /// Handle a key while the Input window (5) has focus.
-    fn handle_input_key(&mut self, key: KeyCode, modifiers: KeyModifiers, _key_event: KeyEvent) {
-        match key {
-            KeyCode::Left => {
-                if modifiers.contains(KeyModifiers::CONTROL)
-                    || modifiers.contains(KeyModifiers::ALT)
-                {
-                    self.input_move_word_left();
-                } else {
-                    self.input_cursor = self.input_cursor.saturating_sub(1);
+    fn handle_input_key(&mut self, key: KeyCode, modifiers: KeyModifiers, key_event: KeyEvent) {
+        if self.keymap.matches(key_event, Action::TabComplete) {
+            // Reset matches if the input has changed since last Tab
+            if !self.input.starts_with('/') {
+                return;
+            }
+            let prefix = self.input.to_lowercase();
+            if self.tab_index == 0 || self.tab_matches.is_empty() {
+                self.tab_matches = self
+                    .commands
+                    .iter()
+                    .filter(|(c, _)| c.starts_with(&prefix))
+                    .map(|(c, _)| c.clone())
+                    .collect();
+            }
+            if self.tab_matches.is_empty() {
+                return;
+            }
+            let idx = self.tab_index % self.tab_matches.len();
+            self.input = self.tab_matches[idx].clone();
+            self.input_cursor = self.input.chars().count();
+            self.tab_index += 1;
+        } else if self.keymap.matches(key_event, Action::InsertNewline) {
+            self.reset_tab_state();
+            self.input_insert_char('\n');
+        } else if self.keymap.matches(key_event, Action::ClearInput) {
+            self.reset_tab_state();
+            self.input.clear();
+            self.input_cursor = 0;
+        } else if self.keymap.matches(key_event, Action::DeleteToStart) {
+            self.reset_tab_state();
+            self.input_delete_to_start();
+            self.update_command_palette();
+        } else if self.keymap.matches(key_event, Action::DeleteWordBefore) {
+            self.reset_tab_state();
+            self.input_delete_word_before();
+            self.update_command_palette();
+        } else if self.keymap.matches(key_event, Action::DeleteToEnd) {
+            self.reset_tab_state();
+            self.input_delete_to_end();
+            self.update_command_palette();
+        } else if self.keymap.matches(key_event, Action::CursorHome) {
+            self.reset_tab_state();
+            self.input_cursor = 0;
+        } else if self.keymap.matches(key_event, Action::CursorEnd) {
+            self.reset_tab_state();
+            self.input_cursor = self.input.chars().count();
+        } else if self.keymap.matches(key_event, Action::CursorWordLeft) {
+            self.reset_tab_state();
+            self.input_move_word_left();
+        } else if self.keymap.matches(key_event, Action::CursorWordRight) {
+            self.reset_tab_state();
+            self.input_move_word_right();
+        } else if self.keymap.matches(key_event, Action::CursorLeft) {
+            self.input_cursor = self.input_cursor.saturating_sub(1);
+        } else if self.keymap.matches(key_event, Action::CursorRight) {
+            let len = self.input.chars().count();
+            self.input_cursor = (self.input_cursor + 1).min(len);
+        } else if self.keymap.matches(key_event, Action::DeleteChar) {
+            self.input_delete_at();
+            self.update_command_palette();
+        } else if self.keymap.matches(key_event, Action::DeleteCharBefore) {
+            self.tab_matches.clear();
+            self.tab_index = 0;
+            self.input_delete_before();
+            self.update_command_palette();
+        } else if self.keymap.matches(key_event, Action::HistoryUp) {
+            if self.show_model_palette && !self.model_matches.is_empty() {
+                self.model_index = self
+                    .model_index
+                    .saturating_sub(1)
+                    .min(self.model_matches.len() - 1);
+            } else if self.show_agent_palette && !self.agent_matches.is_empty() {
+                self.agent_index = self
+                    .agent_index
+                    .saturating_sub(1)
+                    .min(self.agent_matches.len() - 1);
+            } else if self.show_command_palette && !self.palette_matches.is_empty() {
+                self.palette_index = self
+                    .palette_index
+                    .saturating_sub(1)
+                    .min(self.palette_matches.len() - 1);
+            } else if !self.input_history.is_empty() {
+                // Navigate backwards through input history.
+                let next = match self.history_index {
+                    Some(i) if i > 0 => i - 1,
+                    Some(_) => 0,
+                    None => self.input_history.len() - 1,
+                };
+                self.history_index = Some(next);
+                self.input = self.input_history[next].clone();
+                self.input_cursor = self.input.chars().count();
+                self.tab_matches.clear();
+                self.tab_index = 0;
+            }
+        } else if self.keymap.matches(key_event, Action::HistoryDown) {
+            if self.show_model_palette && !self.model_matches.is_empty() {
+                self.model_index = (self.model_index + 1) % self.model_matches.len();
+            } else if self.show_agent_palette && !self.agent_matches.is_empty() {
+                self.agent_index = (self.agent_index + 1) % self.agent_matches.len();
+            } else if self.show_command_palette && !self.palette_matches.is_empty() {
+                self.palette_index = (self.palette_index + 1) % self.palette_matches.len();
+            } else if self.history_index.is_some() {
+                // Navigate forwards through input history; past the newest returns to empty.
+                match self.history_index {
+                    Some(i) if i + 1 < self.input_history.len() => {
+                        self.history_index = Some(i + 1);
+                        self.input = self.input_history[i + 1].clone();
+                    }
+                    _ => {
+                        self.history_index = None;
+                        self.input.clear();
+                    }
+                }
+                self.input_cursor = self.input.chars().count();
+                self.tab_matches.clear();
+                self.tab_index = 0;
+            }
+        } else if self.keymap.matches(key_event, Action::Send) {
+            self.tab_matches.clear();
+            self.tab_index = 0;
+            if self.show_model_palette && !self.model_matches.is_empty() {
+                // Execute `/models <selected>` from the model combo.
+                let name = self.model_matches[self.model_index].clone();
+                self.show_model_palette = false;
+                self.model_matches.clear();
+                self.model_index = 0;
+                self.input.clear();
+                self.input_cursor = 0;
+                self.handle_command(format!("/models {}", name));
+            } else if self.show_agent_palette && !self.agent_matches.is_empty() {
+                // Execute `/agent <selected>` from the agent combo.
+                let name = self.agent_matches[self.agent_index].clone();
+                self.show_agent_palette = false;
+                self.agent_matches.clear();
+                self.agent_index = 0;
+                self.input.clear();
+                self.input_cursor = 0;
+                self.handle_command(format!("/agent {}", name));
+            } else if self.show_command_palette && !self.palette_matches.is_empty() {
+                // Execute the highlighted command from the palette.
+                let idx = self.palette_matches[self.palette_index];
+                let cmd = self.commands[idx].0.clone();
+                self.show_command_palette = false;
+                self.palette_matches.clear();
+                self.palette_index = 0;
+                self.input.clear();
+                self.input_cursor = 0;
+                self.handle_command(cmd);
+            } else {
+                let input = std::mem::take(&mut self.input);
+                self.input_cursor = 0;
+                if !input.is_empty() {
+                    // Record in input history (dedupe consecutive repeats).
+                    if self.input_history.last() != Some(&input) {
+                        self.input_history.push(input.clone());
+                    }
+                    self.history_index = None;
+                    self.process_input(input);
                 }
             }
-            KeyCode::Right => {
-                if modifiers.contains(KeyModifiers::CONTROL)
-                    || modifiers.contains(KeyModifiers::ALT)
-                {
-                    self.input_move_word_right();
-                } else {
-                    let len = self.input.chars().count();
-                    self.input_cursor = (self.input_cursor + 1).min(len);
-                }
-            }
-            KeyCode::Home => {
+        } else if self.keymap.matches(key_event, Action::CancelInput) {
+            // Any non-Tab key resets autocomplete state
+            self.tab_matches.clear();
+            self.tab_index = 0;
+            // Close the command palette first, then other overlays
+            if self.show_model_palette {
+                self.show_model_palette = false;
+                self.model_matches.clear();
+                self.model_index = 0;
+            } else if self.show_agent_palette {
+                self.show_agent_palette = false;
+                self.agent_matches.clear();
+                self.agent_index = 0;
+            } else if self.show_command_palette {
+                self.show_command_palette = false;
+                self.palette_matches.clear();
+                self.palette_index = 0;
+            } else if self.show_session_list {
+                self.show_session_list = false;
+            } else if self.show_agents {
+                self.show_agents = false;
+            } else if self.show_subagents {
+                self.show_subagents = false;
+            } else {
+                // No overlay open — clear input
+                self.input.clear();
                 self.input_cursor = 0;
             }
-            KeyCode::End => {
-                self.input_cursor = self.input.chars().count();
+        } else if let KeyCode::Char(c) = key {
+            // Any non-Tab key resets autocomplete state
+            self.tab_matches.clear();
+            self.tab_index = 0;
+            if self.kb_supported && modifiers.contains(KeyModifiers::SHIFT) {
+                // Kitty protocol: shift is reported as a modifier;
+                // apply keyboard-appropriate shift mapping
+                self.input_insert_char(shift_char(c, &self.lang));
+            } else {
+                self.input_insert_char(c);
             }
-            KeyCode::Delete => {
-                self.input_delete_at();
-                self.update_command_palette();
-            }
-            KeyCode::Up => {
-                if self.show_model_palette && !self.model_matches.is_empty() {
-                    self.model_index = self
-                        .model_index
-                        .saturating_sub(1)
-                        .min(self.model_matches.len() - 1);
-                } else if self.show_agent_palette && !self.agent_matches.is_empty() {
-                    self.agent_index = self
-                        .agent_index
-                        .saturating_sub(1)
-                        .min(self.agent_matches.len() - 1);
-                } else if self.show_command_palette && !self.palette_matches.is_empty() {
-                    self.palette_index = self
-                        .palette_index
-                        .saturating_sub(1)
-                        .min(self.palette_matches.len() - 1);
-                } else if !self.input_history.is_empty() {
-                    // Navigate backwards through input history.
-                    let next = match self.history_index {
-                        Some(i) if i > 0 => i - 1,
-                        Some(_) => 0,
-                        None => self.input_history.len() - 1,
-                    };
-                    self.history_index = Some(next);
-                    self.input = self.input_history[next].clone();
-                    self.input_cursor = self.input.chars().count();
-                    self.tab_matches.clear();
-                    self.tab_index = 0;
-                }
-            }
-            KeyCode::Down => {
-                if self.show_model_palette && !self.model_matches.is_empty() {
-                    self.model_index = (self.model_index + 1) % self.model_matches.len();
-                } else if self.show_agent_palette && !self.agent_matches.is_empty() {
-                    self.agent_index = (self.agent_index + 1) % self.agent_matches.len();
-                } else if self.show_command_palette && !self.palette_matches.is_empty() {
-                    self.palette_index = (self.palette_index + 1) % self.palette_matches.len();
-                } else if self.history_index.is_some() {
-                    // Navigate forwards through input history; past the newest returns to empty.
-                    match self.history_index {
-                        Some(i) if i + 1 < self.input_history.len() => {
-                            self.history_index = Some(i + 1);
-                            self.input = self.input_history[i + 1].clone();
-                        }
-                        _ => {
-                            self.history_index = None;
-                            self.input.clear();
-                        }
-                    }
-                    self.input_cursor = self.input.chars().count();
-                    self.tab_matches.clear();
-                    self.tab_index = 0;
-                }
-            }
-            KeyCode::Tab => {
-                // Reset matches if the input has changed since last Tab
-                if !self.input.starts_with('/') {
-                    return;
-                }
-                let prefix = self.input.to_lowercase();
-                if self.tab_index == 0 || self.tab_matches.is_empty() {
-                    self.tab_matches = self
-                        .commands
-                        .iter()
-                        .filter(|(c, _)| c.starts_with(&prefix))
-                        .map(|(c, _)| c.clone())
-                        .collect();
-                }
-                if self.tab_matches.is_empty() {
-                    return;
-                }
-                let idx = self.tab_index % self.tab_matches.len();
-                self.input = self.tab_matches[idx].clone();
-                self.input_cursor = self.input.chars().count();
-                self.tab_index += 1;
-            }
-            KeyCode::Char(c) => {
-                // Any non-Tab key resets autocomplete state
-                self.tab_matches.clear();
-                self.tab_index = 0;
-
-                if modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
-                    self.input.clear();
-                    self.input_cursor = 0;
-                } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'j' {
-                    // Ctrl+J = ASCII Line Feed (0x0A) — insert newline
-                    self.input_insert_char('\n');
-                } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'u' {
-                    // Ctrl+U: delete to beginning of line (kill)
-                    self.input_delete_to_start();
-                } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'w' {
-                    // Ctrl+W: delete word backward
-                    self.input_delete_word_before();
-                } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'k' {
-                    // Ctrl+K: delete to end of line (kill)
-                    self.input_delete_to_end();
-                } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'a' {
-                    self.input_cursor = 0;
-                } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'e' {
-                    self.input_cursor = self.input.chars().count();
-                } else if modifiers.contains(KeyModifiers::ALT) && c == 'b' {
-                    self.input_move_word_left();
-                } else if modifiers.contains(KeyModifiers::ALT) && c == 'f' {
-                    self.input_move_word_right();
-                } else if self.kb_supported && modifiers.contains(KeyModifiers::SHIFT) {
-                    // Kitty protocol: shift is reported as a modifier;
-                    // apply keyboard-appropriate shift mapping
-                    self.input_insert_char(shift_char(c, &self.lang));
-                } else {
-                    self.input_insert_char(c);
-                }
-                self.update_command_palette();
-            }
-            KeyCode::Backspace => {
-                self.tab_matches.clear();
-                self.tab_index = 0;
-                self.input_delete_before();
-                self.update_command_palette();
-            }
-            KeyCode::Enter => {
-                self.tab_matches.clear();
-                self.tab_index = 0;
-                if modifiers != KeyModifiers::NONE {
-                    // Any modifier + Enter = insert newline (works across terminals)
-                    self.input_insert_char('\n');
-                } else if self.show_model_palette && !self.model_matches.is_empty() {
-                    // Execute `/models <selected>` from the model combo.
-                    let name = self.model_matches[self.model_index].clone();
-                    self.show_model_palette = false;
-                    self.model_matches.clear();
-                    self.model_index = 0;
-                    self.input.clear();
-                    self.input_cursor = 0;
-                    self.handle_command(format!("/models {}", name));
-                } else if self.show_agent_palette && !self.agent_matches.is_empty() {
-                    // Execute `/agent <selected>` from the agent combo.
-                    let name = self.agent_matches[self.agent_index].clone();
-                    self.show_agent_palette = false;
-                    self.agent_matches.clear();
-                    self.agent_index = 0;
-                    self.input.clear();
-                    self.input_cursor = 0;
-                    self.handle_command(format!("/agent {}", name));
-                } else if self.show_command_palette && !self.palette_matches.is_empty() {
-                    // Execute the highlighted command from the palette.
-                    let idx = self.palette_matches[self.palette_index];
-                    let cmd = self.commands[idx].0.clone();
-                    self.show_command_palette = false;
-                    self.palette_matches.clear();
-                    self.palette_index = 0;
-                    self.input.clear();
-                    self.input_cursor = 0;
-                    self.handle_command(cmd);
-                } else {
-                    let input = std::mem::take(&mut self.input);
-                    self.input_cursor = 0;
-                    if !input.is_empty() {
-                        // Record in input history (dedupe consecutive repeats).
-                        if self.input_history.last() != Some(&input) {
-                            self.input_history.push(input.clone());
-                        }
-                        self.history_index = None;
-                        self.process_input(input);
-                    }
-                }
-            }
-            KeyCode::Esc => {
-                // Any non-Tab key resets autocomplete state
-                self.tab_matches.clear();
-                self.tab_index = 0;
-                // Close the command palette first, then other overlays
-                if self.show_model_palette {
-                    self.show_model_palette = false;
-                    self.model_matches.clear();
-                    self.model_index = 0;
-                } else if self.show_agent_palette {
-                    self.show_agent_palette = false;
-                    self.agent_matches.clear();
-                    self.agent_index = 0;
-                } else if self.show_command_palette {
-                    self.show_command_palette = false;
-                    self.palette_matches.clear();
-                    self.palette_index = 0;
-                } else if self.show_session_list {
-                    self.show_session_list = false;
-                } else if self.show_agents {
-                    self.show_agents = false;
-                } else if self.show_subagents {
-                    self.show_subagents = false;
-                } else {
-                    // No overlay open — clear input
-                    self.input.clear();
-                    self.input_cursor = 0;
-                }
-            }
-            _ => {}
+            self.update_command_palette();
         }
     }
 
     /// Handle a key while the Chat window (1) has focus.
-    fn handle_chat_key(&mut self, key: KeyCode, modifiers: KeyModifiers, _key_event: KeyEvent) {
-        match key {
-            KeyCode::Down => {
-                self.chat_scroll = self.chat_scroll.saturating_add(1);
-            }
-            KeyCode::Up => {
-                self.chat_scroll = self.chat_scroll.saturating_sub(1);
-            }
-            KeyCode::PageUp => {
-                self.chat_scroll = self.chat_scroll.saturating_add(10);
-            }
-            KeyCode::PageDown => {
-                self.chat_scroll = self.chat_scroll.saturating_sub(10);
-            }
-            KeyCode::Home => {
+    fn handle_chat_key(&mut self, key: KeyCode, _modifiers: KeyModifiers, key_event: KeyEvent) {
+        if self.keymap.matches(key_event, Action::ScrollUp) {
+            self.chat_scroll = self.chat_scroll.saturating_sub(1);
+        } else if self.keymap.matches(key_event, Action::ScrollDown) {
+            self.chat_scroll = self.chat_scroll.saturating_add(1);
+        } else if self.keymap.matches(key_event, Action::PageUp) {
+            self.chat_scroll = self.chat_scroll.saturating_add(10);
+        } else if self.keymap.matches(key_event, Action::PageDown) {
+            self.chat_scroll = self.chat_scroll.saturating_sub(10);
+        } else if self.keymap.matches(key_event, Action::ChatTop) {
+            if key == KeyCode::Home || (key == KeyCode::Char('g') && self.is_double_g()) {
+                // Home or gg: jump to the top of the chat.
                 self.chat_scroll = u16::MAX;
             }
-            KeyCode::End => {
-                self.chat_scroll = 0;
-            }
-            KeyCode::Esc => {
-                self.focus = Focus::Input;
-            }
-            KeyCode::Char(c) => {
-                if modifiers.contains(KeyModifiers::CONTROL) {
-                    match c {
-                        'u' => self.chat_scroll = self.chat_scroll.saturating_add(10),
-                        'd' => self.chat_scroll = self.chat_scroll.saturating_sub(10),
-                        _ => {}
-                    }
-                } else {
-                    match c {
-                        'j' => self.chat_scroll = self.chat_scroll.saturating_add(1),
-                        'k' => self.chat_scroll = self.chat_scroll.saturating_sub(1),
-                        'g' => {
-                            if self.is_double_g() {
-                                // gg: jump to the top of the chat.
-                                self.chat_scroll = u16::MAX;
-                            }
-                        }
-                        'G' => {
-                            // G: jump to the bottom (auto-scroll).
-                            self.chat_scroll = 0;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
+        } else if self.keymap.matches(key_event, Action::ChatBottom) {
+            // End or G: jump to the bottom (auto-scroll).
+            self.chat_scroll = 0;
+        } else if self.keymap.matches(key_event, Action::CancelInput) {
+            self.focus = Focus::Input;
         }
     }
 
     /// Handle a key while the MCPs sidebar panel (2) has focus.
-    fn handle_mcp_panel_key(&mut self, key: KeyCode, modifiers: KeyModifiers, _ke: KeyEvent) {
+    fn handle_mcp_panel_key(&mut self, key: KeyCode, modifiers: KeyModifiers, key_event: KeyEvent) {
         let len = self.unique_mcp_count();
-        self.mcp_panel_index = self.handle_list_nav_key(key, modifiers, len, self.mcp_panel_index);
+        self.mcp_panel_index =
+            self.handle_list_nav_key(key, modifiers, key_event, len, self.mcp_panel_index);
     }
 
     /// Handle a key while the Skills sidebar panel (3) has focus.
-    fn handle_skill_panel_key(&mut self, key: KeyCode, modifiers: KeyModifiers, _ke: KeyEvent) {
+    fn handle_skill_panel_key(
+        &mut self,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+        key_event: KeyEvent,
+    ) {
         let len = self.unique_skill_count();
         self.skill_panel_index =
-            self.handle_list_nav_key(key, modifiers, len, self.skill_panel_index);
+            self.handle_list_nav_key(key, modifiers, key_event, len, self.skill_panel_index);
     }
 
     /// Handle a key while the Agents sidebar panel (4) has focus.
-    fn handle_agent_panel_key(&mut self, key: KeyCode, modifiers: KeyModifiers, _ke: KeyEvent) {
+    fn handle_agent_panel_key(
+        &mut self,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+        key_event: KeyEvent,
+    ) {
         let len = self.agent_panel_count();
         self.agent_panel_index =
-            self.handle_list_nav_key(key, modifiers, len, self.agent_panel_index);
+            self.handle_list_nav_key(key, modifiers, key_event, len, self.agent_panel_index);
     }
 
     /// Shared Vim/arrow navigation for a list panel (MCPs, Skills, Agents).
@@ -1609,38 +1564,27 @@ impl App {
     fn handle_list_nav_key(
         &mut self,
         key: KeyCode,
-        modifiers: KeyModifiers,
+        _modifiers: KeyModifiers,
+        key_event: KeyEvent,
         len: usize,
         mut index: usize,
     ) -> usize {
-        match key {
-            KeyCode::Down | KeyCode::Char('j') => {
-                if len > 0 {
-                    index = (index + 1).min(len - 1);
-                }
+        if self.keymap.matches(key_event, Action::ListDown) {
+            if len > 0 {
+                index = (index + 1).min(len - 1);
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                index = index.saturating_sub(1);
+        } else if self.keymap.matches(key_event, Action::ListUp) {
+            index = index.saturating_sub(1);
+        } else if self.keymap.matches(key_event, Action::ListTop) {
+            if key == KeyCode::Home || (key == KeyCode::Char('g') && self.is_double_g()) {
+                index = 0;
             }
-            KeyCode::Home => index = 0,
-            KeyCode::End => {
-                if len > 0 {
-                    index = len - 1;
-                }
+        } else if self.keymap.matches(key_event, Action::ListBottom) {
+            if len > 0 {
+                index = len - 1;
             }
-            KeyCode::Esc => {
-                self.focus = Focus::Input;
-            }
-            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => match c {
-                'g' => {
-                    if self.is_double_g() {
-                        index = 0;
-                    }
-                }
-                'G' if len > 0 => index = len - 1,
-                _ => {}
-            },
-            _ => {}
+        } else if self.keymap.matches(key_event, Action::CancelInput) {
+            self.focus = Focus::Input;
         }
         index
     }
@@ -1654,6 +1598,15 @@ impl App {
         };
         self.last_g_press = Some(now);
         double
+    }
+
+    /// Reset the Tab-completion autocomplete state.
+    ///
+    /// Any non-Tab key that edits the input should clear the cached matches so
+    /// the next Tab press recomputes them from the current input.
+    fn reset_tab_state(&mut self) {
+        self.tab_matches.clear();
+        self.tab_index = 0;
     }
 
     /// Number of unique MCP servers shown in the MCPs sidebar panel.
@@ -4710,5 +4663,45 @@ mod tests {
         app.focus = Focus::Chat;
         app.handle_key(KeyCode::Char('5'), KeyModifiers::ALT);
         assert_eq!(app.focus, Focus::Input);
+    }
+
+    #[test]
+    fn input_left_moves_cursor_back() {
+        let mut app = test_app();
+        app.input = String::from("hola");
+        app.input_cursor = 3;
+        app.focus = Focus::Input;
+        app.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(app.input_cursor, 2);
+    }
+
+    #[test]
+    fn input_cursor_home_jumps_to_start() {
+        let mut app = test_app();
+        app.input = String::from("hola");
+        app.input_cursor = 3;
+        app.focus = Focus::Input;
+        app.handle_key(KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(app.input_cursor, 0);
+    }
+
+    #[test]
+    fn chat_j_scrolls_down_and_k_scrolls_up() {
+        let mut app = test_app();
+        app.focus = Focus::Chat;
+        app.chat_scroll = 5;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.chat_scroll, 6);
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.chat_scroll, 5);
+    }
+
+    #[test]
+    fn chat_pageup_scrolls_by_page() {
+        let mut app = test_app();
+        app.focus = Focus::Chat;
+        app.chat_scroll = 3;
+        app.handle_key(KeyCode::PageUp, KeyModifiers::NONE);
+        assert_eq!(app.chat_scroll, 13);
     }
 }

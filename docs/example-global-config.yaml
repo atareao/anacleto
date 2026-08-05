@@ -25,3 +25,32 @@
 #   ---
 #
 #   You are **Anacleto**...
+
+# ---------------------------------------------------------------------------
+# Keymap overrides
+# ---------------------------------------------------------------------------
+# Every TUI shortcut is rebindable. Map an action name to a list of key
+# strings. Valid modifiers: ctrl, alt, shift (comma-separated with '+').
+# Valid keys: a-z, 0-9, enter, escape/esc, tab, space, backspace, delete/del,
+# insert/ins, home, end, left, right, up, down, pageup/pgup, pagedown/pgdn,
+# f1..f12.
+#
+# Action names (snake_case or CamelCase):
+#   Global: send, cancel_input, quit, toggle_sidebar, toggle_diff_viewer,
+#     open_which_key, open_model_picker, open_editor, open_prompt_queue,
+#     clear_input, approve, deny, focus_input, focus_sidebar, focus_chat,
+#     focus_mcps, focus_skills, focus_agents, quick_slot1..9
+#   Input editing: cursor_left, cursor_right, cursor_word_left,
+#     cursor_word_right, cursor_home, cursor_end, delete_char,
+#     delete_char_before, delete_word_before, delete_to_start, delete_to_end,
+#     history_up, history_down, tab_complete, insert_newline
+#   Chat: scroll_up, scroll_down, page_up, page_down, chat_top, chat_bottom
+#   Lists (MCPs/Skills/Agents): list_up, list_down, list_top, list_bottom
+#
+# Unlisted actions keep their defaults. Example:
+#
+# keymap:
+#   bindings:
+#     quit: ["ctrl+q"]
+#     cursor_word_left: ["ctrl+left", "alt+left"]
+#     send: ["enter"]

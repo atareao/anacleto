@@ -385,7 +385,11 @@ delay = min(base_delay × 2^attempt × random(0.75, 1.25), max_delay)
 
 - **`shell.tools`** — override or extend the built-in catalog of modern CLI
   tools (`bat`, `fd`, `rg`, `sd`, ...) that the agent is told to prefer.
-- **`keymap`** — override TUI keybindings.
+- **`keymap`** — override TUI keybindings. Every shortcut (global actions,
+  input editing, and Vim navigation in Chat/panels) is rebindable via
+  `keymap.bindings`, mapping an action name to a list of key strings
+  (e.g. `quit: ["ctrl+q"]`, `cursor_word_left: ["ctrl+left", "alt+left"]`).
+  See `docs/example-global-config.yaml` for the full list of action names.
 - **`editor`** — external editor command (overrides `$EDITOR`/`$VISUAL`).
 - **`model_picker`** — model picker dialog configuration.
 - **`workspaces`** — known workspace directories for the `/workspaces` command.

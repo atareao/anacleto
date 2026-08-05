@@ -61,6 +61,51 @@ pub enum Action {
     QuickSlot7,
     QuickSlot8,
     QuickSlot9,
+    // ── Input editing ──────────────────────────────────────────────
+    /// Move the cursor one character to the left.
+    CursorLeft,
+    /// Move the cursor one character to the right.
+    CursorRight,
+    /// Move the cursor to the start of the previous word.
+    CursorWordLeft,
+    /// Move the cursor to the start of the next word.
+    CursorWordRight,
+    /// Move the cursor to the start of the line.
+    CursorHome,
+    /// Move the cursor to the end of the line.
+    CursorEnd,
+    /// Delete the character at the cursor.
+    DeleteChar,
+    /// Delete the character before the cursor.
+    DeleteCharBefore,
+    /// Delete the word before the cursor.
+    DeleteWordBefore,
+    /// Delete from the start of the line to the cursor.
+    DeleteToStart,
+    /// Delete from the cursor to the end of the line.
+    DeleteToEnd,
+    /// Navigate backwards through input history.
+    HistoryUp,
+    /// Navigate forwards through input history.
+    HistoryDown,
+    /// Complete the current command from the palette.
+    TabComplete,
+    /// Insert a newline into the input.
+    InsertNewline,
+    // ── Chat navigation ────────────────────────────────────────────
+    /// Jump to the top of the chat.
+    ChatTop,
+    /// Jump to the bottom of the chat.
+    ChatBottom,
+    // ── List navigation (MCPs, Skills, Agents) ─────────────────────
+    /// Move the selection up in a list panel.
+    ListUp,
+    /// Move the selection down in a list panel.
+    ListDown,
+    /// Jump to the top of a list panel.
+    ListTop,
+    /// Jump to the bottom of a list panel.
+    ListBottom,
 }
 
 /// Central mapping of actions to the key events that trigger them.
@@ -145,24 +190,30 @@ impl Default for Keymap {
         km.bind(
             Action::ScrollUp,
             vec![
-                KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
-                key_event('u', true),
+                KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+                key_event('k', false),
             ],
         );
         km.bind(
             Action::ScrollDown,
             vec![
-                KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
-                key_event('d', true),
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                key_event('j', false),
             ],
         );
         km.bind(
             Action::PageUp,
-            vec![KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)],
+            vec![
+                KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+                key_event('u', true),
+            ],
         );
         km.bind(
             Action::PageDown,
-            vec![KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)],
+            vec![
+                KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                key_event('d', true),
+            ],
         );
         km.bind(
             Action::Approve,
@@ -210,6 +261,131 @@ impl Default for Keymap {
         km.bind(Action::QuickSlot7, vec![key_event('7', true)]);
         km.bind(Action::QuickSlot8, vec![key_event('8', true)]);
         km.bind(Action::QuickSlot9, vec![key_event('9', true)]);
+
+        // ── Input editing ──────────────────────────────────────────
+        km.bind(
+            Action::CursorLeft,
+            vec![KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)],
+        );
+        km.bind(
+            Action::CursorRight,
+            vec![KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)],
+        );
+        km.bind(
+            Action::CursorWordLeft,
+            vec![
+                KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
+                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+            ],
+        );
+        km.bind(
+            Action::CursorWordRight,
+            vec![
+                KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
+                KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+            ],
+        );
+        km.bind(
+            Action::CursorHome,
+            vec![
+                KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+                key_event('a', true),
+            ],
+        );
+        km.bind(
+            Action::CursorEnd,
+            vec![
+                KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+                key_event('e', true),
+            ],
+        );
+        km.bind(
+            Action::DeleteChar,
+            vec![KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)],
+        );
+        km.bind(
+            Action::DeleteCharBefore,
+            vec![KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)],
+        );
+        km.bind(
+            Action::DeleteWordBefore,
+            vec![
+                key_event('w', true),
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+            ],
+        );
+        km.bind(Action::DeleteToStart, vec![key_event('u', true)]);
+        km.bind(Action::DeleteToEnd, vec![key_event('k', true)]);
+        km.bind(
+            Action::HistoryUp,
+            vec![KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)],
+        );
+        km.bind(
+            Action::HistoryDown,
+            vec![KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
+        );
+        km.bind(
+            Action::TabComplete,
+            vec![KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+        );
+        km.bind(
+            Action::InsertNewline,
+            vec![
+                key_event('j', true),
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            ],
+        );
+
+        // ── Chat navigation ────────────────────────────────────────
+        km.bind(
+            Action::ChatTop,
+            vec![
+                KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+                key_event('g', false),
+            ],
+        );
+        km.bind(
+            Action::ChatBottom,
+            vec![
+                KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+                key_event('G', false),
+            ],
+        );
+
+        // ── List navigation (MCPs, Skills, Agents) ─────────────────
+        km.bind(
+            Action::ListUp,
+            vec![
+                KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+                key_event('k', false),
+            ],
+        );
+        km.bind(
+            Action::ListDown,
+            vec![
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                key_event('j', false),
+            ],
+        );
+        km.bind(
+            Action::ListTop,
+            vec![
+                KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+                key_event('g', false),
+            ],
+        );
+        km.bind(
+            Action::ListBottom,
+            vec![
+                KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+                key_event('G', false),
+            ],
+        );
         km
     }
 }
@@ -260,6 +436,27 @@ pub fn format_keymap_table() -> String {
         (Action::QuickSlot7, "Quick slot 7"),
         (Action::QuickSlot8, "Quick slot 8"),
         (Action::QuickSlot9, "Quick slot 9"),
+        (Action::CursorLeft, "Cursor izquierda"),
+        (Action::CursorRight, "Cursor derecha"),
+        (Action::CursorWordLeft, "Cursor palabra izquierda"),
+        (Action::CursorWordRight, "Cursor palabra derecha"),
+        (Action::CursorHome, "Cursor inicio de línea"),
+        (Action::CursorEnd, "Cursor fin de línea"),
+        (Action::DeleteChar, "Borrar carácter"),
+        (Action::DeleteCharBefore, "Borrar carácter anterior"),
+        (Action::DeleteWordBefore, "Borrar palabra anterior"),
+        (Action::DeleteToStart, "Borrar hasta inicio"),
+        (Action::DeleteToEnd, "Borrar hasta fin"),
+        (Action::HistoryUp, "Historial atrás"),
+        (Action::HistoryDown, "Historial adelante"),
+        (Action::TabComplete, "Completar comando"),
+        (Action::InsertNewline, "Insertar nueva línea"),
+        (Action::ChatTop, "Ir al inicio del chat"),
+        (Action::ChatBottom, "Ir al final del chat"),
+        (Action::ListUp, "Lista arriba"),
+        (Action::ListDown, "Lista abajo"),
+        (Action::ListTop, "Ir al inicio de la lista"),
+        (Action::ListBottom, "Ir al final de la lista"),
     ];
 
     let mut out = String::new();
@@ -277,12 +474,29 @@ fn format_key(key: &KeyEvent) -> String {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         s.push_str("Ctrl+");
     }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        s.push_str("Alt+");
+    }
+    if key.modifiers.contains(KeyModifiers::SHIFT) {
+        s.push_str("Shift+");
+    }
     match key.code {
         KeyCode::Char(c) => s.push(c),
         KeyCode::Enter => s.push_str("Enter"),
         KeyCode::Esc => s.push_str("Esc"),
+        KeyCode::Backspace => s.push_str("Backspace"),
+        KeyCode::Tab => s.push_str("Tab"),
+        KeyCode::Left => s.push_str("Left"),
+        KeyCode::Right => s.push_str("Right"),
+        KeyCode::Up => s.push_str("Up"),
+        KeyCode::Down => s.push_str("Down"),
+        KeyCode::Home => s.push_str("Home"),
+        KeyCode::End => s.push_str("End"),
+        KeyCode::Delete => s.push_str("Delete"),
+        KeyCode::Insert => s.push_str("Insert"),
         KeyCode::PageUp => s.push_str("PageUp"),
         KeyCode::PageDown => s.push_str("PageDown"),
+        KeyCode::F(n) => s.push_str(&format!("F{n}")),
         _ => s.push('?'),
     }
     s
@@ -325,6 +539,27 @@ fn parse_action(name: &str) -> Option<Action> {
         Action::QuickSlot7,
         Action::QuickSlot8,
         Action::QuickSlot9,
+        Action::CursorLeft,
+        Action::CursorRight,
+        Action::CursorWordLeft,
+        Action::CursorWordRight,
+        Action::CursorHome,
+        Action::CursorEnd,
+        Action::DeleteChar,
+        Action::DeleteCharBefore,
+        Action::DeleteWordBefore,
+        Action::DeleteToStart,
+        Action::DeleteToEnd,
+        Action::HistoryUp,
+        Action::HistoryDown,
+        Action::TabComplete,
+        Action::InsertNewline,
+        Action::ChatTop,
+        Action::ChatBottom,
+        Action::ListUp,
+        Action::ListDown,
+        Action::ListTop,
+        Action::ListBottom,
     ] {
         if to_snake_case(&format!("{action:?}")) == lower {
             return Some(action);
@@ -386,6 +621,10 @@ fn parse_key(s: &str) -> Option<KeyEvent> {
         "right" => KeyCode::Right,
         "up" => KeyCode::Up,
         "down" => KeyCode::Down,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "delete" | "del" => KeyCode::Delete,
+        "insert" | "ins" => KeyCode::Insert,
         "f1" => KeyCode::F(1),
         "f2" => KeyCode::F(2),
         "f3" => KeyCode::F(3),
@@ -524,6 +763,55 @@ mod tests {
     }
 
     #[test]
+    fn parse_key_handles_navigation_and_edit_keys() {
+        assert_eq!(
+            parse_key("home").unwrap(),
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            parse_key("end").unwrap(),
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            parse_key("delete").unwrap(),
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            parse_key("del").unwrap(),
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            parse_key("insert").unwrap(),
+            KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            parse_key("ctrl+home").unwrap(),
+            KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)
+        );
+    }
+
+    #[test]
+    fn format_key_shows_modifiers_and_special_keys() {
+        assert_eq!(format_key(&key_event('b', true)), "Ctrl+b");
+        assert_eq!(
+            format_key(&KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT)),
+            "Alt+b"
+        );
+        assert_eq!(
+            format_key(&KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)),
+            "Ctrl+Left"
+        );
+        assert_eq!(
+            format_key(&KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+            "Home"
+        );
+        assert_eq!(
+            format_key(&KeyEvent::new(KeyCode::F(9), KeyModifiers::NONE)),
+            "F9"
+        );
+    }
+
+    #[test]
     fn apply_overrides_replaces_bindings() {
         let mut km = Keymap::default();
         let mut bindings = std::collections::HashMap::new();
@@ -541,5 +829,188 @@ mod tests {
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             Action::Send
         ));
+    }
+
+    #[test]
+    fn input_editing_actions_resolve_to_defaults() {
+        let km = Keymap::default();
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            Action::CursorLeft
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            Action::CursorRight
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
+            Action::CursorWordLeft
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+            Action::CursorWordLeft
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL),
+            Action::CursorWordRight
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+            Action::CursorWordRight
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            Action::CursorHome
+        ));
+        assert!(km.matches(key_event('a', true), Action::CursorHome));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            Action::CursorEnd
+        ));
+        assert!(km.matches(key_event('e', true), Action::CursorEnd));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+            Action::DeleteChar
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            Action::DeleteCharBefore
+        ));
+        assert!(km.matches(key_event('w', true), Action::DeleteWordBefore));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+            Action::DeleteWordBefore
+        ));
+        assert!(km.matches(key_event('u', true), Action::DeleteToStart));
+        assert!(km.matches(key_event('k', true), Action::DeleteToEnd));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            Action::HistoryUp
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            Action::HistoryDown
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            Action::TabComplete
+        ));
+        assert!(km.matches(key_event('j', true), Action::InsertNewline));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+            Action::InsertNewline
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+            Action::InsertNewline
+        ));
+    }
+
+    #[test]
+    fn chat_and_list_nav_actions_resolve_to_defaults() {
+        let km = Keymap::default();
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            Action::ScrollUp
+        ));
+        assert!(km.matches(key_event('k', false), Action::ScrollUp));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            Action::ScrollDown
+        ));
+        assert!(km.matches(key_event('j', false), Action::ScrollDown));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            Action::PageUp
+        ));
+        assert!(km.matches(key_event('u', true), Action::PageUp));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            Action::PageDown
+        ));
+        assert!(km.matches(key_event('d', true), Action::PageDown));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            Action::ChatTop
+        ));
+        assert!(km.matches(key_event('g', false), Action::ChatTop));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            Action::ChatBottom
+        ));
+        assert!(km.matches(key_event('G', false), Action::ChatBottom));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            Action::ListUp
+        ));
+        assert!(km.matches(key_event('k', false), Action::ListUp));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            Action::ListDown
+        ));
+        assert!(km.matches(key_event('j', false), Action::ListDown));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            Action::ListTop
+        ));
+        assert!(km.matches(key_event('g', false), Action::ListTop));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            Action::ListBottom
+        ));
+        assert!(km.matches(key_event('G', false), Action::ListBottom));
+    }
+
+    #[test]
+    fn apply_overrides_overrides_new_binding() {
+        let mut km = Keymap::default();
+        let mut bindings = std::collections::HashMap::new();
+        bindings.insert("cursor_left".to_string(), vec!["f10".to_string()]);
+        let cfg = KeymapConfig { bindings };
+        km.apply_overrides(&cfg);
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE),
+            Action::CursorLeft
+        ));
+        assert!(!km.matches(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            Action::CursorLeft
+        ));
+    }
+
+    #[test]
+    fn parse_action_round_trip_new_variants() {
+        for action in [
+            Action::CursorLeft,
+            Action::CursorRight,
+            Action::CursorWordLeft,
+            Action::CursorWordRight,
+            Action::CursorHome,
+            Action::CursorEnd,
+            Action::DeleteChar,
+            Action::DeleteCharBefore,
+            Action::DeleteWordBefore,
+            Action::DeleteToStart,
+            Action::DeleteToEnd,
+            Action::HistoryUp,
+            Action::HistoryDown,
+            Action::TabComplete,
+            Action::InsertNewline,
+            Action::ChatTop,
+            Action::ChatBottom,
+            Action::ListUp,
+            Action::ListDown,
+            Action::ListTop,
+            Action::ListBottom,
+        ] {
+            let name = format!("{action:?}");
+            assert_eq!(parse_action(&name), Some(action), "camel: {name}");
+            assert_eq!(
+                parse_action(&to_snake_case(&name)),
+                Some(action),
+                "snake: {}",
+                to_snake_case(&name)
+            );
+        }
     }
 }
