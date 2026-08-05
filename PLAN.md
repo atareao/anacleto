@@ -784,3 +784,455 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - [x] `cargo doc --no-deps` genera sin errores.
 - [x] Documentación de nuevas config (keymap, compaction, plugins, providers) actualizada.
 - [x] Rama `develop` con commits atómicos por tarea, cada uno pasando fmt/clippy/test.
+
+### FASE 8 — Navegación por ventanas (focus)
+
+**Objetivo:** Introducir un modelo de foco de 5 ventanas en la TUI: (1) Chat, (2) MCPs, (3) Skills, (4) Agents, (5) Input. Cambio de ventana con Alt+1..Alt+5. Cada ventana tiene su propia navegación: Input con atajos de shell para mover el cursor dentro de la caja de texto; Chat, MCPs, Skills y Agents con flechas de cursor y atajos de Vim.
+
+#### Tarea 8.1: Enum Focus y campo de estado en App
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (enum `Focus`, campos de estado en `App` y `App::new`)
+
+- [ ] **Paso 1:** Añadir `enum Focus { Chat, Mcps, Skills, Agents, Input }` en `src/tui/app.rs`.
+- [ ] **Paso 2:** Añadir campo `focus: Focus` en `App`, inicializado a `Focus::Input` en `App::new`.
+- [ ] **Paso 3:** Añadir campo `input_cursor: usize` (índice de carácter dentro de `input`) para edición de shell.
+- [ ] **Paso 4:** Añadir índices de selección para los paneles del sidebar: `mcp_panel_index`, `skill_panel_index`, `agent_panel_index` (inicializados a 0).
+
+**Criterio de aceptación:** `App` expone `focus`, `input_cursor` y los tres índices de panel, todos con valores iniciales correctos.
+
+#### Tarea 8.2: Acciones de foco y bindings Alt+1..Alt+5 en keymap
+
+**Archivos:**
+- Modificar: `src/tui/keymap.rs` (variantes de `Action`, bindings en `Keymap::default()`, `format_keymap_table()`, `parse_action()`, tests)
+
+- [ ] **Paso 1:** Añadir variantes `Action::FocusChat`, `Action::FocusMcps`, `Action::FocusSkills`, `Action::FocusAgents`, `Action::FocusInput` al enum `Action`.
+- [ ] **Paso 2:** En `Keymap::default()`, enlazarlas a Alt+1, Alt+2, Alt+3, Alt+4, Alt+5 (KeyEvent con `KeyModifiers::ALT`).
+- [ ] **Paso 3:** Añadirlas a `format_keymap_table()` (filas con descripción) y a la lista de `parse_action()`.
+- [ ] **Paso 4:** Añadir tests unitarios para los nuevos bindings (p.ej. `km.matches(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT), Action::FocusChat)`).
+
+**Criterio de aceptación:** Alt+1..Alt+5 resuelven a las acciones de foco; aparecen en la tabla which-key y en `parse_action`; los tests unitarios pasan.
+
+#### Tarea 8.3: Reestructurar handle_key para enrutar por foco
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (`App::handle_key`, línea 921)
+
+- [ ] **Paso 1:** Tras los checks de overlays (which_key, approval, question, init_flow, timeline, mcps list, model picker, diff viewer, prompt queue), añadir el cambio de foco con Alt+1..5 (siempre disponible).
+- [ ] **Paso 2:** Mantener las acciones globales del keymap (Quit, OpenWhichKey, ToggleSidebar, ToggleDiffViewer, OpenModelPicker, OpenEditor, OpenPromptQueue, QuickSlots).
+- [ ] **Paso 3:** Añadir enrutado por `self.focus` a los métodos `handle_input_key`, `handle_chat_key`, `handle_mcp_panel_key`, `handle_skill_panel_key`, `handle_agent_panel_key`.
+- [ ] **Paso 4:** Mover el manejo de ScrollUp/ScrollDown/PageUp/PageDown y ClearInput fuera de la sección global (pasan a los handlers de foco).
+
+**Criterio de aceptación:** `handle_key` cambia de foco con Alt+1..5, ejecuta acciones globales y delega el resto al handler de la ventana enfocada.
+
+#### Tarea 8.4: Edición de shell en Input (5)
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (`handle_input_key`, helpers de cursor, `render_input` línea 3759)
+
+- [ ] **Paso 1:** Implementar `handle_input_key` con cursor editable: Left/Right mueven el cursor un carácter; Home/End inicio/fin de línea; Ctrl+A / Ctrl+E inicio/fin; Ctrl+W borrar palabra hacia atrás; Ctrl+U borrar hasta el inicio; Ctrl+K borrar hasta el final; Alt+Left / Ctrl+Left y Alt+Right / Ctrl+Right mover por palabra; Backspace borrar carácter anterior al cursor; Delete borrar carácter en el cursor; Up/Down historial de entrada (comportamiento existente); Char insertar en la posición del cursor; Enter/Tab/Esc comportamiento existente.
+- [ ] **Paso 2:** Añadir métodos helper de cursor: `input_char_to_byte`, `input_insert_char`, `input_delete_before`, `input_delete_at`, `input_move_word_left`, `input_move_word_right`, `input_delete_word_before`.
+- [ ] **Paso 3:** Actualizar `render_input` (línea 3759) para colocar el cursor en `input_cursor` (no siempre al final), respetando el wrap de líneas.
+
+**Criterio de aceptación:** En Input, los atajos de shell (Ctrl+A/E/W/U/K, Left/Right, Home/End, Alt+Left/Right, Backspace, Delete) funcionan y el cursor se mueve dentro de la caja.
+
+#### Tarea 8.5: Navegación Vim en Chat (1)
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (`handle_chat_key`)
+
+- [ ] **Paso 1:** Implementar `handle_chat_key`: j / Down scroll abajo (`chat_scroll += 1`); k / Up scroll arriba (`chat_scroll` saturating_sub 1); gg ir al inicio (`chat_scroll = valor máximo`); G ir al final (`chat_scroll = 0`); PageUp / Ctrl+U +10; PageDown / Ctrl+D -10; Home/End inicio/fin.
+
+**Criterio de aceptación:** En Chat, las flechas y atajos Vim (j/k, gg/G) desplazan el scroll correctamente.
+
+#### Tarea 8.6: Navegación Vim en MCPs (2), Skills (3), Agents (4)
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (`handle_mcp_panel_key`, `handle_skill_panel_key`, `handle_agent_panel_key`, `render_mcp_panel` línea 2661, `render_skill_panel` línea 2692, `render_agent_panel` línea 2726)
+
+- [ ] **Paso 1:** Implementar `handle_mcp_panel_key`, `handle_skill_panel_key`, `handle_agent_panel_key`: j / Down índice +1 (clamp a len-1); k / Up índice -1 (saturating); gg índice 0; G índice len-1; Home/End inicio/fin.
+- [ ] **Paso 2:** Actualizar `render_mcp_panel` (línea 2661), `render_skill_panel` (línea 2692) y `render_agent_panel` (línea 2726) para resaltar el elemento seleccionado según su índice.
+
+**Criterio de aceptación:** En MCPs, Skills y Agents, las flechas y atajos Vim (j/k, gg/G) mueven la selección y el elemento activo se resalta.
+
+#### Tarea 8.7: Números (1)-(5) en títulos de ventana e indicador de foco
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (títulos de ventana en `render_chat` línea 2853, `render_mcp_panel` línea 2661, `render_skill_panel` línea 2692, `render_agent_panel` línea 2726, `render_input` línea 3759)
+
+- [ ] **Paso 1:** Añadir números a los títulos: Chat → " (1) Chat ", MCPs → " (2) MCPs ", Skills → " (3) Skills ", Agents → " (4) Agents ", Input → " (5) Input ".
+- [ ] **Paso 2:** Resaltar visualmente la ventana enfocada (p.ej. borde con color accent) en Chat, MCPs, Skills, Agents e Input.
+
+**Criterio de aceptación:** Los títulos de las 5 ventanas muestran (1)-(5) y la ventana enfocada se distingue visualmente.
+
+**Criterios de aceptación de FASE 8:**
+- [ ] Alt+1..Alt+5 cambian el foco entre Chat, MCPs, Skills, Agents e Input.
+- [ ] En Input, los atajos de shell (Ctrl+A/E/W/U/K, Left/Right, Home/End, Alt+Left/Right, Backspace, Delete) funcionan y el cursor se mueve dentro de la caja.
+- [ ] En Chat, MCPs, Skills y Agents, las flechas y atajos Vim (j/k, gg/G) funcionan.
+- [ ] Los títulos de las 5 ventanas muestran (1)-(5).
+- [ ] `cargo fmt --check && cargo clippy && cargo test` pasan.
+- [ ] Tests unitarios nuevos en keymap.rs y app.rs.
+
+**Dependencia:** FASE 8 depende de FASE 4 (keymap/which-key) y de la infraestructura TUI existente en `src/tui/app.rs`.
+
+### FASE 9 — Atajos de teclado configurables desde config (commit 1)
+
+**Objetivo:** Hacer que TODOS los atajos de teclado —incluidos los de edición de Input y la navegación Vim de Chat/paneles— sean configurables desde el archivo de configuración de anacleto, no solo las `Action` globales ya existentes.
+
+**Contexto técnico:** `KeymapConfig` ya permite sobrescribir bindings de las `Action` existentes (Send, Quit, ToggleSidebar, Focus*, etc.) vía `config.keymap.bindings` (`src/config/types.rs`, `KeymapConfig { bindings: HashMap<String, Vec<String>> }` y `Keymap::apply_overrides` que usa `parse_action`/`parse_key`). PERO muchos atajos están HARDCODEADOS fuera del sistema de `Action`:
+- `handle_input_key` (`src/tui/app.rs` línea 1304): Left/Right (con Ctrl/Alt = por palabra), Home/End, Delete, Up/Down (historial), Tab (completar), Ctrl+C (limpiar), Ctrl+J (newline), Ctrl+U (borrar a inicio), Ctrl+W (borrar palabra), Ctrl+K (borrar a fin), Ctrl+A/E (inicio/fin), Alt+b/f (palabra), Backspace.
+- `handle_chat_key` (línea 1535): j/k, gg/G, PageUp/PageDown, Ctrl+U/D, Home/End.
+- `handle_list_nav_key` (línea 1609): j/k, gg/G, Home/End, Esc.
+
+#### Tarea 9.1: Ampliar el enum `Action` con variantes de edición y navegación
+
+**Archivos:**
+- Modificar: `src/tui/keymap.rs` (enum `Action`, `Keymap::default()`, `format_keymap_table()`, `parse_action()`)
+
+- [x] **Paso 1:** Añadir variantes de edición de input al enum `Action`: `CursorLeft`, `CursorRight`, `CursorWordLeft`, `CursorWordRight`, `CursorHome`, `CursorEnd`, `DeleteChar`, `DeleteWordBefore`, `DeleteToStart`, `DeleteToEnd`, `HistoryUp`, `HistoryDown`, `TabComplete`, `InsertNewline` (nota: `ClearInput` ya existe).
+- [x] **Paso 2:** Añadir variantes de navegación al enum `Action`: `ChatTop` (gg), `ChatBottom` (G), `ListTop` (gg), `ListBottom` (G).
+- [x] **Paso 3:** En `Keymap::default()`, enlazar las nuevas variantes a sus atajos por defecto (Left/Right, Ctrl+Left/Alt+Left, Ctrl+Right/Alt+Right, Home/End, Delete, Ctrl+W, Ctrl+U, Ctrl+K, Ctrl+A/E, Up/Down, Tab, Ctrl+J, j/k, gg/G, PageUp/PageDown, Ctrl+U/D, Esc).
+- [x] **Paso 4:** Añadir las nuevas variantes a `format_keymap_table()` (filas con descripción) y a la lista de `parse_action()`.
+
+**Criterio de aceptación:** Todas las variantes nuevas existen en `Action`, tienen binding por defecto, aparecen en la tabla which-key y se parsean desde string en `parse_action`.
+
+#### Tarea 9.2: Refactorizar los handlers para consultar el `Keymap`
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (`handle_input_key` línea 1304, `handle_chat_key` línea 1535, `handle_list_nav_key` línea 1609)
+
+- [x] **Paso 1:** En `handle_input_key` (línea 1304), sustituir las comparaciones hardcodeadas de `KeyCode`/`KeyModifiers` por consultas a `self.keymap.matches(key_event, Action::CursorLeft)` (y análogas para cada variante nueva).
+- [x] **Paso 2:** En `handle_chat_key` (línea 1535), sustituir j/k, gg/G, PageUp/PageDown, Ctrl+U/D, Home/End por consultas a `self.keymap.matches`.
+- [x] **Paso 3:** En `handle_list_nav_key` (línea 1609), sustituir j/k, gg/G, Home/End, Esc por consultas a `self.keymap.matches`.
+- [x] **Paso 4:** Eliminar cualquier rama de `KeyCode::Char`/`KeyModifiers` que ahora quede cubierta por el keymap, manteniendo el comportamiento idéntico.
+
+**Criterio de aceptación:** Los tres handlers consultan `self.keymap.matches` y no comparan `KeyCode`/`KeyModifiers` hardcodeados; el comportamiento por defecto es idéntico al previo.
+
+#### Tarea 9.3: Cobertura de `apply_overrides` y documentación
+
+**Archivos:**
+- Modificar: `src/config/types.rs` (`Keymap::apply_overrides`)
+- Modificar: `docs/example-global-config.yaml` (sección `keymap`)
+- Modificar: `README.md` (documentación de bindings configurables)
+
+- [x] **Paso 1:** Asegurar que `Keymap::apply_overrides` (en `src/config/types.rs`) cubre todas las variantes nuevas (que `parse_action` las reconoce y `parse_key` las enlaza).
+- [x] **Paso 2:** Documentar en `docs/example-global-config.yaml` el formato de `keymap.bindings` con ejemplos de las nuevas acciones (p.ej. `CursorWordLeft: ["ctrl+left", "alt+left"]`).
+- [x] **Paso 3:** Documentar en `README.md` que todos los atajos (edición de Input y navegación Vim) son rebindables desde config.
+
+**Criterio de aceptación:** `apply_overrides` acepta overrides de todas las variantes nuevas; la documentación de config y README refleja el formato completo.
+
+#### Tarea 9.4: Tests unitarios de bindings y overrides
+
+**Archivos:**
+- Modificar: `src/tui/keymap.rs` (módulo `#[cfg(test)] mod tests`)
+
+- [x] **Paso 1:** Añadir tests que verifiquen que cada variante nueva resuelve a su binding por defecto (p.ej. `km.matches(KeyEvent::new(KeyCode::Left, NONE), Action::CursorLeft)`).
+- [x] **Paso 2:** Añadir tests de `apply_overrides` que sobrescriban un binding por defecto y verifiquen el nuevo mapeo.
+- [x] **Paso 3:** Añadir un test de `parse_action`/`parse_key` round-trip para las variantes nuevas.
+
+**Criterio de aceptación:** Los tests unitarios nuevos pasan y cubren bindings por defecto, overrides y parseo round-trip.
+
+**Criterios de aceptación de FASE 9:**
+- [x] Todos los atajos de edición de Input y navegación Vim son configurables desde `config.keymap.bindings`.
+- [x] `handle_input_key`, `handle_chat_key` y `handle_list_nav_key` consultan `self.keymap.matches` (sin `KeyCode`/`KeyModifiers` hardcodeados).
+- [x] `apply_overrides` cubre todas las variantes nuevas.
+- [x] `docs/example-global-config.yaml` y `README.md` documentan el formato.
+- [x] Tests unitarios nuevos en keymap.rs pasan.
+- [x] `cargo fmt --check && cargo clippy && cargo test` pasan.
+
+**Dependencia:** FASE 9 depende de FASE 4 (keymap/which-key) y de FASE 8 (variantes `Focus*` y handlers de foco).
+
+### FASE 10 — Input nunca interrumpe el flujo de escritura (commit 2)
+
+**Objetivo:** En la caja de Input, los atajos NUNCA deben interrumpir el flujo de escritura. Cualquier tecla de carácter sin modificador debe escribirse siempre, incluso con el input vacío.
+
+**Contexto técnico:** En `handle_key` (`src/tui/app.rs` línea 954), las acciones globales se despachan cuando `keymap_applies(key_event)` devuelve true. `keymap_applies` (línea 2514) devuelve true para `KeyCode::Char(_)` cuando `modifiers != NONE || input.is_empty()`. Esto significa que con el input VACÍO, pulsar letras sin modificador dispara acciones globales: `q` = Quit, `c` = FocusChat, `i` = FocusInput, `s` = FocusSidebar, `?` = OpenWhichKey. Resultado: el usuario NO puede empezar a escribir una frase que empiece por "q", "c", "i", "s", "?" etc. (p.ej. "quiero...", "N...").
+
+#### Tarea 10.1: Eliminar bindings de letra sin modificador de las acciones globales
+
+**Archivos:**
+- Modificar: `src/tui/keymap.rs` (`Keymap::default()`, `format_keymap_table()`)
+
+- [x] **Paso 1:** Eliminar el binding de `Quit` a `q` sin modificador; `Quit` pasa a ser solo `Ctrl+q` (o con confirmación).
+- [x] **Paso 2:** Eliminar los bindings de letra sin modificador de `FocusChat` (`c`), `FocusInput` (`i`) y `FocusSidebar` (`s`); el cambio de foco ya se cubre con Alt+1..5.
+- [x] **Paso 3:** Eliminar el binding de `OpenWhichKey` a `?` sin modificador (mantener el acceso vía `Ctrl+x` o similar).
+- [x] **Paso 4:** Actualizar `format_keymap_table()` para reflejar los nuevos bindings.
+
+**Criterio de aceptación:** Ninguna acción global queda enlazada a una letra sin modificador; `Quit` solo responde a `Ctrl+q`.
+
+#### Tarea 10.2: Modificar `keymap_applies` / flujo de `handle_key` para Input
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (`handle_key` línea 954, `keymap_applies` línea 2514)
+
+- [x] **Paso 1:** Modificar `keymap_applies` (línea 2514) o el flujo de `handle_key` (línea 954) para que, cuando `self.focus == Focus::Input`, las teclas de carácter sin modificador SIEMPRE vayan a `handle_input_key` y nunca a acciones globales.
+- [x] **Paso 2:** Asegurar que las teclas de carácter con modificador (p.ej. `Ctrl+q`) sigan disparando acciones globales incluso con foco en Input.
+- [x] **Paso 3:** Mantener el comportamiento de las demás ventanas (Chat, MCPs, Skills, Agents) sin cambios.
+
+**Criterio de aceptación:** Con foco en Input, una letra sin modificador nunca dispara una acción global; con modificador sí.
+
+#### Tarea 10.3: Asegurar que 'q' y 'N' se puedan teclear como primer carácter
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (`handle_input_key` línea 1304)
+
+- [x] **Paso 1:** Verificar que `handle_input_key` inserta cualquier `KeyCode::Char` sin modificador en la posición del cursor, incluido como primer carácter con input vacío.
+- [x] **Paso 2:** Confirmar que 'q' y 'N' (y cualquier letra) se insertan y no disparan `Quit` ni otras acciones.
+
+**Criterio de aceptación:** Escribir 'q' o 'N' con input vacío inserta el carácter y no dispara ninguna acción global.
+
+#### Tarea 10.4: Tests de regresión
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (módulo `#[cfg(test)] mod tests`)
+
+- [x] **Paso 1:** Añadir un test de regresión: con `focus == Focus::Input` e input vacío, teclear 'q' inserta el carácter y no dispara `Quit`.
+- [x] **Paso 2:** Añadir un test de regresión análogo para 'N' (y al menos una letra más).
+- [x] **Paso 3:** Añadir un test que verifique que `Ctrl+q` con foco en Input sí dispara `Quit`.
+
+**Criterio de aceptación:** Los tests de regresión pasan y cubren el caso de letra como primer carácter y el de `Ctrl+q`.
+
+**Criterios de aceptación de FASE 10:**
+- [x] Ninguna acción global está enlazada a una letra sin modificador.
+- [x] Con foco en Input, cualquier tecla de carácter sin modificador se escribe siempre, incluso con input vacío.
+- [x] 'q' y 'N' se pueden teclear como primer carácter sin disparar acciones.
+- [x] `Ctrl+q` sigue disparando `Quit` con foco en Input.
+- [x] Tests de regresión nuevos pasan.
+- [x] `cargo fmt --check && cargo clippy && cargo test` pasan.
+
+**Dependencia:** FASE 10 depende de FASE 9 (keymap configurable) y de FASE 8 (modelo de foco).
+
+### FASE 11 — Refactor: mejores prácticas Rust y división de archivos grandes (commit 3)
+
+**Objetivo:** Dividir `src/tui/app.rs` (4714 líneas) en módulos cohesivos y aplicar mejores prácticas de Rust (idiomaticidad, ownership, errores, tests), sin cambios de comportamiento.
+
+**Contexto técnico:** `src/tui/app.rs` contiene: struct `App` + estado, `handle_event`, `handle_key`, `handle_input_key`, `handle_chat_key`, `handle_mcp/skill/agent_panel_key`, `handle_list_nav_key`, helpers de cursor, `update_command_palette`/`update_agent_palette`/`update_model_palette`, `process_input`, `handle_command` (~460 líneas, 1940-2398), `open_editor`, `resume_quick_slot`, `collect_init_answer`, y TODAS las funciones `render_*` (`render`, `render_chat`, `render_input`, `render_mcp_panel`, `render_skill_panel`, `render_agent_panel`, `render_command_palette`, `render_agent_palette`, `render_model_palette`, `render_approval_dialog`, `render_question_dialog`, `render_markdown_line`, `parse_inline`, etc.) y helpers (`shift_char`, `copy_to_clipboard`, `format_tokens`, `visual_line_count`, `select_visible_start`).
+
+#### Tarea 11.1: Crear módulos cohesivos en src/tui/
+
+**Archivos:**
+- Crear: `src/tui/input.rs` (`handle_input_key` + helpers de cursor)
+- Crear: `src/tui/navigation.rs` (`handle_chat_key` + panel keys + `handle_list_nav_key` + `is_double_g`)
+- Crear: `src/tui/commands.rs` (`handle_command` + `process_input`)
+- Crear: `src/tui/palette.rs` (`update_*_palette` + `render_*_palette`)
+- Crear: `src/tui/markdown.rs` (`render_markdown_line`, `parse_inline`, `visual_line_count`, `select_visible_start`)
+- Crear: `src/tui/theme.rs` (`Theme`)
+- Crear: `src/tui/render.rs` (o submodulo `render/`) para las funciones `render_*` restantes
+- Modificar: `src/tui/app.rs` (eliminar el código movido)
+
+- [x] **Paso 1:** Crear `src/tui/input.rs` y mover `handle_input_key` (línea 1304) y los helpers de cursor.
+- [x] **Paso 2:** Crear `src/tui/navigation.rs` y mover `handle_chat_key` (línea 1535), `handle_mcp/skill/agent_panel_key`, `handle_list_nav_key` (línea 1609) e `is_double_g`.
+- [x] **Paso 3:** Crear `src/tui/commands.rs` y mover `handle_command` (líneas 1940-2398) y `process_input`.
+- [x] **Paso 4:** Crear `src/tui/palette.rs` y mover `update_command_palette`/`update_agent_palette`/`update_model_palette` y sus `render_*_palette`.
+- [x] **Paso 5:** Crear `src/tui/markdown.rs` y mover `render_markdown_line`, `parse_inline`, `visual_line_count` y `select_visible_start`.
+- [x] **Paso 6:** Crear `src/tui/theme.rs` y mover `Theme`.
+- [x] **Paso 7:** Crear `src/tui/render.rs` (o submodulo `render/`) y mover las funciones `render_*` restantes (`render`, `render_chat`, `render_input`, `render_mcp_panel`, `render_skill_panel`, `render_agent_panel`, `render_approval_dialog`, `render_question_dialog`).
+
+**Criterio de aceptación:** `app.rs` queda reducido a la struct `App`, el estado y el enrutado; cada grupo de funciones vive en su módulo cohesivo.
+
+#### Tarea 11.2: Ajustar visibilidad y declaraciones `mod`
+
+**Archivos:**
+- Modificar: `src/tui/mod.rs` (declaraciones `mod`)
+- Modificar: los nuevos módulos (`pub(crate)`/`pub` en funciones y tipos)
+
+- [x] **Paso 1:** Añadir las declaraciones `mod input; mod navigation; mod commands; mod palette; mod markdown; mod theme; mod render;` en `src/tui/mod.rs`.
+- [x] **Paso 2:** Ajustar la visibilidad de funciones y tipos movidos a `pub(crate)`/`pub` según lo que consuma `app.rs` y el resto del crate.
+- [x] **Paso 3:** Ajustar los accesos a campos de `App` y tipos compartidos (p.ej. `Focus`, `Action`) para que los módulos nuevos compilen.
+
+**Criterio de aceptación:** El crate compila con los módulos nuevos y la visibilidad correcta.
+
+#### Tarea 11.3: Aplicar mejores prácticas de Rust
+
+**Archivos:**
+- Modificar: los módulos nuevos y `src/tui/app.rs`
+
+- [x] **Paso 1:** Reducir clonaciones innecesarias (usar referencias/`Cow` donde aplique).
+- [x] **Paso 2:** Usar tipos correctos (p.ej. `usize` para índices, `saturating_sub`/`clamp` para navegación).
+- [x] **Paso 3:** Manejo de errores idiomático (propagar con `anyhow`/`Result` en lugar de `unwrap`/`expect` donde sea posible).
+- [x] **Paso 4:** Eliminar código muerto y añadir doc-comments a los módulos y funciones públicas.
+
+**Criterio de aceptación:** El código movido sigue las mejores prácticas de Rust sin cambios de comportamiento.
+
+#### Tarea 11.4: Verificación de calidad tras la división
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (módulo `#[cfg(test)] mod tests` si es necesario)
+
+- [x] **Paso 1:** Ejecutar `cargo fmt --check` y corregir el formato.
+- [x] **Paso 2:** Ejecutar `cargo clippy` y corregir warnings.
+- [x] **Paso 3:** Ejecutar `cargo test` y asegurar que todos los tests pasan (sin cambios de comportamiento).
+- [x] **Paso 4:** Verificar que los tests existentes (incluidos los de FASE 8/9/10) siguen pasando tras la división.
+
+**Criterio de aceptación:** `cargo fmt --check && cargo clippy && cargo test` pasan en verde tras la división, sin cambios de comportamiento.
+
+**Criterios de aceptación de FASE 11:**
+- [x] `src/tui/app.rs` queda dividido en módulos cohesivos (`input`, `navigation`, `commands`, `palette`, `markdown`, `theme`, `render`).
+- [x] `src/tui/mod.rs` declara los módulos nuevos con visibilidad correcta.
+- [x] Se aplican mejores prácticas de Rust (menos clonaciones, tipos correctos, errores idiomáticos, sin código muerto).
+- [x] `cargo fmt --check && cargo clippy && cargo test` pasan sin cambios de comportamiento.
+- [x] Los tests existentes (incluidos los de FASE 8/9/10) siguen pasando.
+
+**Dependencia:** FASE 11 depende de FASE 8, FASE 9 y FASE 10 (refactoriza el código ya modificado por esas fases).
+
+### FASE 12 — Organización de archivos grandes restantes
+
+**Objetivo:** Dividir los archivos de `src/` que siguen siendo grandes (>500 líneas) en módulos cohesivos, aplicando la misma técnica de división de módulos de FASE 11, sin cambios de comportamiento. Cada tarea numerada corresponde a UN archivo grande a dividir.
+
+**Contexto técnico:** Tras FASE 11, `src/tui/app.rs` ya se dividió en módulos. Quedan por organizar los siguientes archivos grandes: `src/agent/lifecycle.rs` (3307), `src/engine/orchestrator.rs` (2448), `src/llm/provider.rs` (1898), `src/tui/app.rs` (1676, sigue grande), `src/db/session.rs` (1565), `src/tui/keymap.rs` (1019), `src/mcp/client.rs` (771), `src/lsp/mod.rs` (631) y `src/engine/apply_patch.rs` (558, borderline). Los números de línea citados son los actuales del código.
+
+#### Tarea 12.1: Dividir `src/agent/lifecycle.rs` (3307 líneas)
+
+**Archivos:**
+- Crear: `src/agent/tools.rs` (definición y ejecución de tools)
+- Crear: `src/agent/context.rs` (gestión de contexto)
+- Modificar: `src/agent/lifecycle.rs` (dejar `AgentHandle`, `SpawnAgentConfig`, `spawn_agent` y los tests correspondientes)
+- Modificar: `src/agent/mod.rs` (declaraciones `mod tools; mod context;`)
+
+- [x] **Paso 1:** En `src/agent/lifecycle.rs`, conservar `AgentHandle` (63), `SpawnAgentConfig` (88) y `spawn_agent` (129-860, el bucle principal del agente).
+- [x] **Paso 2:** Crear `src/agent/tools.rs` y mover la definición y ejecución de tools (860-2405): `check_tool_permission` (860), `classify_tool_operation` (964), `is_sensitive_operation` (1002), `skill_to_tool_definition` (1042), `todo_tool_definition` (1098), `execute_todo_tool` (1138), `question_tool_definition` (1219), `execute_question_tool` (1250), `apply_patch_tool_definition` (1302), `request_batch_approval` (1346), `execute_apply_patch_tool` (1382), `execute_skill_tool` (1438), `execute_shell_command` (1516), `extract_shell_command` (1589), `looks_like_shell_command` (1616), `execute_web_fetch` (1731), `execute_filesystem_operation` (1772), `subagent_config_to_tool_definition` (1778), `TaskToolArgs` (1805), `task_tool_definition` (1864), `plan_mode_blocked` (1909), `execute_task_tool` (1947), `resolve_provider_for_model` (2098), `SpawnSubagentConfig` (2118) y `spawn_subagent_and_delegate` (2146).
+- [x] **Paso 3:** Crear `src/agent/context.rs` y mover la gestión de contexto (2405-2658): `estimate_tokens` (2405), `should_compact` (2424), `build_summary_prompt` (2459), `trim_conversation` (2495) y `summarize_conversation` (2554).
+- [x] **Paso 4:** Mover los tests (2658-3307) a su módulo correspondiente (`tools.rs`/`context.rs`/`lifecycle.rs` según lo que prueben).
+- [x] **Paso 5:** Ajustar visibilidad (`pub(crate)`/`pub`) y declaraciones `mod` en `src/agent/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `lifecycle.rs` queda con el bucle principal del agente; las tools viven en `tools.rs` y la gestión de contexto en `context.rs`; los tests se mueven con su código; el crate compila y los tests pasan.
+
+#### Tarea 12.2: Dividir `src/engine/orchestrator.rs` (2448 líneas)
+
+**Archivos:**
+- Crear: `src/engine/sessions.rs` (comandos de sesión)
+- Crear: `src/engine/commands.rs` (resto de comandos `handle_*`)
+- Crear: `src/engine/events.rs` (tipos de eventos y comandos)
+- Modificar: `src/engine/orchestrator.rs` (dejar `Engine` struct + core)
+- Modificar: `src/engine/mod.rs` (declaraciones `mod`)
+
+- [x] **Paso 1:** Crear `src/engine/events.rs` y mover los tipos: `EngineEvent` (29), `InitAnswers` (209), `SkillInfo` (220), `McpStatus` (229), `StatusInfo` (238), `TimelineEntry` (259), `UsageEvent` (273) y `EngineCommand` (339).
+- [x] **Paso 2:** En `src/engine/orchestrator.rs`, conservar el struct `Engine` (281) y el core: `Engine::new` (444), `initialize` (501), `resolve_agent_provider` (707), `run` (728), `handle_user_input` (904), `handle_set_model` (926), `handle_switch_agent` (949), `handle_record_model_usage` (985), `handle_list_model_frecency` (993) y `respawn_active_agent` (1006).
+- [x] **Paso 3:** Crear `src/engine/sessions.rs` y mover los comandos de sesión (1087-1446): `handle_new_session` (1087), `handle_resume_session` (1109), `handle_list_sessions` (1164), `handle_set_session_pinned` (1176), `handle_delete_session` (1189), `handle_rename_session` (1206), `clear_undo_redo` (1224), `reload_history_to_root` (1230), `handle_undo` (1262), `handle_redo` (1288), `handle_fork` (1313), `handle_export` (1344), `handle_import` (1385), `handle_share` (1407) y `handle_unshare` (1427).
+- [x] **Paso 4:** Crear `src/engine/commands.rs` y mover el resto de comandos (1446-2448): `handle_list_skills` (1446), `handle_list_mcps` (1469), `handle_toggle_mcp` (1491), `handle_status` (1502), `handle_init` (1546), `handle_review` (1566), `handle_warp` (1604), `handle_list_workspaces` (1614), `handle_move_session` (1629), `handle_worktree_add/list/remove` (1654/1665/1675), `handle_timeline` (1686), `handle_build` (1716), `handle_parent` (1747), `handle_children` (1761), `handle_list_jobs` (1777), `handle_snapshot` (1787), `handle_revert` (1813), `handle_list_snapshots` (1850), `handle_stage` (1868), `handle_clear` (1890), `handle_commit` (1903) y `handle_approval_response` (1932).
+- [x] **Paso 5:** Ajustar visibilidad y declaraciones `mod` en `src/engine/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `orchestrator.rs` queda con el struct `Engine` y el core; los comandos de sesión viven en `sessions.rs`, el resto de comandos en `commands.rs` y los tipos en `events.rs`; el crate compila y los tests pasan.
+
+#### Tarea 12.3: Dividir `src/llm/provider.rs` (1898 líneas)
+
+**Archivos:**
+- Crear: `src/llm/openai.rs` (tipos OpenAI + `OpenAIProvider`)
+- Crear: `src/llm/anthropic.rs` (tipos Anthropic + `AnthropicProvider`)
+- Crear: `src/llm/ollama.rs` (tipos Ollama + `OllamaProvider`)
+- Crear: `src/llm/models.rs` (tipos de catálogo de modelos)
+- Modificar: `src/llm/provider.rs` (dejar trait `LlmProvider` + `create_provider` + helpers compartidos)
+- Modificar: `src/llm/mod.rs` (declaraciones `mod`)
+
+- [x] **Paso 1:** En `src/llm/provider.rs`, conservar el trait `LlmProvider` (18), `create_provider` (45) y los helpers compartidos (332-500): `http_client` (332), `into_openai_messages` (340), `into_anthropic_messages` (378), `into_ollama_messages` (399), `into_openai_tools` (416), `anthropic_tools` (431), `parse_sse_line` (444) y `strip_model_prefix` (465).
+- [x] **Paso 2:** Crear `src/llm/openai.rs` y mover los tipos OpenAI (62-180): `OpenAiChatRequest`, `OpenAiMessage`, `OpenAiTool`, `OpenAiFunction`, `OpenAiToolCall`, `OpenAiFunctionCall`, `OpenAiChatResponse`, `OpenAiChoice`, `OpenAiResponseMessage`, `OpenAiUsage`, `OpenAiStreamChunk`, `OpenAiStreamChoice`, `OpenAiStreamDelta`, `OpenAiStreamToolCall`, `OpenAiStreamFunction`, y el `OpenAIProvider` (501) con su impl `LlmProvider` (533).
+- [x] **Paso 3:** Crear `src/llm/anthropic.rs` y mover los tipos Anthropic (192-280): `AnthropicRequest`, `AnthropicThinking`, `AnthropicCacheControl`, `AnthropicMessage`, `AnthropicTool`, `AnthropicResponse`, `AnthropicContentBlock`, `AnthropicToolUse`, `AnthropicUsage`, y el `AnthropicProvider` con su impl `LlmProvider`.
+- [x] **Paso 4:** Crear `src/llm/ollama.rs` y mover los tipos Ollama (289-330): `OllamaChatRequest`, `OllamaMessage`, `OllamaOptions`, `OllamaChatResponse`, `OllamaResponseMessage`, y el `OllamaProvider` con su impl `LlmProvider`.
+- [x] **Paso 5:** Crear `src/llm/models.rs` y mover los tipos de catálogo (471-500): `OpenAiModelInfo` (471), `OpenRouterModelList` (478), `OpenRouterModelData` (483) y `OllamaShowResponse` (491).
+- [x] **Paso 6:** Ajustar visibilidad y declaraciones `mod` en `src/llm/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `provider.rs` queda con el trait, la factory y los helpers compartidos; cada provider vive en su módulo (`openai.rs`/`anthropic.rs`/`ollama.rs`) y los tipos de catálogo en `models.rs`; el crate compila y los tests pasan.
+
+#### Tarea 12.4: Dividir `src/tui/app.rs` (1676 líneas, sigue grande)
+
+**Archivos:**
+- Crear: `src/tui/events.rs` (`handle_event`)
+- Crear: `src/tui/keys.rs` (`handle_key` + `keymap_applies`)
+- Crear: `src/tui/types.rs` (tipos compartidos)
+- Crear: `src/tui/state.rs` (helpers de estado)
+- Modificar: `src/tui/app.rs` (dejar struct `App` + `new` + `run_tui` + `push_msg`/`commit_stream`)
+- Modificar: `src/tui/mod.rs` (declaraciones `mod`)
+
+- [x] **Paso 1:** En `src/tui/app.rs`, conservar el struct `App` + campos, `new` (386), `push_msg` (505), `commit_stream` (512) y `run_tui` (~2527).
+- [x] **Paso 2:** Crear `src/tui/events.rs` y mover `handle_event` (522-954, ~430 líneas).
+- [x] **Paso 3:** Crear `src/tui/keys.rs` y mover `handle_key` (954-1304, ~350 líneas) y `keymap_applies` (~2471).
+- [x] **Paso 4:** Crear `src/tui/types.rs` y mover los tipos compartidos: `Focus`, `AgentInfo`, `ApprovalRequest`, `QuestionState`, `InitFlow` y la const `BUILTIN_COMMANDS`.
+- [x] **Paso 5:** Crear `src/tui/state.rs` y mover los helpers de estado: `unique_mcp_count`, `unique_skill_count`, `agent_panel_count` y `fuzzy_score`.
+- [x] **Paso 6:** Mover el módulo `tests` a su módulo correspondiente; ajustar visibilidad y declaraciones `mod` en `src/tui/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `app.rs` queda con el struct `App`, `new`, `run_tui` y `push_msg`/`commit_stream`; el manejo de eventos vive en `events.rs`, las teclas en `keys.rs`, los tipos en `types.rs` y los helpers de estado en `state.rs`; el crate compila y los tests pasan.
+
+#### Tarea 12.5: Dividir `src/db/session.rs` (1565 líneas)
+
+**Archivos:**
+- Crear: `src/db/messages.rs` (mensajes)
+- Crear: `src/db/todos.rs` (todos)
+- Crear: `src/db/snapshots.rs` (snapshots)
+- Crear: `src/db/export.rs` (export/import/render)
+- Crear: `src/db/usage.rs` (uso de modelo)
+- Modificar: `src/db/session.rs` (dejar `Database` struct + CRUD de sesiones)
+- Modificar: `src/db/mod.rs` (declaraciones `mod`)
+
+- [x] **Paso 1:** En `src/db/session.rs`, conservar el struct `Database` + `open` (20), `run_migrations` (46), `ensure_column` (170) y el CRUD de sesiones: `create_session` (190), `create_session_with_parent` (195), `list_sessions` (355), `set_session_pinned` (400), `list_pinned_sessions` (410), `delete_session` (456), `rename_session` (472), `set_shared` (611), `get_session_metadata` (646), `get_session_name` (668), `set_session_workspace` (742), `set_parent` (752), `get_parent` (762) y `get_children` (773).
+- [x] **Paso 2:** Crear `src/db/messages.rs` y mover `store_message` (231), `store_message_full` (278), `get_session_messages` (317), `delete_messages` (485), `restore_messages` (547) y `copy_messages` (585).
+- [x] **Paso 3:** Crear `src/db/todos.rs` y mover `add_todo` (820), `update_todo` (856), `delete_todo` (885) y `list_todos` (894).
+- [x] **Paso 4:** Crear `src/db/snapshots.rs` y mover `create_snapshot` (967), `list_snapshots` (1003), `get_snapshot` (1037) y `delete_snapshot` (1068).
+- [x] **Paso 5:** Crear `src/db/export.rs` y mover `export_session` (678), `import_session` (719) y `render_markdown` (1078).
+- [x] **Paso 6:** Crear `src/db/usage.rs` y mover `record_model_usage` (924) y `list_model_frecency` (944).
+- [x] **Paso 7:** Mover los tests (1105-1565) a su módulo correspondiente; ajustar visibilidad y declaraciones `mod` en `src/db/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `session.rs` queda con el struct `Database` y el CRUD de sesiones; mensajes, todos, snapshots, export/import y uso de modelo viven en sus módulos; el crate compila y los tests pasan.
+
+#### Tarea 12.6: Dividir `src/tui/keymap.rs` (1019 líneas)
+
+**Archivos:**
+- Crear: `src/tui/keyparse.rs` (parseo y formateo de teclas)
+- Modificar: `src/tui/keymap.rs` (dejar enum `Action` + struct `Keymap`)
+- Modificar: `src/tui/mod.rs` (declaración `mod keyparse;`)
+
+- [x] **Paso 1:** En `src/tui/keymap.rs`, conservar el enum `Action` (~40 variantes), el struct `Keymap` + `new`/`bind`/`resolve`/`matches`/`apply_overrides` y `Keymap::default` (todos los bindings).
+- [x] **Paso 2:** Crear `src/tui/keyparse.rs` y mover `key_event`, `format_keymap_table`, `format_key`, `parse_action`, `to_snake_case` y `parse_key`.
+- [x] **Paso 3:** Mover los tests a su módulo correspondiente; ajustar visibilidad y declaración `mod keyparse;` en `src/tui/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `keymap.rs` queda con el enum `Action` y el struct `Keymap`; el parseo y formateo de teclas vive en `keyparse.rs`; los tests se mueven con su código; el crate compila y los tests pasan.
+
+#### Tarea 12.7: Dividir `src/mcp/client.rs` (771 líneas)
+
+**Archivos:**
+- Crear: `src/mcp/registry.rs` (`McpRegistry`)
+- Crear: `src/mcp/parse.rs` (helpers de parseo de respuestas)
+- Modificar: `src/mcp/client.rs` (dejar `McpClient` + impl transporte/JSON-RPC)
+- Modificar: `src/mcp/mod.rs` (declaraciones `mod`)
+
+- [x] **Paso 1:** En `src/mcp/client.rs`, conservar el struct `McpClient` + impl: `new` (34), `connect` (48), `connect_stdio` (56), `connect_tcp` (86), `perform_initialize` (100), `call_tool` (181), `list_tools` (224), `list_tools_inner` (229), `list_resources` (254), `list_resource_templates` (269), `read_resource` (288), `send_jsonrpc` (305), `read_jsonrpc` (325) y `disconnect` (360).
+- [x] **Paso 2:** Crear `src/mcp/registry.rs` y mover el struct `McpRegistry` + impl (471-607): `new`/`register`/`get`/`names`/`collect_tools`/`call_tool`/`list_resources`/`list_resource_templates`/`read_resource`/`disconnect_all`.
+- [x] **Paso 3:** Crear `src/mcp/parse.rs` y mover los helpers de parseo: `parse_resources_response` (374), `parse_resource_templates_response` (398) y `parse_read_resource_response` (427).
+- [x] **Paso 4:** Mover los tests (609-771) a su módulo correspondiente; ajustar visibilidad y declaraciones `mod` en `src/mcp/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `client.rs` queda con el `McpClient` y su transporte/JSON-RPC; el `McpRegistry` vive en `registry.rs` y los helpers de parseo en `parse.rs`; el crate compila y los tests pasan.
+
+#### Tarea 12.8: Dividir `src/lsp/mod.rs` (631 líneas)
+
+**Archivos:**
+- Crear: `src/lsp/format.rs` (formateo de resultados)
+- Modificar: `src/lsp/mod.rs` (dejar `LspClient` + impl transporte/consultas)
+- Modificar: `src/lsp/mod.rs` (declaración `mod format;`)
+
+- [x] **Paso 1:** En `src/lsp/mod.rs`, conservar el struct `LspClient` + impl: `new` (70), `start` (85), `initialize` (122), `request` (137), `notify` (156), `hover` (166), `definition` (176), `references` (186), `diagnostic` (197), `query_once` (209), `write_message` (230), `read_message` (253) y `shutdown` (295).
+- [x] **Paso 2:** Crear `src/lsp/format.rs` y mover el formateo (318-493): `parse_lsp_response` (318), `format_lsp_result` (335), `format_hover` (346), `format_locations` (380), `format_diagnostics` (413), `severity_label` (453), `path_to_uri` (464) y `default_server_for_extension` (476).
+- [x] **Paso 3:** Mover los tests (494-631) a su módulo correspondiente; ajustar visibilidad y declaración `mod format;`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `mod.rs` queda con el `LspClient` y su transporte/consultas; el formateo de resultados vive en `format.rs`; el crate compila y los tests pasan.
+
+#### Tarea 12.9: Mover los tests de `src/engine/apply_patch.rs` (558 líneas, borderline)
+
+**Archivos:**
+- Crear: `src/engine/apply_patch_tests.rs` (tests movidos)
+- Modificar: `src/engine/apply_patch.rs` (dejar solo la lógica)
+- Modificar: `src/engine/mod.rs` (declaración `mod apply_patch_tests;`)
+
+- [x] **Paso 1:** En `src/engine/apply_patch.rs`, conservar la lógica: `PatchOpKind` (14), `PatchOp` (25), `PatchBatch` (37), `FileEncoding` (44), `parse_patch_batch` (55), `resolve_within_workspace` (87), `detect_encoding` (141), `encode_content` (152), `resolve_patch_path` (174), `apply_patch_batch` (197) y `batch_to_unified_diff` (259).
+- [x] **Paso 2:** Mover los tests (287-558, ~270 líneas) a `src/engine/apply_patch_tests.rs` (o `src/engine/apply_patch/tests.rs`), dejando `apply_patch.rs` con solo la lógica (~286 líneas).
+- [x] **Paso 3:** Ajustar visibilidad y declaración `mod` en `src/engine/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+- [x] **Paso 4:** (Opcional) Si se prefiere, dejar `apply_patch.rs` como está al ser borderline; en ese caso marcar esta tarea como no aplicable.
+
+**Criterio de aceptación:** `apply_patch.rs` queda con solo la lógica y los tests viven en su propio módulo; el crate compila y los tests pasan (o la tarea se descarta por ser borderline).
+
+**Criterios de aceptación de FASE 12:**
+- [x] Ningún archivo de `src/` supera las 500 líneas (salvo los que se decida dejar, p.ej. `apply_patch.rs` si se descarta la Tarea 12.9).
+- [x] Cada archivo grande se divide en módulos cohesivos con nombres y símbolos reales del código.
+- [x] Los tests existentes se mueven con su código y siguen pasando.
+- [x] `cargo fmt --check && cargo clippy && cargo test` pasan sin cambios de comportamiento.
+- [x] No se añaden dependencias nuevas ni se cambia la interfaz pública consumida por otras fases.
+
+**Dependencia:** FASE 12 depende de FASE 11 (misma técnica de división de módulos).
