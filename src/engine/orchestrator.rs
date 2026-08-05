@@ -20,6 +20,7 @@ use crate::llm::types::{
     CacheControl, LlmMessage, LlmProviderConfig, LlmProviderType, MessageRole,
 };
 use crate::mcp::client::McpRegistry;
+use crate::plugin::PluginRegistry;
 use crate::shell::{git_worktree_add, git_worktree_list, git_worktree_remove};
 use crate::skill::loader::load_agent_skills;
 
@@ -329,6 +330,8 @@ pub struct Engine {
     job_registry: Arc<tokio::sync::Mutex<JobRegistry>>,
     /// A staged snapshot (via `/stage`) awaiting commit (via `/commit`).
     staged_snapshot: Option<Snapshot>,
+    /// Loaded plugins and their custom tools.
+    plugins: Arc<PluginRegistry>,
 }
 
 /// Commands from the TUI to the engine.
@@ -479,6 +482,7 @@ impl Engine {
             total_cost: 0.0,
             job_registry: Arc::new(tokio::sync::Mutex::new(JobRegistry::new())),
             staged_snapshot: None,
+            plugins: Arc::new(PluginRegistry::new()),
         }
     }
 
@@ -529,6 +533,17 @@ impl Engine {
         let session_id = session.id;
         self.database = Some(db.clone());
         self.active_session_id = Some(session_id);
+
+        // Load plugins from the global plugins directory.
+        let plugins_dir = crate::config::paths::global_plugins_dir();
+        let mut plugins = PluginRegistry::new();
+        if let Err(e) = plugins.load_from_dir(&plugins_dir) {
+            eprintln!(
+                "warning: failed to load plugins from {}: {e}",
+                plugins_dir.display()
+            );
+        }
+        self.plugins = Arc::new(plugins);
 
         // Create LLM providers from config and register them
         let mut llm_registry = LlmProviderRegistry::new();
@@ -678,6 +693,7 @@ impl Engine {
                 depth: 0,
                 mode: AgentMode::Build,
                 job_registry: Some(self.job_registry.clone()),
+                plugins: Some(self.plugins.clone()),
             });
 
             self.agents.insert(name, id.clone());
@@ -1058,6 +1074,7 @@ impl Engine {
             depth: 0,
             mode: AgentMode::Build,
             job_registry: Some(self.job_registry.clone()),
+            plugins: Some(self.plugins.clone()),
         });
 
         self.agents.insert(name.clone(), id.clone());

@@ -48,6 +48,10 @@ pub struct Config {
     /// `load_config()` after the YAML merge.
     #[serde(skip)]
     pub agents: Vec<AgentConfig>,
+
+    /// Custom slash commands defined in config.
+    #[serde(default)]
+    pub commands: Vec<CustomCommand>,
 }
 
 /// LLM provider configurations.
@@ -448,4 +452,19 @@ pub struct ModelPickerConfig {
     /// Models shown in the "Favorites" tab.
     #[serde(default)]
     pub favorites: Vec<String>,
+}
+
+/// A custom slash command defined in config.
+///
+/// The `template` may contain `{env:VAR}` and `{file:path}` placeholders that
+/// are expanded at dispatch time (see `crate::engine::template::expand_vars`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomCommand {
+    /// Command name including the leading slash, e.g. `/deploy`.
+    pub name: String,
+    /// Short description shown in the command palette.
+    #[serde(default)]
+    pub description: String,
+    /// Template expanded and sent to the engine as user input.
+    pub template: String,
 }

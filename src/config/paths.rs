@@ -48,6 +48,14 @@ pub fn project_agents_dir(explicit_root: Option<&Path>) -> PathBuf {
     project_root(explicit_root).join(".anacleto").join("agents")
 }
 
+/// Path to the global plugins directory: `~/.config/anacleto/plugins`.
+pub fn global_plugins_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("anacleto")
+        .join("plugins")
+}
+
 /// Expand a leading `~` (or `~/`) in `path` to the user's home directory.
 ///
 /// - `~` → home directory
