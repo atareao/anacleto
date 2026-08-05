@@ -1,6 +1,18 @@
 pub mod app;
+mod commands;
 pub mod diff_viewer;
+mod events;
+mod input;
 pub mod keymap;
+mod keyparse;
+mod keys;
+mod markdown;
 pub mod model_picker;
+mod navigation;
+mod palette;
+mod render;
+mod state;
+mod theme;
 pub mod toast;
+mod types;
 pub mod which_key;

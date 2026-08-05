@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
-use crate::tui::keymap::format_keymap_table;
+use crate::tui::keyparse::format_keymap_table;
 
 /// A centered popup that shows the full keybinding table ("which-key").
 ///

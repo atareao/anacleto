@@ -1,6 +1,10 @@
+mod anthropic;
 pub mod azure;
 pub mod bedrock;
 pub mod google;
+mod models;
+mod ollama;
+mod openai;
 pub mod provider;
 pub mod template;
 pub mod types;

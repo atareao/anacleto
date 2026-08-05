@@ -154,3 +154,49 @@ pub struct JsonRpcError {
     #[serde(default)]
     pub data: Option<serde_json::Value>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mcp_transport_from_config_stdio() {
+        let def = McpDefinition {
+            transport: "stdio".into(),
+            command: Some("npx".into()),
+            args: vec![
+                "-y".into(),
+                "@modelcontextprotocol/server-filesystem".into(),
+            ],
+            host: None,
+            port: None,
+        };
+        let transport = McpTransport::from(&def);
+        match transport {
+            McpTransport::Stdio { command, args } => {
+                assert_eq!(command, "npx");
+                assert!(!args.is_empty());
+            }
+            _ => panic!("Expected Stdio transport"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_transport_from_config_tcp() {
+        let def = McpDefinition {
+            transport: "tcp".into(),
+            command: None,
+            args: vec![],
+            host: Some("localhost".into()),
+            port: Some(5432),
+        };
+        let transport = McpTransport::from(&def);
+        match transport {
+            McpTransport::Tcp { host, port } => {
+                assert_eq!(host, "localhost");
+                assert_eq!(port, 5432);
+            }
+            _ => panic!("Expected Tcp transport"),
+        }
+    }
+}
