@@ -647,28 +647,31 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 
 ### FASE 7 — Extensibilidad
 
+> **Nota de rutas:** Los comandos slash se definen en la const `COMMANDS` en `src/tui/app.rs` (línea 36) y se despachan en `handle_command` (línea 1523) con un `match` sobre el primer token; la paleta fuzzy usa `COMMANDS` (líneas 401, 1330, 1415, 3537). El engine despacha `EngineCommand` en `Engine::run()` (línea 712) y `initialize()` (línea 497) registra providers y spawnea agentes. Las tools se construyen en `src/agent/lifecycle.rs` (línea 163) y se despachan por nombre en el handler de tool calls (líneas 554-743). El directorio global de config es `~/.config/anacleto/` (ver `src/agent/loader.rs:183` y `src/config/loader.rs:51`).
+
 #### Tarea 7.1: Sistema de plugins con hooks/transforms
 
 **Archivos:**
-- Crear: `src/plugin/mod.rs` (trait `Plugin`)
-- Modificar: `src/engine/orchestrator.rs` (invocación de hooks)
-- Modificar: `src/config/paths.rs` (directorio de plugins)
+- Crear: `src/plugin/mod.rs` (trait `Plugin` + `PluginRegistry`)
+- Modificar: `src/engine/orchestrator.rs` (invocación de hooks en `initialize()` línea 497, `run()` línea 712, y en el handler de tool calls)
+- Modificar: `src/config/paths.rs` (directorio de plugins global `~/.config/anacleto/plugins/`)
 
-- [ ] **Paso 1:** Definir trait `Plugin` con hooks (`on_agent_spawn`, `on_tool_call`, `on_command`, `on_event`) y transforms.
-- [ ] **Paso 2:** Cargar plugins desde `~/.config/anacleto/plugins/`.
-- [ ] **Paso 3:** Invocar hooks en los puntos del engine.
+- [x] **Paso 1:** Definir trait `Plugin` con hooks (`on_agent_spawn`, `on_tool_call`, `on_command`, `on_event`) y transforms.
+- [x] **Paso 2:** Cargar plugins desde `~/.config/anacleto/plugins/` (cada plugin como un módulo Rust compilado o un archivo de definición).
+- [x] **Paso 3:** Invocar hooks en los puntos del engine (`initialize()`, `run()`, handler de tool calls).
 
 **Criterio de aceptación:** Los plugins se cargan y sus hooks/transforms se invocan en los puntos definidos.
 
 #### Tarea 7.2: Comandos slash personalizados con templating
 
 **Archivos:**
-- Modificar: `src/tui/app.rs` (mover `COMMANDS` a registro dinámico)
-- Modificar: `src/config/types.rs` (comandos personalizados)
+- Modificar: `src/tui/app.rs` (mover `COMMANDS` a registro dinámico, líneas 36, 401, 1330, 1415, 3537)
+- Modificar: `src/config/types.rs` (campo `commands` en `Config`, línea 9)
+- Modificar: `src/config/loader.rs` (parseo en `load_config`, línea 11)
 - Crear: `src/engine/template.rs` (variables `{env:VAR}`, `{file:path}`)
 
-- [ ] **Paso 1:** Mover la lógica de `COMMANDS` a un registro dinámico.
-- [ ] **Paso 2:** Definir comandos personalizados en config con templating de variables.
+- [x] **Paso 1:** Mover la lógica de `COMMANDS` a un registro dinámico (built-ins + personalizados).
+- [x] **Paso 2:** Definir comandos personalizados en config con templating de variables (`{env:VAR}`, `{file:path}`).
 
 **Criterio de aceptación:** Los comandos slash personalizados se definen en config y expanden `{env:VAR}`/`{file:path}`.
 
@@ -676,9 +679,10 @@ Integración opcional: se lanza un language server por lenguaje (config), se rec
 
 **Archivos:**
 - Modificar: `src/plugin/mod.rs` (registro de tools/providers)
-- Modificar: `src/engine/orchestrator.rs` (registro en runtime)
+- Modificar: `src/engine/orchestrator.rs` (registro en runtime en `initialize()` línea 497)
+- Modificar: `src/agent/lifecycle.rs` (despacho de tools personalizados en el handler, líneas 554-743)
 
-- [ ] **Paso 1:** Permitir que los plugins registren tools y providers en runtime.
+- [x] **Paso 1:** Permitir que los plugins registren tools y providers en runtime.
 
 **Criterio de aceptación:** Los plugins pueden registrar tools y providers personalizados en runtime.
 
@@ -770,14 +774,13 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - [x] Bedrock/Azure/Google se registran y seleccionan desde config.
 
 **FASE 7**
-- [ ] Los plugins se cargan y sus hooks/transforms se invocan.
-- [ ] Los comandos slash personalizados expanden `{env:VAR}`/`{file:path}`.
-- [ ] Los plugins registran tools/providers en runtime.
+- [x] Los plugins se cargan y sus hooks/transforms se invocan.
+- [x] Los comandos slash personalizados expanden `{env:VAR}`/`{file:path}`.
+- [x] Los plugins registran tools/providers en runtime.
 
 ### Cierre de la release v0.6.0
 
-- [x] Fases 1-6 (incl. 5.5) completadas y verificadas.
-- [ ] FASE 7 (extensibilidad) pendiente.
+- [x] Fases 1-7 (incl. 5.5) completadas y verificadas.
 - [ ] `cargo doc --no-deps` genera sin errores.
 - [ ] Documentación de nuevas config (keymap, compaction, plugins, providers) actualizada.
 - [ ] Rama `develop` con commits atómicos por tarea, cada uno pasando fmt/clippy/test.
