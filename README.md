@@ -109,6 +109,12 @@ that makes that orchestration explicit and composable:
 - **TUI** — a ratatui-based terminal interface with a keymap, which-key
   menu, toasts, model picker, and diff viewer, running in the same process as
   the engine.
+- **Window navigation** — switch between the Chat, MCPs, Skills, Agents, and
+  Input windows with `Alt+1`..`Alt+5`, and navigate each with Vim-style
+  bindings (`j`/`k`, `gg`/`G`, `Home`/`End`, `PageUp`/`PageDown`).
+- **Shell-style input editing** — the Input box supports the usual terminal
+  editing shortcuts (word jumps, `Ctrl+A/E/U/W/K`, `Home`/`End`, history,
+  tab-completion) and never lets a shortcut interrupt your typing.
 - **Session persistence** — SQLite via sqlx; sessions are resumable across
   restarts, with fork/import/export and snapshot/rollback.
 - **Background jobs** — long-running work can be delegated to background jobs.
@@ -199,22 +205,69 @@ subprocesses — identity is decoupled from OS processes.
 src/
 ├── main.rs            # Entrypoint, CLI argument parsing (clap)
 ├── lib.rs             # Module declarations
-├── agent/             # Agent lifecycle, loader (Markdown frontmatter), retries
+├── agent/             # Agent model
+│   ├── lifecycle.rs   #   AgentHandle, spawn_agent (main loop)
+│   ├── tools.rs       #   Tool definitions & execution
+│   ├── context.rs     #   Context compaction / summarization
+│   ├── loader.rs      #   Markdown frontmatter loading
+│   └── retry.rs       #   Retry policy
 ├── config/            # YAML config parsing, global + project merge, paths
 ├── db/                # SQLite persistence via sqlx
-├── engine/            # Orchestration loop, jobs, apply_patch, templates
+│   ├── session.rs     #   Session CRUD
+│   ├── messages.rs    #   Message storage
+│   ├── todos.rs       #   Todo items
+│   ├── snapshots.rs   #   Snapshots
+│   ├── export.rs      #   Export / import
+│   └── usage.rs       #   Model usage tracking
+├── engine/            # Orchestration loop
+│   ├── orchestrator.rs#   Engine core
+│   ├── sessions.rs    #   Session commands
+│   ├── commands.rs    #   Slash command handlers
+│   ├── events.rs      #   Event / command types
+│   ├── jobs.rs        #   Background jobs
+│   ├── apply_patch.rs #   apply_patch tool
+│   └── template.rs    #   Templates
 ├── error.rs           # Global error types (thiserror)
 ├── filesystem/        # Filesystem access helpers
-├── llm/               # LLM providers (Anthropic, OpenAI, OpenRouter, Ollama,
-│                      #   Bedrock, Azure, Google) + templates
+├── llm/               # LLM providers
+│   ├── provider.rs    #   LlmProvider trait + factory
+│   ├── openai.rs      #   OpenAI / OpenRouter
+│   ├── anthropic.rs   #   Anthropic (Claude)
+│   ├── ollama.rs      #   Ollama (local)
+│   ├── azure.rs       #   Azure OpenAI
+│   ├── bedrock.rs     #   AWS Bedrock
+│   ├── google.rs      #   Google Gemini
+│   ├── models.rs      #   Model catalog types
+│   └── template.rs    #   Prompt templates
 ├── lsp/               # Language Server Protocol queries
+│   ├── mod.rs         #   LspClient
+│   └── format.rs      #   Result formatting
 ├── mcp/               # MCP client (JSON-RPC 2.0 over stdio/TCP)
+│   ├── client.rs      #   McpClient
+│   ├── registry.rs    #   McpRegistry
+│   ├── parse.rs       #   Response parsing
+│   └── types.rs       #   Types
 ├── permissions/       # Permission rules per agent/subagent
 ├── plugin/            # Plugin system with hooks and custom tools
 ├── shell/             # Shell command execution + modern CLI tool inventory
 ├── skill/             # Skill loading (Anthropic Markdown format), execution
 ├── tools/             # Structured agent tools (read, grep, glob, web, lsp, mcp)
-└── tui/               # ratatui + crossterm interface (keymap, pickers, diff)
+└── tui/               # ratatui + crossterm interface
+    ├── app.rs         #   App state + run loop
+    ├── events.rs      #   Event handling
+    ├── keys.rs        #   Key routing
+    ├── input.rs       #   Input editing
+    ├── navigation.rs  #   Window navigation (Vim)
+    ├── keymap.rs      #   Keymap + actions
+    ├── keyparse.rs    #   Key parsing / formatting
+    ├── render.rs      #   Rendering
+    ├── palette.rs     #   Command / agent / model pickers
+    ├── markdown.rs    #   Markdown rendering helpers
+    ├── theme.rs       #   Themes
+    ├── model_picker.rs#   Model picker
+    ├── diff_viewer.rs #   Diff viewer
+    ├── which_key.rs   #   Which-key popup
+    └── toast.rs       #   Toasts
 ```
 
 ### Design decisions
@@ -389,6 +442,8 @@ delay = min(base_delay × 2^attempt × random(0.75, 1.25), max_delay)
   input editing, and Vim navigation in Chat/panels) is rebindable via
   `keymap.bindings`, mapping an action name to a list of key strings
   (e.g. `quit: ["ctrl+q"]`, `cursor_word_left: ["ctrl+left", "alt+left"]`).
+  Window switching is bound to `Alt+1`..`Alt+5` by default
+  (`focus_chat`, `focus_mcps`, `focus_skills`, `focus_agents`, `focus_input`).
   See `docs/example-global-config.yaml` for the full list of action names.
 - **`editor`** — external editor command (overrides `$EDITOR`/`$VISUAL`).
 - **`model_picker`** — model picker dialog configuration.
@@ -462,7 +517,7 @@ schema may change.
 
 ### Roadmap
 
-Evolution phases ([`PLAN.md`](PLAN.md)), with phases 1–7 now complete:
+Evolution phases ([`PLAN.md`](PLAN.md)), with phases 1–12 now complete:
 
 - [x] **FASE 1** — orchestration (`task` tool, background jobs, session tree)
 - [x] **FASE 2** — context & memory (compaction, truncation)
@@ -472,7 +527,11 @@ Evolution phases ([`PLAN.md`](PLAN.md)), with phases 1–7 now complete:
 - [x] **FASE 5.5** — active agent switching
 - [x] **FASE 6** — LLM providers, prompt caching, extended thinking
 - [x] **FASE 7** — extensibility (plugins, custom slash commands)
-- [ ] Window management and layout persistence in TUI
+- [x] **FASE 8** — window navigation (`Alt+1`..`Alt+5`) and per-window bindings
+- [x] **FASE 9** — fully configurable keybindings
+- [x] **FASE 10** — input that never interrupts typing
+- [x] **FASE 11** — split `app.rs` into cohesive modules
+- [x] **FASE 12** — split large files into cohesive modules
 - [ ] MCP server lifecycle management
 - [ ] Skill marketplace
 
