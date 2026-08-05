@@ -70,10 +70,18 @@ impl App {
                 self.chat_scroll = 0;
             }
             EngineEvent::AgentStatusChanged {
-                agent_id, status, ..
+                agent_id,
+                agent_name,
+                status,
             } => {
                 if let Some(agent) = self.agents.iter_mut().find(|a| a.id == agent_id) {
-                    agent.status = status;
+                    agent.status = status.clone();
+                }
+                // When the active agent becomes idle, clear the in-flight
+                // flag and drain any queued prompts.
+                if status == AgentStatus::Idle && agent_name == self.active_agent {
+                    self.sent_message = false;
+                    self.drain_queue_if_idle();
                 }
             }
             EngineEvent::SubagentCreated {
@@ -133,6 +141,11 @@ impl App {
                 self.active_agent = name.clone();
                 self.push_msg(format!("Agente activo: {}", name));
                 self.chat_scroll = 0;
+                // Reset the in-flight flag and re-check the prompt queue: a
+                // stale Idle event from the previous agent must not leave
+                // `sent_message` latched and deadlock the queue.
+                self.sent_message = false;
+                self.drain_queue_if_idle();
             }
             EngineEvent::SessionDeleted { id } => {
                 self.push_msg(format!("Session {} deleted.", &id[..8]));
@@ -437,5 +450,75 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::types::AgentId;
+    use crate::config::Config;
+    use crate::engine::orchestrator::EngineCommand;
+    use tokio::sync::mpsc;
+
+    fn agent(id: AgentId, name: &str, status: AgentStatus) -> AgentInfo {
+        AgentInfo {
+            id,
+            name: name.to_string(),
+            role: AgentRole::Root,
+            status,
+            skills: Vec::new(),
+            mcps: Vec::new(),
+            model: String::new(),
+            parent_id: None,
+            subagent_count: 0,
+        }
+    }
+
+    #[test]
+    fn idle_event_of_active_agent_drains_queue() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        let id = AgentId::new();
+        app.active_agent = "root".to_string();
+        app.agents
+            .push(agent(id.clone(), "root", AgentStatus::Working));
+        app.prompt_queue = vec!["first".to_string(), "second".to_string()];
+
+        app.handle_event(EngineEvent::AgentStatusChanged {
+            agent_id: id,
+            agent_name: "root".to_string(),
+            status: AgentStatus::Idle,
+        });
+
+        // The first item was sent and removed from the queue.
+        assert_eq!(app.prompt_queue, vec!["second".to_string()]);
+        match cmd_rx.try_recv() {
+            Ok(EngineCommand::UserInput(text)) => assert_eq!(text, "first"),
+            other => panic!("expected UserInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn idle_event_of_non_active_agent_does_not_drain() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        let id = AgentId::new();
+        app.active_agent = "root".to_string();
+        app.agents
+            .push(agent(id.clone(), "sub", AgentStatus::Working));
+        app.prompt_queue = vec!["first".to_string()];
+
+        app.handle_event(EngineEvent::AgentStatusChanged {
+            agent_id: id,
+            agent_name: "sub".to_string(),
+            status: AgentStatus::Idle,
+        });
+
+        // Queue untouched, nothing sent.
+        assert_eq!(app.prompt_queue, vec!["first".to_string()]);
+        assert!(cmd_rx.try_recv().is_err());
     }
 }
