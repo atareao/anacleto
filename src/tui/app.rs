@@ -190,6 +190,21 @@ impl InitFlow {
     }
 }
 
+/// Which of the 5 windows currently has keyboard focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    /// (1) Chat panel.
+    Chat,
+    /// (2) MCPs sidebar panel.
+    Mcps,
+    /// (3) Skills sidebar panel.
+    Skills,
+    /// (4) Agents sidebar panel.
+    Agents,
+    /// (5) Input box.
+    Input,
+}
+
 /// Application state for the TUI.
 pub struct App {
     /// Channel to send commands to the engine.
@@ -198,6 +213,16 @@ pub struct App {
     pub event_rx: mpsc::Receiver<EngineEvent>,
     /// Current user input buffer.
     pub input: String,
+    /// Character index of the cursor within `input` (for shell-style editing).
+    input_cursor: usize,
+    /// Which window currently has keyboard focus.
+    focus: Focus,
+    /// Selected index in the MCPs sidebar panel.
+    mcp_panel_index: usize,
+    /// Selected index in the Skills sidebar panel.
+    skill_panel_index: usize,
+    /// Selected index in the Agents sidebar panel.
+    agent_panel_index: usize,
     /// History of previously submitted inputs (for Up/Down arrow navigation).
     input_history: Vec<String>,
     /// Current position in input history while navigating (None = editing fresh).
@@ -295,6 +320,8 @@ pub struct App {
     model_index: usize,
     /// Vertical scroll offset for the chat panel (0 = bottom, auto-scroll).
     pub chat_scroll: u16,
+    /// Timestamp of the last 'g' press, used to detect a double-'g' (gg) jump.
+    last_g_press: Option<Instant>,
     /// Frame counter for animating spinners in the UI.
     pub frame_count: u64,
 
@@ -387,6 +414,11 @@ impl App {
             cmd_tx,
             event_rx,
             input: String::new(),
+            input_cursor: 0,
+            focus: Focus::Input,
+            mcp_panel_index: 0,
+            skill_panel_index: 0,
+            agent_panel_index: 0,
             input_history: Vec::new(),
             history_index: None,
             messages: Vec::new(),
@@ -438,6 +470,7 @@ impl App {
             model_matches: Vec::new(),
             model_index: 0,
             chat_scroll: 0,
+            last_g_press: None,
             frame_count: 0,
             theme: Theme::Default,
             show_timestamps: false,
@@ -1040,12 +1073,15 @@ impl App {
                 KeyCode::Esc => {
                     self.init_flow = None;
                     self.input.clear();
+                    self.input_cursor = 0;
                 }
                 KeyCode::Char(c) => {
                     self.input.push(c);
+                    self.input_cursor = self.input.chars().count();
                 }
                 KeyCode::Backspace => {
                     self.input.pop();
+                    self.input_cursor = self.input.chars().count();
                 }
                 _ => {}
             }
@@ -1177,10 +1213,33 @@ impl App {
             return;
         }
 
-        // ── Keymap-driven global actions ─────────────────────────────
+        // ── Focus switching (Alt+1..Alt+5) + keymap-driven global actions ──
         // Only dispatch when the key is a special/modified key, or when the
         // input is empty (so plain characters can still be typed normally).
+        // Alt+1..Alt+5 are modified keys, so they always apply; the legacy
+        // letter bindings ('c'/'i') only switch focus when the input is empty.
         if self.keymap_applies(key_event) {
+            if self.keymap.matches(key_event, Action::FocusChat) {
+                self.focus = Focus::Chat;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::FocusMcps) {
+                self.focus = Focus::Mcps;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::FocusSkills) {
+                self.focus = Focus::Skills;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::FocusAgents) {
+                self.focus = Focus::Agents;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::FocusInput) {
+                self.focus = Focus::Input;
+                return;
+            }
+
             if self.keymap.matches(key_event, Action::Quit) {
                 self.should_exit = true;
                 return;
@@ -1206,10 +1265,6 @@ impl App {
                 self.open_editor();
                 return;
             }
-            if self.keymap.matches(key_event, Action::ClearInput) {
-                self.input.clear();
-                return;
-            }
             if self.keymap.matches(key_event, Action::OpenPromptQueue) {
                 self.show_prompt_queue = true;
                 self.prompt_queue_index = 0;
@@ -1233,30 +1288,49 @@ impl App {
                     return;
                 }
             }
-            if self.keymap.matches(key_event, Action::ScrollUp) {
-                self.chat_scroll = self.chat_scroll.saturating_add(1);
-                return;
-            }
-            if self.keymap.matches(key_event, Action::ScrollDown) {
-                self.chat_scroll = self.chat_scroll.saturating_sub(1);
-                return;
-            }
-            if self.keymap.matches(key_event, Action::PageUp) {
-                self.chat_scroll = self.chat_scroll.saturating_add(10);
-                return;
-            }
-            if self.keymap.matches(key_event, Action::PageDown) {
-                self.chat_scroll = self.chat_scroll.saturating_sub(10);
-                return;
-            }
         }
 
+        // ── Route the remaining keys by the focused window ───────────
+        match self.focus {
+            Focus::Input => self.handle_input_key(key, modifiers, key_event),
+            Focus::Chat => self.handle_chat_key(key, modifiers, key_event),
+            Focus::Mcps => self.handle_mcp_panel_key(key, modifiers, key_event),
+            Focus::Skills => self.handle_skill_panel_key(key, modifiers, key_event),
+            Focus::Agents => self.handle_agent_panel_key(key, modifiers, key_event),
+        }
+    }
+
+    /// Handle a key while the Input window (5) has focus.
+    fn handle_input_key(&mut self, key: KeyCode, modifiers: KeyModifiers, _key_event: KeyEvent) {
         match key {
-            KeyCode::PageUp => {
-                self.chat_scroll = self.chat_scroll.saturating_add(10);
+            KeyCode::Left => {
+                if modifiers.contains(KeyModifiers::CONTROL)
+                    || modifiers.contains(KeyModifiers::ALT)
+                {
+                    self.input_move_word_left();
+                } else {
+                    self.input_cursor = self.input_cursor.saturating_sub(1);
+                }
             }
-            KeyCode::PageDown => {
-                self.chat_scroll = self.chat_scroll.saturating_sub(10);
+            KeyCode::Right => {
+                if modifiers.contains(KeyModifiers::CONTROL)
+                    || modifiers.contains(KeyModifiers::ALT)
+                {
+                    self.input_move_word_right();
+                } else {
+                    let len = self.input.chars().count();
+                    self.input_cursor = (self.input_cursor + 1).min(len);
+                }
+            }
+            KeyCode::Home => {
+                self.input_cursor = 0;
+            }
+            KeyCode::End => {
+                self.input_cursor = self.input.chars().count();
+            }
+            KeyCode::Delete => {
+                self.input_delete_at();
+                self.update_command_palette();
             }
             KeyCode::Up => {
                 if self.show_model_palette && !self.model_matches.is_empty() {
@@ -1283,10 +1357,9 @@ impl App {
                     };
                     self.history_index = Some(next);
                     self.input = self.input_history[next].clone();
+                    self.input_cursor = self.input.chars().count();
                     self.tab_matches.clear();
                     self.tab_index = 0;
-                } else {
-                    self.chat_scroll = self.chat_scroll.saturating_add(1);
                 }
             }
             KeyCode::Down => {
@@ -1308,15 +1381,10 @@ impl App {
                             self.input.clear();
                         }
                     }
+                    self.input_cursor = self.input.chars().count();
                     self.tab_matches.clear();
                     self.tab_index = 0;
-                } else {
-                    self.chat_scroll = self.chat_scroll.saturating_sub(1);
                 }
-            }
-            KeyCode::End => {
-                // Re-enable auto-scroll (jump to bottom)
-                self.chat_scroll = 0;
             }
             KeyCode::Tab => {
                 // Reset matches if the input has changed since last Tab
@@ -1337,6 +1405,7 @@ impl App {
                 }
                 let idx = self.tab_index % self.tab_matches.len();
                 self.input = self.tab_matches[idx].clone();
+                self.input_cursor = self.input.chars().count();
                 self.tab_index += 1;
             }
             KeyCode::Char(c) => {
@@ -1346,33 +1415,40 @@ impl App {
 
                 if modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
                     self.input.clear();
+                    self.input_cursor = 0;
                 } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'j' {
                     // Ctrl+J = ASCII Line Feed (0x0A) — insert newline
-                    self.input.push('\n');
+                    self.input_insert_char('\n');
                 } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'u' {
                     // Ctrl+U: delete to beginning of line (kill)
-                    self.input.clear();
+                    self.input_delete_to_start();
                 } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'w' {
                     // Ctrl+W: delete word backward
-                    let trimmed = self.input.trim_end();
-                    if let Some(pos) = trimmed.rfind(|ch: char| ch.is_whitespace()) {
-                        self.input.truncate(pos);
-                    } else {
-                        self.input.clear();
-                    }
+                    self.input_delete_word_before();
+                } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'k' {
+                    // Ctrl+K: delete to end of line (kill)
+                    self.input_delete_to_end();
+                } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'a' {
+                    self.input_cursor = 0;
+                } else if modifiers.contains(KeyModifiers::CONTROL) && c == 'e' {
+                    self.input_cursor = self.input.chars().count();
+                } else if modifiers.contains(KeyModifiers::ALT) && c == 'b' {
+                    self.input_move_word_left();
+                } else if modifiers.contains(KeyModifiers::ALT) && c == 'f' {
+                    self.input_move_word_right();
                 } else if self.kb_supported && modifiers.contains(KeyModifiers::SHIFT) {
                     // Kitty protocol: shift is reported as a modifier;
                     // apply keyboard-appropriate shift mapping
-                    self.input.push(shift_char(c, &self.lang));
+                    self.input_insert_char(shift_char(c, &self.lang));
                 } else {
-                    self.input.push(c);
+                    self.input_insert_char(c);
                 }
                 self.update_command_palette();
             }
             KeyCode::Backspace => {
                 self.tab_matches.clear();
                 self.tab_index = 0;
-                self.input.pop();
+                self.input_delete_before();
                 self.update_command_palette();
             }
             KeyCode::Enter => {
@@ -1380,7 +1456,7 @@ impl App {
                 self.tab_index = 0;
                 if modifiers != KeyModifiers::NONE {
                     // Any modifier + Enter = insert newline (works across terminals)
-                    self.input.push('\n');
+                    self.input_insert_char('\n');
                 } else if self.show_model_palette && !self.model_matches.is_empty() {
                     // Execute `/models <selected>` from the model combo.
                     let name = self.model_matches[self.model_index].clone();
@@ -1388,6 +1464,7 @@ impl App {
                     self.model_matches.clear();
                     self.model_index = 0;
                     self.input.clear();
+                    self.input_cursor = 0;
                     self.handle_command(format!("/models {}", name));
                 } else if self.show_agent_palette && !self.agent_matches.is_empty() {
                     // Execute `/agent <selected>` from the agent combo.
@@ -1396,6 +1473,7 @@ impl App {
                     self.agent_matches.clear();
                     self.agent_index = 0;
                     self.input.clear();
+                    self.input_cursor = 0;
                     self.handle_command(format!("/agent {}", name));
                 } else if self.show_command_palette && !self.palette_matches.is_empty() {
                     // Execute the highlighted command from the palette.
@@ -1405,9 +1483,11 @@ impl App {
                     self.palette_matches.clear();
                     self.palette_index = 0;
                     self.input.clear();
+                    self.input_cursor = 0;
                     self.handle_command(cmd);
                 } else {
                     let input = std::mem::take(&mut self.input);
+                    self.input_cursor = 0;
                     if !input.is_empty() {
                         // Record in input history (dedupe consecutive repeats).
                         if self.input_history.last() != Some(&input) {
@@ -1444,10 +1524,263 @@ impl App {
                 } else {
                     // No overlay open — clear input
                     self.input.clear();
+                    self.input_cursor = 0;
                 }
             }
             _ => {}
         }
+    }
+
+    /// Handle a key while the Chat window (1) has focus.
+    fn handle_chat_key(&mut self, key: KeyCode, modifiers: KeyModifiers, _key_event: KeyEvent) {
+        match key {
+            KeyCode::Down => {
+                self.chat_scroll = self.chat_scroll.saturating_add(1);
+            }
+            KeyCode::Up => {
+                self.chat_scroll = self.chat_scroll.saturating_sub(1);
+            }
+            KeyCode::PageUp => {
+                self.chat_scroll = self.chat_scroll.saturating_add(10);
+            }
+            KeyCode::PageDown => {
+                self.chat_scroll = self.chat_scroll.saturating_sub(10);
+            }
+            KeyCode::Home => {
+                self.chat_scroll = u16::MAX;
+            }
+            KeyCode::End => {
+                self.chat_scroll = 0;
+            }
+            KeyCode::Esc => {
+                self.focus = Focus::Input;
+            }
+            KeyCode::Char(c) => {
+                if modifiers.contains(KeyModifiers::CONTROL) {
+                    match c {
+                        'u' => self.chat_scroll = self.chat_scroll.saturating_add(10),
+                        'd' => self.chat_scroll = self.chat_scroll.saturating_sub(10),
+                        _ => {}
+                    }
+                } else {
+                    match c {
+                        'j' => self.chat_scroll = self.chat_scroll.saturating_add(1),
+                        'k' => self.chat_scroll = self.chat_scroll.saturating_sub(1),
+                        'g' => {
+                            if self.is_double_g() {
+                                // gg: jump to the top of the chat.
+                                self.chat_scroll = u16::MAX;
+                            }
+                        }
+                        'G' => {
+                            // G: jump to the bottom (auto-scroll).
+                            self.chat_scroll = 0;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle a key while the MCPs sidebar panel (2) has focus.
+    fn handle_mcp_panel_key(&mut self, key: KeyCode, modifiers: KeyModifiers, _ke: KeyEvent) {
+        let len = self.unique_mcp_count();
+        self.mcp_panel_index = self.handle_list_nav_key(key, modifiers, len, self.mcp_panel_index);
+    }
+
+    /// Handle a key while the Skills sidebar panel (3) has focus.
+    fn handle_skill_panel_key(&mut self, key: KeyCode, modifiers: KeyModifiers, _ke: KeyEvent) {
+        let len = self.unique_skill_count();
+        self.skill_panel_index =
+            self.handle_list_nav_key(key, modifiers, len, self.skill_panel_index);
+    }
+
+    /// Handle a key while the Agents sidebar panel (4) has focus.
+    fn handle_agent_panel_key(&mut self, key: KeyCode, modifiers: KeyModifiers, _ke: KeyEvent) {
+        let len = self.agent_panel_count();
+        self.agent_panel_index =
+            self.handle_list_nav_key(key, modifiers, len, self.agent_panel_index);
+    }
+
+    /// Shared Vim/arrow navigation for a list panel (MCPs, Skills, Agents).
+    /// Returns the updated selection index.
+    fn handle_list_nav_key(
+        &mut self,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+        len: usize,
+        mut index: usize,
+    ) -> usize {
+        match key {
+            KeyCode::Down | KeyCode::Char('j') => {
+                if len > 0 {
+                    index = (index + 1).min(len - 1);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                index = index.saturating_sub(1);
+            }
+            KeyCode::Home => index = 0,
+            KeyCode::End => {
+                if len > 0 {
+                    index = len - 1;
+                }
+            }
+            KeyCode::Esc => {
+                self.focus = Focus::Input;
+            }
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => match c {
+                'g' => {
+                    if self.is_double_g() {
+                        index = 0;
+                    }
+                }
+                'G' if len > 0 => index = len - 1,
+                _ => {}
+            },
+            _ => {}
+        }
+        index
+    }
+
+    /// Detect a double-'g' press (gg) within a short window.
+    fn is_double_g(&mut self) -> bool {
+        let now = Instant::now();
+        let double = match self.last_g_press {
+            Some(t) => now.duration_since(t) < std::time::Duration::from_millis(500),
+            None => false,
+        };
+        self.last_g_press = Some(now);
+        double
+    }
+
+    /// Number of unique MCP servers shown in the MCPs sidebar panel.
+    fn unique_mcp_count(&self) -> usize {
+        self.agents
+            .iter()
+            .flat_map(|a| a.mcps.iter())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
+
+    /// Number of unique skills shown in the Skills sidebar panel.
+    fn unique_skill_count(&self) -> usize {
+        self.agents
+            .iter()
+            .flat_map(|a| a.skills.iter())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
+
+    /// Number of agents shown in the Agents sidebar panel (non-completed).
+    fn agent_panel_count(&self) -> usize {
+        self.agents
+            .iter()
+            .filter(|a| a.status != AgentStatus::Completed)
+            .count()
+    }
+
+    /// Convert a character index into a byte index within `input`.
+    fn input_char_to_byte(&self, char_idx: usize) -> usize {
+        self.input
+            .char_indices()
+            .nth(char_idx)
+            .map(|(b, _)| b)
+            .unwrap_or(self.input.len())
+    }
+
+    /// Insert a character at the cursor position and advance the cursor.
+    fn input_insert_char(&mut self, c: char) {
+        let byte_idx = self.input_char_to_byte(self.input_cursor);
+        self.input.insert(byte_idx, c);
+        self.input_cursor += 1;
+    }
+
+    /// Delete the character before the cursor (Backspace).
+    fn input_delete_before(&mut self) {
+        if self.input_cursor == 0 {
+            return;
+        }
+        let byte_idx = self.input_char_to_byte(self.input_cursor);
+        let prev_len = self.input[..byte_idx]
+            .chars()
+            .next_back()
+            .map(|c| c.len_utf8())
+            .unwrap_or(0);
+        self.input.replace_range(byte_idx - prev_len..byte_idx, "");
+        self.input_cursor -= 1;
+    }
+
+    /// Delete the character at the cursor (Delete).
+    fn input_delete_at(&mut self) {
+        let byte_idx = self.input_char_to_byte(self.input_cursor);
+        if byte_idx >= self.input.len() {
+            return;
+        }
+        let next_len = self.input[byte_idx..]
+            .chars()
+            .next()
+            .map(|c| c.len_utf8())
+            .unwrap_or(0);
+        self.input.replace_range(byte_idx..byte_idx + next_len, "");
+    }
+
+    /// Move the cursor to the start of the previous word.
+    fn input_move_word_left(&mut self) {
+        let byte_idx = self.input_char_to_byte(self.input_cursor);
+        let before: Vec<char> = self.input[..byte_idx].chars().collect();
+        let mut i = before.len();
+        // Skip trailing whitespace.
+        while i > 0 && before[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        // Skip the word.
+        while i > 0 && !before[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        self.input_cursor = i;
+    }
+
+    /// Move the cursor to the start of the next word.
+    fn input_move_word_right(&mut self) {
+        let byte_idx = self.input_char_to_byte(self.input_cursor);
+        let after: Vec<char> = self.input[byte_idx..].chars().collect();
+        let mut i = 0;
+        // Skip the current word.
+        while i < after.len() && !after[i].is_whitespace() {
+            i += 1;
+        }
+        // Skip whitespace.
+        while i < after.len() && after[i].is_whitespace() {
+            i += 1;
+        }
+        self.input_cursor = (self.input_cursor + i).min(self.input.chars().count());
+    }
+
+    /// Delete the word before the cursor (Ctrl+W).
+    fn input_delete_word_before(&mut self) {
+        let old_cursor = self.input_cursor;
+        self.input_move_word_left();
+        let new_cursor = self.input_cursor;
+        let start_byte = self.input_char_to_byte(new_cursor);
+        let end_byte = self.input_char_to_byte(old_cursor);
+        self.input.replace_range(start_byte..end_byte, "");
+        self.input_cursor = new_cursor;
+    }
+
+    /// Delete from the start of the line to the cursor (Ctrl+U).
+    fn input_delete_to_start(&mut self) {
+        let byte_idx = self.input_char_to_byte(self.input_cursor);
+        self.input.replace_range(0..byte_idx, "");
+        self.input_cursor = 0;
+    }
+
+    /// Delete from the cursor to the end of the line (Ctrl+K).
+    fn input_delete_to_end(&mut self) {
+        let byte_idx = self.input_char_to_byte(self.input_cursor);
+        self.input.truncate(byte_idx);
     }
 
     /// Recompute the fuzzy command palette matches based on the current input.
@@ -1977,6 +2310,7 @@ impl App {
                 Some(&"pop") => {
                     if let Some(saved) = self.stash_stack.pop() {
                         self.input = saved;
+                        self.input_cursor = self.input.chars().count();
                         self.push_msg("> /stash pop — restored prompt.");
                     } else {
                         self.push_msg("> /stash pop — nothing stashed.");
@@ -1998,6 +2332,7 @@ impl App {
                     } else {
                         self.stash_stack.push(self.input.clone());
                         self.input.clear();
+                        self.input_cursor = 0;
                         self.push_msg(format!(
                             "> /stash — saved ({} stashed).",
                             self.stash_stack.len()
@@ -2069,6 +2404,7 @@ impl App {
         self.open_file_in_editor(&tmp);
         if let Ok(contents) = std::fs::read_to_string(&tmp) {
             self.input = contents.trim_end_matches('\n').to_string();
+            self.input_cursor = self.input.chars().count();
         }
         let _ = std::fs::remove_file(&tmp);
     }
@@ -2659,11 +2995,21 @@ fn fuzzy_score(query: &str, candidate: &str) -> Option<u32> {
 
 /// Panel 2: MCPs — connected MCP server names.
 fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
-    let unique_mcps: std::collections::BTreeSet<&str> = app
-        .agents
-        .iter()
-        .flat_map(|a| a.mcps.iter().map(|s| s.as_str()))
-        .collect();
+    let unique_mcps: Vec<&str> = {
+        let set: std::collections::BTreeSet<&str> = app
+            .agents
+            .iter()
+            .flat_map(|a| a.mcps.iter().map(|s| s.as_str()))
+            .collect();
+        set.into_iter().collect()
+    };
+
+    let focused = app.focus == Focus::Mcps;
+    let border_color = if focused {
+        app.theme.accent()
+    } else {
+        Color::Magenta
+    };
 
     let items: Vec<ListItem> = if unique_mcps.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
@@ -2673,7 +3019,18 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
     } else {
         unique_mcps
             .iter()
-            .map(|mcp| ListItem::new(Line::from(Span::raw(*mcp))))
+            .enumerate()
+            .map(|(i, mcp)| {
+                let style = if focused && i == app.mcp_panel_index {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(app.theme.accent())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(Span::styled(*mcp, style)))
+            })
             .collect()
     };
 
@@ -2681,8 +3038,8 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::Magenta))
-            .title(" MCPs "),
+            .border_style(Style::default().fg(border_color))
+            .title(" (2) MCPs "),
     );
 
     f.render_widget(list, area);
@@ -2690,11 +3047,21 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
 
 /// Panel 3: Skills — loaded skill names.
 fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
-    let unique_skills: std::collections::BTreeSet<&str> = app
-        .agents
-        .iter()
-        .flat_map(|a| a.skills.iter().map(|s| s.as_str()))
-        .collect();
+    let unique_skills: Vec<&str> = {
+        let set: std::collections::BTreeSet<&str> = app
+            .agents
+            .iter()
+            .flat_map(|a| a.skills.iter().map(|s| s.as_str()))
+            .collect();
+        set.into_iter().collect()
+    };
+
+    let focused = app.focus == Focus::Skills;
+    let border_color = if focused {
+        app.theme.accent()
+    } else {
+        Color::Green
+    };
 
     let items: Vec<ListItem> = if unique_skills.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
@@ -2704,7 +3071,18 @@ fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
     } else {
         unique_skills
             .iter()
-            .map(|skill| ListItem::new(Line::from(Span::raw(*skill))))
+            .enumerate()
+            .map(|(i, skill)| {
+                let style = if focused && i == app.skill_panel_index {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(app.theme.accent())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(Span::styled(*skill, style)))
+            })
             .collect()
     };
 
@@ -2712,8 +3090,8 @@ fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::Green))
-            .title(" Skills "),
+            .border_style(Style::default().fg(border_color))
+            .title(" (3) Skills "),
     );
 
     f.render_widget(list, area);
@@ -2730,6 +3108,13 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
         .filter(|a| a.status != AgentStatus::Completed)
         .collect();
 
+    let focused = app.focus == Focus::Agents;
+    let border_color = if focused {
+        app.theme.accent()
+    } else {
+        Color::Yellow
+    };
+
     let items: Vec<ListItem> = if display_agents.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             "(none)",
@@ -2738,7 +3123,9 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
     } else {
         display_agents
             .iter()
-            .map(|a| {
+            .enumerate()
+            .map(|(i, a)| {
+                let selected = focused && i == app.agent_panel_index;
                 let active = a.name == app.active_agent;
                 let (dot, dot_color) = match &a.status {
                     AgentStatus::Working => ("🟢", Color::Green),
@@ -2757,6 +3144,14 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                     AgentStatus::WaitingForSubAgent => "waiting",
                     AgentStatus::Completed => "done",
                     AgentStatus::Error(_) => "error",
+                };
+                let item_style = if selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(app.theme.accent())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(
@@ -2793,6 +3188,7 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                     Span::styled(format!(" [{}]", role), Style::default().fg(Color::DarkGray)),
                     Span::styled(format!(" ({})", status_str), Style::default().fg(dot_color)),
                 ]))
+                .style(item_style)
             })
             .collect()
     };
@@ -2801,8 +3197,8 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::Yellow))
-            .title(" Agents "),
+            .border_style(Style::default().fg(border_color))
+            .title(" (4) Agents "),
     );
 
     f.render_widget(list, area);
@@ -3008,7 +3404,12 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    let title = format!(" \u{1f4ac} Chat [{}] ", app.session_name);
+    let title = format!(" (1) \u{1f4ac} Chat [{}] ", app.session_name);
+    let chat_border = if app.focus == Focus::Chat {
+        app.theme.accent()
+    } else {
+        Color::DarkGray
+    };
 
     // Instead of using Paragraph::scroll() — which can leave content hidden when
     // wrapping creates more visual lines than logical ones — we pre-select the
@@ -3026,7 +3427,7 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(app.theme.accent()))
+                .border_style(Style::default().fg(chat_border))
                 .title(title),
         )
         .scroll((0, 0))
@@ -3803,7 +4204,12 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
     let title = if let Some(flow) = &app.init_flow {
         format!(" Init — {} ", flow.prompt())
     } else {
-        " Input ".to_string()
+        " (5) Input ".to_string()
+    };
+    let input_border = if app.focus == Focus::Input {
+        app.theme.accent()
+    } else {
+        Color::DarkGray
     };
 
     let paragraph = Paragraph::new(rendered)
@@ -3811,7 +4217,7 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(app.theme.accent()))
+                .border_style(Style::default().fg(input_border))
                 .title(title),
         )
         .scroll((scroll_offset as u16, 0))
@@ -3820,28 +4226,34 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
 
     f.render_widget(paragraph, area);
 
-    // Cursor: position at the end of the last logical line, accounting for wrap.
-    let last_line_idx = lines.len().saturating_sub(1);
-    let last_line = lines[last_line_idx];
-    let last_line_len = last_line.chars().count();
-    let last_w = if last_line_idx == 0 {
+    // Cursor: position at `input_cursor` (char index), accounting for wrap.
+    let cursor_char = app.input_cursor.min(app.input.chars().count());
+    // Find the logical line containing the cursor and the char offset within it.
+    let mut remaining = cursor_char;
+    let mut cursor_line_idx = 0usize;
+    let mut col_in_line = 0usize;
+    for (i, line) in lines.iter().enumerate() {
+        let line_chars = line.chars().count();
+        if remaining <= line_chars {
+            cursor_line_idx = i;
+            col_in_line = remaining;
+            break;
+        }
+        remaining -= line_chars + 1; // +1 for the '\n' separator
+        cursor_line_idx = i + 1;
+    }
+    let cursor_w = if cursor_line_idx == 0 {
         first_line_width
     } else {
         rest_line_width
     };
-    // Visual row of the cursor within the last logical line (0-based).
-    // Integer division: when the line fills the width exactly, the cursor sits
-    // at the start of the next wrapped row. `checked_div` handles `last_w == 0`.
-    let cursor_visual_in_line = last_line_len.checked_div(last_w).unwrap_or(0);
+    // Visual row of the cursor within its logical line (0-based).
+    let cursor_visual_in_line = col_in_line.checked_div(cursor_w).unwrap_or(0);
     // Column within the wrapped row (0-based), plus prompt/indent offset.
-    let col_in_row = if last_w == 0 {
-        0
-    } else {
-        last_line_len % last_w
-    };
-    // Visual row of the last logical line start (sum of previous lines' visual rows).
-    let last_line_start: usize = visual_rows[..last_line_idx].iter().sum();
-    let cursor_visual = last_line_start + cursor_visual_in_line;
+    let col_in_row = col_in_line.checked_rem(cursor_w).unwrap_or(0);
+    // Visual row of the cursor's logical line start (sum of previous lines' visual rows).
+    let cursor_line_start: usize = visual_rows[..cursor_line_idx].iter().sum();
+    let cursor_visual = cursor_line_start + cursor_visual_in_line;
     let cursor_row = area.y + 1 + (cursor_visual.saturating_sub(scroll_offset)) as u16;
     let cursor_col = area.x + 1 + 3 + col_in_row as u16;
     f.set_cursor_position((cursor_col, cursor_row));
@@ -4119,5 +4531,184 @@ mod tests {
     #[test]
     fn fuzzy_empty_query_matches_everything() {
         assert!(fuzzy_score("", "/help").is_some());
+    }
+
+    /// Build an `App` with empty input for testing cursor helpers.
+    fn test_app() -> App {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        App::new(cmd_tx, event_rx, false, &Config::default())
+    }
+
+    #[test]
+    fn input_insert_char_advances_cursor() {
+        let mut app = test_app();
+        app.input = String::from("hola");
+        app.input_cursor = 2;
+        app.input_insert_char('X');
+        assert_eq!(app.input, "hoXla");
+        assert_eq!(app.input_cursor, 3);
+    }
+
+    #[test]
+    fn input_insert_char_handles_multibyte() {
+        let mut app = test_app();
+        app.input = String::from("héllo");
+        app.input_cursor = 1; // after 'h'
+        app.input_insert_char('X');
+        assert_eq!(app.input, "hXéllo");
+        assert_eq!(app.input_cursor, 2);
+    }
+
+    #[test]
+    fn input_delete_before_removes_char() {
+        let mut app = test_app();
+        app.input = String::from("hola");
+        app.input_cursor = 4;
+        app.input_delete_before();
+        assert_eq!(app.input, "hol");
+        assert_eq!(app.input_cursor, 3);
+    }
+
+    #[test]
+    fn input_delete_before_at_start_is_noop() {
+        let mut app = test_app();
+        app.input = String::from("hola");
+        app.input_cursor = 0;
+        app.input_delete_before();
+        assert_eq!(app.input, "hola");
+        assert_eq!(app.input_cursor, 0);
+    }
+
+    #[test]
+    fn input_delete_before_handles_multibyte() {
+        let mut app = test_app();
+        app.input = String::from("héllo");
+        app.input_cursor = 2; // after 'é'
+        app.input_delete_before();
+        assert_eq!(app.input, "hllo");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn input_delete_at_removes_char_after_cursor() {
+        let mut app = test_app();
+        app.input = String::from("hola");
+        app.input_cursor = 1;
+        app.input_delete_at();
+        assert_eq!(app.input, "hla");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn input_delete_at_at_end_is_noop() {
+        let mut app = test_app();
+        app.input = String::from("hola");
+        app.input_cursor = 4;
+        app.input_delete_at();
+        assert_eq!(app.input, "hola");
+    }
+
+    #[test]
+    fn input_move_word_left_jumps_to_previous_word() {
+        let mut app = test_app();
+        app.input = String::from("hola mundo rust");
+        app.input_cursor = 15; // end
+        app.input_move_word_left();
+        assert_eq!(app.input_cursor, 11); // start of "rust"
+        app.input_move_word_left();
+        assert_eq!(app.input_cursor, 5); // start of "mundo"
+    }
+
+    #[test]
+    fn input_move_word_right_jumps_to_next_word() {
+        let mut app = test_app();
+        app.input = String::from("hola mundo rust");
+        app.input_cursor = 0;
+        app.input_move_word_right();
+        assert_eq!(app.input_cursor, 5); // start of "mundo"
+        app.input_move_word_right();
+        assert_eq!(app.input_cursor, 11); // start of "rust"
+    }
+
+    #[test]
+    fn input_delete_word_before_removes_previous_word() {
+        let mut app = test_app();
+        app.input = String::from("hola mundo");
+        app.input_cursor = 11;
+        app.input_delete_word_before();
+        assert_eq!(app.input, "hola ");
+        assert_eq!(app.input_cursor, 5);
+    }
+
+    #[test]
+    fn input_delete_to_start_clears_prefix() {
+        let mut app = test_app();
+        app.input = String::from("hola mundo");
+        app.input_cursor = 5;
+        app.input_delete_to_start();
+        assert_eq!(app.input, "mundo");
+        assert_eq!(app.input_cursor, 0);
+    }
+
+    #[test]
+    fn input_delete_to_end_clears_suffix() {
+        let mut app = test_app();
+        app.input = String::from("hola mundo");
+        app.input_cursor = 5;
+        app.input_delete_to_end();
+        assert_eq!(app.input, "hola ");
+        assert_eq!(app.input_cursor, 5);
+    }
+
+    #[test]
+    fn input_char_to_byte_maps_char_index_to_byte() {
+        let mut app = test_app();
+        app.input = String::from("héllo");
+        // char index 1 ('é') starts at byte 1.
+        assert_eq!(app.input_char_to_byte(1), 1);
+        // char index 2 ('l') starts at byte 3.
+        assert_eq!(app.input_char_to_byte(2), 3);
+        // Out-of-range maps to the end.
+        assert_eq!(app.input_char_to_byte(99), app.input.len());
+    }
+
+    #[test]
+    fn typing_c_with_nonempty_input_inserts_char_not_focus() {
+        // Regression: 'c' must be typed, not switch focus to Chat, when input
+        // already has text.
+        let mut app = test_app();
+        app.input = String::from("he");
+        app.input_cursor = 2;
+        app.focus = Focus::Input;
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(app.input, "hec");
+        assert_eq!(app.focus, Focus::Input);
+    }
+
+    #[test]
+    fn c_with_empty_input_switches_to_chat() {
+        // Legacy letter binding: with empty input, 'c' switches to Chat.
+        let mut app = test_app();
+        app.focus = Focus::Input;
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Chat);
+    }
+
+    #[test]
+    fn alt_1_switches_focus_to_chat() {
+        let mut app = test_app();
+        app.input = String::from("some text");
+        app.focus = Focus::Input;
+        app.handle_key(KeyCode::Char('1'), KeyModifiers::ALT);
+        assert_eq!(app.focus, Focus::Chat);
+    }
+
+    #[test]
+    fn alt_5_switches_focus_to_input() {
+        let mut app = test_app();
+        app.focus = Focus::Chat;
+        app.handle_key(KeyCode::Char('5'), KeyModifiers::ALT);
+        assert_eq!(app.focus, Focus::Input);
     }
 }

@@ -41,6 +41,12 @@ pub enum Action {
     FocusSidebar,
     /// Focus the chat area.
     FocusChat,
+    /// Focus the MCPs sidebar panel.
+    FocusMcps,
+    /// Focus the Skills sidebar panel.
+    FocusSkills,
+    /// Focus the Agents sidebar panel.
+    FocusAgents,
     /// Clear the current input buffer.
     ClearInput,
     /// Open the prompt queue popup.
@@ -166,9 +172,33 @@ impl Default for Keymap {
             Action::Deny,
             vec![KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
         );
-        km.bind(Action::FocusInput, vec![key_event('i', false)]);
+        km.bind(
+            Action::FocusInput,
+            vec![
+                key_event('i', false),
+                KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT),
+            ],
+        );
         km.bind(Action::FocusSidebar, vec![key_event('s', false)]);
-        km.bind(Action::FocusChat, vec![key_event('c', false)]);
+        km.bind(
+            Action::FocusChat,
+            vec![
+                key_event('c', false),
+                KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT),
+            ],
+        );
+        km.bind(
+            Action::FocusMcps,
+            vec![KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT)],
+        );
+        km.bind(
+            Action::FocusSkills,
+            vec![KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT)],
+        );
+        km.bind(
+            Action::FocusAgents,
+            vec![KeyEvent::new(KeyCode::Char('4'), KeyModifiers::ALT)],
+        );
         km.bind(Action::ClearInput, vec![key_event('c', true)]);
         km.bind(Action::OpenPromptQueue, vec![key_event('q', true)]);
         km.bind(Action::QuickSlot1, vec![key_event('1', true)]);
@@ -216,6 +246,9 @@ pub fn format_keymap_table() -> String {
         (Action::FocusInput, "Enfocar input"),
         (Action::FocusSidebar, "Enfocar sidebar"),
         (Action::FocusChat, "Enfocar chat"),
+        (Action::FocusMcps, "Enfocar panel MCPs"),
+        (Action::FocusSkills, "Enfocar panel Skills"),
+        (Action::FocusAgents, "Enfocar panel Agents"),
         (Action::ClearInput, "Limpiar input"),
         (Action::OpenPromptQueue, "Cola de prompts"),
         (Action::QuickSlot1, "Quick slot 1"),
@@ -278,6 +311,9 @@ fn parse_action(name: &str) -> Option<Action> {
         Action::FocusInput,
         Action::FocusSidebar,
         Action::FocusChat,
+        Action::FocusMcps,
+        Action::FocusSkills,
+        Action::FocusAgents,
         Action::ClearInput,
         Action::OpenPromptQueue,
         Action::QuickSlot1,
@@ -420,6 +456,45 @@ mod tests {
         assert!(table.contains("Enviar mensaje"));
         assert!(table.contains("Salir"));
         assert!(table.contains("Ctrl+"));
+    }
+
+    #[test]
+    fn alt_1_to_5_switch_focus() {
+        let km = Keymap::default();
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT),
+            Action::FocusChat
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT),
+            Action::FocusMcps
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT),
+            Action::FocusSkills
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Char('4'), KeyModifiers::ALT),
+            Action::FocusAgents
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT),
+            Action::FocusInput
+        ));
+    }
+
+    #[test]
+    fn focus_actions_keep_legacy_letter_bindings() {
+        let km = Keymap::default();
+        assert!(km.matches(key_event('c', false), Action::FocusChat));
+        assert!(km.matches(key_event('i', false), Action::FocusInput));
+    }
+
+    #[test]
+    fn parse_action_accepts_focus_actions() {
+        assert_eq!(parse_action("FocusMcps"), Some(Action::FocusMcps));
+        assert_eq!(parse_action("focus_skills"), Some(Action::FocusSkills));
+        assert_eq!(parse_action("FocusAgents"), Some(Action::FocusAgents));
     }
 
     #[test]

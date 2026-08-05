@@ -784,3 +784,93 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - [x] `cargo doc --no-deps` genera sin errores.
 - [x] Documentación de nuevas config (keymap, compaction, plugins, providers) actualizada.
 - [x] Rama `develop` con commits atómicos por tarea, cada uno pasando fmt/clippy/test.
+
+### FASE 8 — Navegación por ventanas (focus)
+
+**Objetivo:** Introducir un modelo de foco de 5 ventanas en la TUI: (1) Chat, (2) MCPs, (3) Skills, (4) Agents, (5) Input. Cambio de ventana con Alt+1..Alt+5. Cada ventana tiene su propia navegación: Input con atajos de shell para mover el cursor dentro de la caja de texto; Chat, MCPs, Skills y Agents con flechas de cursor y atajos de Vim.
+
+#### Tarea 8.1: Enum Focus y campo de estado en App
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (enum `Focus`, campos de estado en `App` y `App::new`)
+
+- [ ] **Paso 1:** Añadir `enum Focus { Chat, Mcps, Skills, Agents, Input }` en `src/tui/app.rs`.
+- [ ] **Paso 2:** Añadir campo `focus: Focus` en `App`, inicializado a `Focus::Input` en `App::new`.
+- [ ] **Paso 3:** Añadir campo `input_cursor: usize` (índice de carácter dentro de `input`) para edición de shell.
+- [ ] **Paso 4:** Añadir índices de selección para los paneles del sidebar: `mcp_panel_index`, `skill_panel_index`, `agent_panel_index` (inicializados a 0).
+
+**Criterio de aceptación:** `App` expone `focus`, `input_cursor` y los tres índices de panel, todos con valores iniciales correctos.
+
+#### Tarea 8.2: Acciones de foco y bindings Alt+1..Alt+5 en keymap
+
+**Archivos:**
+- Modificar: `src/tui/keymap.rs` (variantes de `Action`, bindings en `Keymap::default()`, `format_keymap_table()`, `parse_action()`, tests)
+
+- [ ] **Paso 1:** Añadir variantes `Action::FocusChat`, `Action::FocusMcps`, `Action::FocusSkills`, `Action::FocusAgents`, `Action::FocusInput` al enum `Action`.
+- [ ] **Paso 2:** En `Keymap::default()`, enlazarlas a Alt+1, Alt+2, Alt+3, Alt+4, Alt+5 (KeyEvent con `KeyModifiers::ALT`).
+- [ ] **Paso 3:** Añadirlas a `format_keymap_table()` (filas con descripción) y a la lista de `parse_action()`.
+- [ ] **Paso 4:** Añadir tests unitarios para los nuevos bindings (p.ej. `km.matches(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT), Action::FocusChat)`).
+
+**Criterio de aceptación:** Alt+1..Alt+5 resuelven a las acciones de foco; aparecen en la tabla which-key y en `parse_action`; los tests unitarios pasan.
+
+#### Tarea 8.3: Reestructurar handle_key para enrutar por foco
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (`App::handle_key`, línea 921)
+
+- [ ] **Paso 1:** Tras los checks de overlays (which_key, approval, question, init_flow, timeline, mcps list, model picker, diff viewer, prompt queue), añadir el cambio de foco con Alt+1..5 (siempre disponible).
+- [ ] **Paso 2:** Mantener las acciones globales del keymap (Quit, OpenWhichKey, ToggleSidebar, ToggleDiffViewer, OpenModelPicker, OpenEditor, OpenPromptQueue, QuickSlots).
+- [ ] **Paso 3:** Añadir enrutado por `self.focus` a los métodos `handle_input_key`, `handle_chat_key`, `handle_mcp_panel_key`, `handle_skill_panel_key`, `handle_agent_panel_key`.
+- [ ] **Paso 4:** Mover el manejo de ScrollUp/ScrollDown/PageUp/PageDown y ClearInput fuera de la sección global (pasan a los handlers de foco).
+
+**Criterio de aceptación:** `handle_key` cambia de foco con Alt+1..5, ejecuta acciones globales y delega el resto al handler de la ventana enfocada.
+
+#### Tarea 8.4: Edición de shell en Input (5)
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (`handle_input_key`, helpers de cursor, `render_input` línea 3759)
+
+- [ ] **Paso 1:** Implementar `handle_input_key` con cursor editable: Left/Right mueven el cursor un carácter; Home/End inicio/fin de línea; Ctrl+A / Ctrl+E inicio/fin; Ctrl+W borrar palabra hacia atrás; Ctrl+U borrar hasta el inicio; Ctrl+K borrar hasta el final; Alt+Left / Ctrl+Left y Alt+Right / Ctrl+Right mover por palabra; Backspace borrar carácter anterior al cursor; Delete borrar carácter en el cursor; Up/Down historial de entrada (comportamiento existente); Char insertar en la posición del cursor; Enter/Tab/Esc comportamiento existente.
+- [ ] **Paso 2:** Añadir métodos helper de cursor: `input_char_to_byte`, `input_insert_char`, `input_delete_before`, `input_delete_at`, `input_move_word_left`, `input_move_word_right`, `input_delete_word_before`.
+- [ ] **Paso 3:** Actualizar `render_input` (línea 3759) para colocar el cursor en `input_cursor` (no siempre al final), respetando el wrap de líneas.
+
+**Criterio de aceptación:** En Input, los atajos de shell (Ctrl+A/E/W/U/K, Left/Right, Home/End, Alt+Left/Right, Backspace, Delete) funcionan y el cursor se mueve dentro de la caja.
+
+#### Tarea 8.5: Navegación Vim en Chat (1)
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (`handle_chat_key`)
+
+- [ ] **Paso 1:** Implementar `handle_chat_key`: j / Down scroll abajo (`chat_scroll += 1`); k / Up scroll arriba (`chat_scroll` saturating_sub 1); gg ir al inicio (`chat_scroll = valor máximo`); G ir al final (`chat_scroll = 0`); PageUp / Ctrl+U +10; PageDown / Ctrl+D -10; Home/End inicio/fin.
+
+**Criterio de aceptación:** En Chat, las flechas y atajos Vim (j/k, gg/G) desplazan el scroll correctamente.
+
+#### Tarea 8.6: Navegación Vim en MCPs (2), Skills (3), Agents (4)
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (`handle_mcp_panel_key`, `handle_skill_panel_key`, `handle_agent_panel_key`, `render_mcp_panel` línea 2661, `render_skill_panel` línea 2692, `render_agent_panel` línea 2726)
+
+- [ ] **Paso 1:** Implementar `handle_mcp_panel_key`, `handle_skill_panel_key`, `handle_agent_panel_key`: j / Down índice +1 (clamp a len-1); k / Up índice -1 (saturating); gg índice 0; G índice len-1; Home/End inicio/fin.
+- [ ] **Paso 2:** Actualizar `render_mcp_panel` (línea 2661), `render_skill_panel` (línea 2692) y `render_agent_panel` (línea 2726) para resaltar el elemento seleccionado según su índice.
+
+**Criterio de aceptación:** En MCPs, Skills y Agents, las flechas y atajos Vim (j/k, gg/G) mueven la selección y el elemento activo se resalta.
+
+#### Tarea 8.7: Números (1)-(5) en títulos de ventana e indicador de foco
+
+**Archivos:**
+- Modificar: `src/tui/app.rs` (títulos de ventana en `render_chat` línea 2853, `render_mcp_panel` línea 2661, `render_skill_panel` línea 2692, `render_agent_panel` línea 2726, `render_input` línea 3759)
+
+- [ ] **Paso 1:** Añadir números a los títulos: Chat → " (1) Chat ", MCPs → " (2) MCPs ", Skills → " (3) Skills ", Agents → " (4) Agents ", Input → " (5) Input ".
+- [ ] **Paso 2:** Resaltar visualmente la ventana enfocada (p.ej. borde con color accent) en Chat, MCPs, Skills, Agents e Input.
+
+**Criterio de aceptación:** Los títulos de las 5 ventanas muestran (1)-(5) y la ventana enfocada se distingue visualmente.
+
+**Criterios de aceptación de FASE 8:**
+- [ ] Alt+1..Alt+5 cambian el foco entre Chat, MCPs, Skills, Agents e Input.
+- [ ] En Input, los atajos de shell (Ctrl+A/E/W/U/K, Left/Right, Home/End, Alt+Left/Right, Backspace, Delete) funcionan y el cursor se mueve dentro de la caja.
+- [ ] En Chat, MCPs, Skills y Agents, las flechas y atajos Vim (j/k, gg/G) funcionan.
+- [ ] Los títulos de las 5 ventanas muestran (1)-(5).
+- [ ] `cargo fmt --check && cargo clippy && cargo test` pasan.
+- [ ] Tests unitarios nuevos en keymap.rs y app.rs.
+
+**Dependencia:** FASE 8 depende de FASE 4 (keymap/which-key) y de la infraestructura TUI existente en `src/tui/app.rs`.
