@@ -1,49 +1,121 @@
-<p align="center">
-  <img src="assets/anacleto-ai-agent-tool.png" alt="Anacleto TUI" width="100%" />
-</p>
+<div align="center">
 
-<h1 align="center">Anacleto</h1>
+<img src="assets/anacleto-ai-agent-tool.png" alt="Anacleto TUI" width="100%" />
 
-<p align="center">
-  <strong>Agent orchestration engine in Rust</strong> — a terminal-first way to run trees of agents and subagents, with clean separation of skills, MCP servers, and permissions.
-</p>
+# Anacleto
 
-<p align="center">
-  <a href="https://crates.io/crates/anacleto"><img alt="Crates.io" src="https://img.shields.io/crates/v/anacleto.svg"></a>
-  <a href="https://docs.rs/anacleto"><img alt="docs.rs" src="https://img.shields.io/docsrs/anacleto"></a>
-  <a href="https://github.com/atareao/anacleto/actions"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/atareao/anacleto/ci.yml"></a>
-  <a href="https://github.com/atareao/anacleto/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/atareao/anacleto"></a>
-  <a href="https://github.com/atareao/anacleto"><img alt="Rust version" src="https://img.shields.io/badge/rust-1.85+-blue"></a>
-</p>
+**Agent orchestration engine in Rust** — a terminal-first way to run trees of
+agents and subagents, with clean separation of skills, tools, MCP servers,
+and permissions.
+
+[![Crates.io](https://img.shields.io/crates/v/anacleto)](https://crates.io/crates/anacleto)
+[![Crates.io Downloads](https://img.shields.io/crates/d/anacleto)](https://crates.io/crates/anacleto)
+[![docs.rs](https://img.shields.io/docsrs/anacleto)](https://docs.rs/anacleto)
+[![CI](https://img.shields.io/github/actions/workflow/status/atareao/anacleto/ci.yml?branch=main)](https://github.com/atareao/anacleto/actions/workflows/ci.yml)
+[![Codecov](https://img.shields.io/codecov/c/github/atareao/anacleto)](https://codecov.io/gh/atareao/anacleto)
+[![License: MIT](https://img.shields.io/github/license/atareao/anacleto)](https://github.com/atareao/anacleto/blob/main/LICENSE)
+[![MSRV: 1.85+](https://img.shields.io/badge/rust-1.85%2B-blue)](https://github.com/atareao/anacleto/blob/main/rust-toolchain.toml)
+
+[Quickstart](#quickstart) • [Features](#features) • [Architecture](#architecture) •
+[Configuration](#configuration) • [Development](#development) • [Contributing](#contributing)
+
+</div>
 
 > [!WARNING]
-> Anacleto is in **early development**. The core architecture is stable, but APIs and the configuration schema may change without notice. Do not rely on it in production yet.
+> Anacleto is in **early development**. The core architecture is stable, but
+> the APIs and configuration schema may change without notice. Do not rely on
+> it in production yet.
 
 ---
 
 ## Table of contents
 
+- [Why Anacleto?](#why-anacleto)
 - [Features](#features)
 - [Quickstart](#quickstart)
+  - [1. Install](#1-install)
+  - [2. Configure](#2-configure)
+  - [3. Run](#3-run)
 - [Architecture](#architecture)
+  - [Module layout](#module-layout)
+  - [Design decisions](#design-decisions)
 - [Configuration](#configuration)
+  - [Models](#models)
+  - [LLM provider resolution](#llm-provider-resolution)
+  - [Agents](#agents)
+  - [Sessions](#sessions)
+  - [Extra settings](#extra-settings)
+- [Slash commands](#slash-commands)
 - [Development](#development)
+  - [Dependencies](#dependencies)
 - [Project status](#project-status)
+  - [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [Support](#support)
 - [License](#license)
+
+---
+
+## Why Anacleto?
+
+Running a single LLM conversation is easy. Orchestrating **a tree of agents** that
+collaborate on a complex task — each with its own skills, tools, MCP servers,
+and permissions — is not. Anacleto is a developer-first, terminal-native engine
+that makes that orchestration explicit and composable:
+
+- **Terminal-first.** No web UI, no browser tab — just a fast ratatui interface
+  that runs in the same process as the engine.
+- **Real separation of concerns.** Skills, tools, MCP servers, and permissions
+  are configured per agent, not bundled into the engine.
+- **Provider-agnostic.** Talk to Claude, GPT, Gemini, AWS Bedrock, Azure OpenAI,
+  OpenRouter, or a fully local Ollama model behind a single interface.
+- **Extensible.** A plugin system with hooks, custom tools, and custom slash
+  commands.
+- **Resilient by default.** Streaming, resumable sessions, prompt caching, and
+  retries with exponential backoff are built in from day one.
 
 ---
 
 ## Features
 
-- **Agent orchestration** — root agents delegate tasks to disposable subagents through a simple lifecycle: *create → work → reply → destroy*. Subagents cannot nest — they are fully independent of their parent.
-- **Skills** — Markdown + YAML frontmatter skills in the [Anthropic format], loaded dynamically from the filesystem per agent.
-- **MCP integration** — Model Context Protocol clients over [stdio or TCP] transports, referenced declaratively in config.
-- **Multi-LLM** — Anthropic (Claude), OpenAI (GPT), OpenRouter, and Ollama (fully local models).
-- **Permissions** — an allow-by-default / deny-explicitly model with rules configurable per agent.
-- **TUI** — a ratatui-based terminal interface with persistent event streaming, running in the same process as the engine.
-- **Session persistence** — SQLite via sqlx; sessions are resumable across restarts.
-- **Resilience** — exponential backoff with jitter for LLM, MCP, and subagent retries.
-- **Configurable context window** — a per-agent history limit, 50% of the model window by default.
+- **Agent orchestration** — root agents delegate tasks to disposable subagents
+  through a simple lifecycle: *create → work → reply → destroy*. Subagents
+  cannot nest; they are fully independent of their parent. Multiple **root
+  agents** are supported.
+- **Agents as Markdown** — each agent is a Markdown file with YAML frontmatter
+  holding the structural config and the body as the system prompt (the same
+  format skills use).
+- **Structured tools** — built-in tools with strict JSON schemas:
+  `read`, `grep`, `glob`, `webfetch`, `websearch`, `lsp_query` (Language Server
+  Protocol), and MCP resource tools.
+- **Skills** — Markdown + YAML frontmatter skills in the
+  [Anthropic format], loaded dynamically from the filesystem per agent.
+- **MCP integration** — Model Context Protocol clients over [stdio or TCP]
+  transports, referenced declaratively in config.
+- **Multi-LLM** — Anthropic (Claude), OpenAI (GPT), OpenRouter, AWS Bedrock,
+  Azure OpenAI, Google Gemini, and Ollama (fully local models).
+- **Prompt caching** — provider-aware caching breakpoints with an `auto`/`off`
+  mode and per-provider cost tracking.
+- **Extended thinking** — configurable Anthropic extended-thinking budget per
+  provider.
+- **Permissions** — allow-by-default / deny-explicitly model with rules
+  configurable per agent (`fs.*`, `net.http`, `command.run`, `mcp.use`,
+  `env.read`, `skill.use`).
+- **Plugins** — declarative plugin system with hooks
+  (`on_agent_spawn`, `on_tool_call`, `on_command`, `on_event`) and custom tool
+  registration, loaded from `~/.config/anacleto/plugins/`.
+- **Custom slash commands** — user-defined commands with `{env}`/`{file}`
+  templating.
+- **TUI** — a ratatui-based terminal interface with a keymap, which-key
+  menu, toasts, model picker, and diff viewer, running in the same process as
+  the engine.
+- **Session persistence** — SQLite via sqlx; sessions are resumable across
+  restarts, with fork/import/export and snapshot/rollback.
+- **Background jobs** — long-running work can be delegated to background jobs.
+- **Resilience** — exponential backoff with jitter for LLM, MCP, and subagent
+  retries.
+- **Configurable context window** — a per-agent history limit, 50% of the model
+  window by default, plus a `max_steps` turn cap.
 
 [Anthropic format]: https://docs.anthropic.com/en/docs/build-with-claude/tool-use
 [stdio or TCP]: https://github.com/modelcontextprotocol/modelcontextprotocol
@@ -54,7 +126,17 @@
 
 ### 1. Install
 
+Install from [crates.io](https://crates.io/crates/anacleto):
+
 ```sh
+cargo install anacleto
+```
+
+Or build from source:
+
+```sh
+git clone https://github.com/atareao/anacleto.git
+cd anacleto
 cargo install --path .
 ```
 
@@ -70,7 +152,8 @@ mkdir -p ~/.config/anacleto/
 cp docs/example-global-config.yaml ~/.config/anacleto/config.yaml
 ```
 
-API keys are read from environment variables using `${VAR}` syntax. Export them before running:
+API keys are read from environment variables using `${VAR}` syntax. Export them
+before running:
 
 ```sh
 export ANTHROPIC_API_KEY="sk-..."
@@ -78,9 +161,11 @@ export OPENAI_API_KEY="sk-..."
 ```
 
 > [!WARNING]
-> API keys are sensitive credentials. Use environment variables or a secrets manager — never commit keys to your repository or config files.
+> API keys are sensitive credentials. Use environment variables or a secrets
+> manager — never commit keys to your repository or config files.
 
-Optionally add a **project-level config** at `.anacleto/config.yaml` that merges on top of the global config.
+Optionally add a **project-level config** at `.anacleto/config.yaml` that merges
+on top of the global config.
 
 ### 3. Run
 
@@ -95,34 +180,47 @@ CLI flags:
 | `-c`, `--config <PATH>` | Path to a project config file (overrides auto-detection) |
 | `-d`, `--database <PATH>` | Database path (overrides config) |
 | `-v`, `--verbose` | Enable debug-level logging |
+| `--debug` | Show LLM request/response payloads in the TUI |
 
-See [`docs/user-guide.md`](docs/user-guide.md) for a full walkthrough.
+See [`docs/user-guide.md`](docs/user-guide.md) for a full walkthrough, or
+[`docs/example.md`](docs/example.md) for an end-to-end example.
 
 ---
 
 ## Architecture
 
+Anacleto is a single binary: the TUI and the orchestration engine run in the
+same process on separate Tokio tasks. Agents are **in-process async tasks**, not
+subprocesses — identity is decoupled from OS processes.
+
+### Module layout
+
 ```
 src/
 ├── main.rs            # Entrypoint, CLI argument parsing (clap)
 ├── lib.rs             # Module declarations
-├── agent/             # Agent/subagent types, lifecycle, communication, retries
+├── agent/             # Agent lifecycle, loader (Markdown frontmatter), retries
 ├── config/            # YAML config parsing, global + project merge, paths
 ├── db/                # SQLite persistence via sqlx
-├── engine/            # Orchestration loop (spawn, route, collect)
+├── engine/            # Orchestration loop, jobs, apply_patch, templates
 ├── error.rs           # Global error types (thiserror)
 ├── filesystem/        # Filesystem access helpers
-├── llm/               # LLM providers (Anthropic, OpenAI, OpenRouter, Ollama)
+├── llm/               # LLM providers (Anthropic, OpenAI, OpenRouter, Ollama,
+│                      #   Bedrock, Azure, Google) + templates
+├── lsp/               # Language Server Protocol queries
 ├── mcp/               # MCP client (JSON-RPC 2.0 over stdio/TCP)
 ├── permissions/       # Permission rules per agent/subagent
-├── shell/             # Shell command execution
+├── plugin/            # Plugin system with hooks and custom tools
+├── shell/             # Shell command execution + modern CLI tool inventory
 ├── skill/             # Skill loading (Anthropic Markdown format), execution
-└── tui/               # ratatui + crossterm terminal interface
+├── tools/             # Structured agent tools (read, grep, glob, web, lsp, mcp)
+└── tui/               # ratatui + crossterm interface (keymap, pickers, diff)
 ```
 
 ### Design decisions
 
-The project follows [Architecture Decision Records (ADRs)](docs/adr/); all eight are summarized here.
+The project follows [Architecture Decision Records (ADRs)](docs/adr/); all eight
+are summarized here.
 
 | ADR | Decision |
 |---|---|
@@ -141,8 +239,59 @@ The project follows [Architecture Decision Records (ADRs)](docs/adr/); all eight
 
 Two layers of YAML configuration are merged at startup:
 
-- **Global** — `~/.config/anacleto/config.yaml`, machine-wide defaults for all projects.
-- **Project** — `.anacleto/config.yaml` in the project root, merged on top of the global config. Agents with the same name override their global counterparts.
+- **Global** — `~/.config/anacleto/config.yaml`, machine-wide defaults for all
+  projects.
+- **Project** — `.anacleto/config.yaml` in the project root, merged on top of
+  the global config.
+
+### Models
+
+Each provider you configure becomes available to agents. API keys support
+`${VAR}` environment-variable interpolation and only providers you configure
+are enabled (Ollama always has a default):
+
+```yaml
+models:
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: "claude-sonnet-4-20250514"
+    context_window: 200000
+
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    model: "gpt-4o"
+    context_window: 128000
+
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+    model: "openai/gpt-4o"
+    context_window: 128000
+    base_url: "https://openrouter.ai/api/v1"
+
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "llama3.2"
+    context_window: 8192
+
+  bedrock:
+    api_key: "${AWS_ACCESS_KEY_ID}"
+    model: "anthropic.claude-sonnet"
+    context_window: 200000
+
+  azure:
+    api_key: "${AZURE_OPENAI_API_KEY}"
+    model: "gpt-4o"
+    context_window: 128000
+    base_url: "https://<resource>.openai.azure.com/"
+
+  google:
+    api_key: "${GOOGLE_API_KEY}"
+    model: "gemini-2.0-flash"
+    context_window: 200000
+
+  cache:
+    mode: auto   # or "off"
+```
 
 ### LLM provider resolution
 
@@ -155,35 +304,114 @@ Model names are matched to providers via prefix rules in the engine:
 | Contains `/` | OpenRouter (OpenAI-compatible) |
 | Anything else | Ollama |
 
-### Agent schema
+Vendor-specific providers (Bedrock, Azure, Google) are configured explicitly
+in the `models` section and referenced by their model name.
 
-```yaml
-agents:
-  - name: root
-    description: ".anacleto/agents/root.md"
-    model: "claude-sonnet-4"
-    skills:
-      - ".anacleto/skills/shell/"
-    mcps:
-      - filesystem
-    permissions:
-      deny:
-        - "command.run.sudo"
-    subagents:
-      - reviewer
-      - writer
+### Agents
+
+> [!IMPORTANT]
+> Agents are **no longer defined in `config.yaml`**. Each agent is a
+> self-contained Markdown file with YAML frontmatter, located in the
+> `agents/` directory:
+> - global: `~/.config/anacleto/agents/*.md`
+> - project: `.anacleto/agents/*.md`
+>
+> The frontmatter holds the structural config and the Markdown body is the
+> system prompt. Project agents override global agents with the same name.
+> Exactly one agent must declare `role: root`.
+
+Example (`.anacleto/agents/root.md`):
+
+```markdown
+---
+name: root
+description: Senior engineering agent
+role: root
+model: "claude-sonnet-4"
+skills:
+  - .anacleto/skills/shell/
+mcps: []
+permissions:
+  deny:
+    - "command.run.sudo"
+subagents:
+  - reviewer
+  - writer
+max_steps: 90
+---
+
+You are **Anacleto** ...
 ```
 
-> [!NOTE]
-> Subagents are fully independent — they do not inherit skills, MCPs, or permissions from their parent.
+Supported frontmatter fields:
 
-### Retry policy
+| Field | Description |
+|---|---|
+| `name` | Unique agent name |
+| `description` | Short human-readable summary |
+| `role` | `root` or `subagent` (default `subagent`) |
+| `model` | Model name resolved to a provider |
+| `skills` | Skill paths |
+| `mcps` | MCP server names |
+| `permissions` | `allow`/`deny` lists |
+| `subagents` | Subagent names (roots only) |
+| `max_steps` | Maximum LLM+tool turns per task |
+
+> [!NOTE]
+> Subagents are fully independent — they do not inherit skills, MCPs, or
+> permissions from their parent.
+
+### Sessions
+
+```yaml
+session:
+  history_limit_percent: 50   # % of context window for history
+  database_path: "~/.local/share/anacleto/sessions.db"
+  max_steps: 90              # default turn cap per task
+  debug: false               # show LLM payloads in the TUI
+  retry:
+    max_retries: 3
+    base_delay_ms: 1000
+    max_delay_ms: 30000
+```
 
 Retries use exponential backoff with jitter:
 
 ```
 delay = min(base_delay × 2^attempt × random(0.75, 1.25), max_delay)
 ```
+
+### Extra settings
+
+- **`shell.tools`** — override or extend the built-in catalog of modern CLI
+  tools (`bat`, `fd`, `rg`, `sd`, ...) that the agent is told to prefer.
+- **`keymap`** — override TUI keybindings.
+- **`editor`** — external editor command (overrides `$EDITOR`/`$VISUAL`).
+- **`model_picker`** — model picker dialog configuration.
+- **`workspaces`** — known workspace directories for the `/workspaces` command.
+- **`commands`** — custom slash commands with `{env}`/`{file}` templating.
+
+---
+
+## Slash commands
+
+The TUI ships with an extensive set of slash commands. Highlights:
+
+| Area | Commands |
+|---|---|
+| **Agents** | `/agents`, `/agent`, `/subagents`, `/skills`, `/mcps` |
+| **Models** | `/models` |
+| **Sessions** | `/resume`, `/delete`, `/rename`, `/fork`, `/export`, `/import`, `/share`, `/unshare`, `/timeline`, `/parent`, `/children` |
+| **Edit/undo** | `/undo`, `/redo`, `/stash` |
+| **Snapshots** | `/snapshot`, `/revert`, `/stage`, `/clear`, `/commit` |
+| **Context** | `/compact`, `/debug` |
+| **Build & jobs** | `/build`, `/jobs` |
+| **Workspace** | `/warp`, `/workspaces`, `/move`, `/worktree` |
+| **TUI/UX** | `/themes`, `/timestamps`, `/thinking`, `/editor`, `/ee`, `/copy`, `/export-editor` |
+| **Misc** | `/review`, `/init`, `/status`, `/exit` |
+
+> Run `/help` in the TUI to list all commands. Custom slash commands can be
+> added through the `commands` config key.
 
 ---
 
@@ -214,30 +442,74 @@ cargo fmt --check && cargo clippy && cargo test
 | `tower` | Middleware (retries, rate limiting) |
 | `clap` | CLI argument parsing |
 | `anyhow` + `thiserror` | Error handling |
-| `tracing` | Structured logging |
+| `futures` + `tokio-stream` | Async streams |
 | `uuid` | Session/agent ID generation |
+| `tracing` | Structured logging |
 | `chrono` | Date/time |
+| `rand` | Jitter for retry backoff |
+| `unicode-width` | TUI text width |
 
 ---
 
 ## Project status
 
-Active development. The core architecture is stable; APIs and the configuration schema may change.
+Active development. The core architecture is stable; APIs and the configuration
+schema may change.
 
 ### Roadmap
 
-- [x] Agent/subagent lifecycle
-- [x] TUI with ratatui
-- [x] Multi-LLM provider support
-- [x] MCP stdio/TCP clients
-- [x] Session persistence (SQLite)
-- [x] Permission system
+Evolution phases ([`PLAN.md`](PLAN.md)), with phases 1–7 now complete:
+
+- [x] **FASE 1** — orchestration (`task` tool, background jobs, session tree)
+- [x] **FASE 2** — context & memory (compaction, truncation)
+- [x] **FASE 3** — structured tools (`apply_patch`, `read`, `grep`, `glob`) & MCP
+- [x] **FASE 4** — TUI/UX (keymap, which-key, toasts, diff viewer)
+- [x] **FASE 5** — sessions & workflow (diff viewer, snapshots)
+- [x] **FASE 5.5** — active agent switching
+- [x] **FASE 6** — LLM providers, prompt caching, extended thinking
+- [x] **FASE 7** — extensibility (plugins, custom slash commands)
 - [ ] Window management and layout persistence in TUI
 - [ ] MCP server lifecycle management
 - [ ] Skill marketplace
 
 ---
 
+## Contributing
+
+Contributions are welcome! Please review the
+[`AGENTS.md`](AGENTS.md) for the project's conventions,
+[`TODO.md`](TODO.md) for known gaps, the [`docs/`](docs/) directory for
+design context, and [`PLAN.md`](PLAN.md) for the evolution plan.
+
+Before opening a pull request, make sure the project is clean:
+
+```sh
+cargo fmt --check && cargo clippy && cargo test
+```
+
+High-level guidelines:
+
+- **Edge cases first** — this is agent tooling; think hard about failure modes.
+- **No heavy dependencies** — prefer the standard library or the crates listed
+  in [`Cargo.toml`](Cargo.toml).
+- **Document decisions** — non-obvious trade-offs belong in an ADR under
+  [`docs/adr/`](docs/adr/).
+- **Keep the TUI sole interface** — do not add a web UI or batch mode.
+
+---
+
+## Support
+
+- 📖 **Docs** — [`docs/user-guide.md`](docs/user-guide.md), the
+  [`docs/glossary.md`](docs/glossary.md), and an
+  [end-to-end example](docs/example.md).
+- 🗂️ **Architecture records** — [`docs/adr/`](docs/adr/).
+- 🗺️ **Evolution plan** — [`PLAN.md`](PLAN.md).
+- 🐛 **Bugs & feature requests** — open an
+  [issue](https://github.com/atareao/anacleto/issues).
+
+---
+
 ## License
 
-Licensed under the [MIT License](LICENSE).
+Licensed under the [MIT License](LICENSE). Copyright (c) 2026 atareao.

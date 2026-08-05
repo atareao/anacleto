@@ -4,7 +4,7 @@
 # This file lives at .anacleto/config.yaml in your project root. It merges
 # on top of the global config at ~/.config/anacleto/config.yaml.
 #
-# See https://github.com/your-org/anacleto for full documentation.
+# See https://github.com/atareao/anacleto for full documentation.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
