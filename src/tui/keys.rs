@@ -264,6 +264,32 @@ impl App {
                         }
                     }
                 }
+                KeyCode::Char('e') => {
+                    // Edit: load the selected item into the input buffer,
+                    // remove it from the queue and close the popup.
+                    if let Some(prompt) = self.prompt_queue.get(self.prompt_queue_index) {
+                        self.input = prompt.clone();
+                        self.input_cursor = self.input.chars().count();
+                        self.prompt_queue.remove(self.prompt_queue_index);
+                        self.show_prompt_queue = false;
+                    }
+                }
+                KeyCode::Char('[') => {
+                    // Move the selected item up in the queue.
+                    if self.prompt_queue_index > 0 {
+                        self.prompt_queue
+                            .swap(self.prompt_queue_index, self.prompt_queue_index - 1);
+                        self.prompt_queue_index -= 1;
+                    }
+                }
+                KeyCode::Char(']') => {
+                    // Move the selected item down in the queue.
+                    if self.prompt_queue_index + 1 < self.prompt_queue.len() {
+                        self.prompt_queue
+                            .swap(self.prompt_queue_index, self.prompt_queue_index + 1);
+                        self.prompt_queue_index += 1;
+                    }
+                }
                 KeyCode::Esc => {
                     self.show_prompt_queue = false;
                 }
@@ -282,12 +308,26 @@ impl App {
                 self.focus = Focus::Chat;
                 return;
             }
+            if self.keymap.matches(key_event, Action::FocusInfo) {
+                self.focus = Focus::Info;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::FocusQueue) {
+                self.focus = Focus::Queue;
+                return;
+            }
             if self.keymap.matches(key_event, Action::FocusMcps) {
-                self.focus = Focus::Mcps;
+                // Config-compat: legacy MCPs focus maps to the Info panel's
+                // MCPs tab.
+                self.focus = Focus::Info;
+                self.info_tab = 1;
                 return;
             }
             if self.keymap.matches(key_event, Action::FocusSkills) {
-                self.focus = Focus::Skills;
+                // Config-compat: legacy Skills focus maps to the Info panel's
+                // Skills tab.
+                self.focus = Focus::Info;
+                self.info_tab = 0;
                 return;
             }
             if self.keymap.matches(key_event, Action::FocusAgents) {
@@ -353,8 +393,8 @@ impl App {
         match self.focus {
             Focus::Input => self.handle_input_key(key, modifiers, key_event),
             Focus::Chat => self.handle_chat_key(key, modifiers, key_event),
-            Focus::Mcps => self.handle_mcp_panel_key(key, modifiers, key_event),
-            Focus::Skills => self.handle_skill_panel_key(key, modifiers, key_event),
+            Focus::Info => self.handle_info_panel_key(key, modifiers, key_event),
+            Focus::Queue => self.handle_queue_panel_key(key, modifiers, key_event),
             Focus::Agents => self.handle_agent_panel_key(key, modifiers, key_event),
         }
     }
@@ -376,5 +416,66 @@ impl App {
             }
             _ => true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use tokio::sync::mpsc;
+
+    fn test_app() -> App {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        App::new(cmd_tx, event_rx, false, &Config::default())
+    }
+
+    #[test]
+    fn queue_popup_e_edits_selected_item() {
+        let mut app = test_app();
+        app.show_prompt_queue = true;
+        app.prompt_queue_index = 1;
+        app.prompt_queue = vec!["first".to_string(), "second".to_string()];
+
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+
+        // Item loaded into input, removed from queue, popup closed.
+        assert_eq!(app.input, "second");
+        assert_eq!(app.input_cursor, 6);
+        assert_eq!(app.prompt_queue, vec!["first".to_string()]);
+        assert!(!app.show_prompt_queue);
+    }
+
+    #[test]
+    fn queue_popup_bracket_moves_item_up() {
+        let mut app = test_app();
+        app.show_prompt_queue = true;
+        app.prompt_queue_index = 1;
+        app.prompt_queue = vec!["first".to_string(), "second".to_string()];
+
+        app.handle_key(KeyCode::Char('['), KeyModifiers::NONE);
+
+        assert_eq!(
+            app.prompt_queue,
+            vec!["second".to_string(), "first".to_string()]
+        );
+        assert_eq!(app.prompt_queue_index, 0);
+    }
+
+    #[test]
+    fn queue_popup_bracket_moves_item_down() {
+        let mut app = test_app();
+        app.show_prompt_queue = true;
+        app.prompt_queue_index = 0;
+        app.prompt_queue = vec!["first".to_string(), "second".to_string()];
+
+        app.handle_key(KeyCode::Char(']'), KeyModifiers::NONE);
+
+        assert_eq!(
+            app.prompt_queue,
+            vec!["second".to_string(), "first".to_string()]
+        );
+        assert_eq!(app.prompt_queue_index, 1);
     }
 }

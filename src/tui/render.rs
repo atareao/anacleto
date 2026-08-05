@@ -9,7 +9,9 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Tabs, Wrap,
+};
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
@@ -183,6 +185,17 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
         all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
     }
 
+    // Pending prompt queue indicator
+    if !app.prompt_queue.is_empty() {
+        all_spans.push(Span::styled(
+            format!(" ({} en cola) ", app.prompt_queue.len()),
+            Style::default()
+                .fg(Color::Rgb(255, 180, 50))
+                .add_modifier(Modifier::BOLD),
+        ));
+        all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+    }
+
     // Debug mode indicator
     if app.debug_mode {
         all_spans.push(Span::styled(
@@ -339,7 +352,7 @@ fn render_mcp_list_panel(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(list, area);
 }
 
-/// Render the right panel: 4 stacked info panels (Status, MCPs, Skills, Running agents).
+/// Render the right panel: 4 stacked info panels (Status, Info-tabs, Agents, Queue).
 fn render_right_panels(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -355,9 +368,9 @@ fn render_right_panels(f: &mut Frame, area: Rect, app: &App) {
         .split(area);
 
     render_status_panel(f, chunks[0], app);
-    render_mcp_panel(f, chunks[1], app);
-    render_skill_panel(f, chunks[2], app);
-    render_agent_panel(f, chunks[3], app);
+    render_info_panel(f, chunks[1], app);
+    render_agent_panel(f, chunks[2], app);
+    render_queue_panel(f, chunks[3], app);
 }
 
 /// Panel 1: Status — tokens, coste y contexto en tres líneas.
@@ -405,7 +418,30 @@ fn format_tokens(n: u64) -> String {
     }
 }
 
-/// Panel 2: MCPs — connected MCP server names.
+/// Panel 2: Info — unified Skills/MCPs panel with two tabs ([Skills|MCPs]).
+fn render_info_panel(f: &mut Frame, area: Rect, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)].as_ref())
+        .split(area);
+
+    let titles: Vec<Line> = [" Skills ", " MCPs "]
+        .iter()
+        .map(|t| Line::from(Span::styled(*t, Style::default())))
+        .collect();
+    let tabs = Tabs::new(titles)
+        .select(app.info_tab)
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+    f.render_widget(tabs, chunks[0]);
+
+    if app.info_tab == 0 {
+        render_skill_panel(f, chunks[1], app);
+    } else {
+        render_mcp_panel(f, chunks[1], app);
+    }
+}
+
+/// Panel 2a: MCPs — connected MCP server names (active when `info_tab = 1`).
 fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
     let unique_mcps: Vec<&str> = {
         let set: std::collections::BTreeSet<&str> = app
@@ -416,7 +452,7 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
         set.into_iter().collect()
     };
 
-    let focused = app.focus == Focus::Mcps;
+    let focused = app.focus == Focus::Info && app.info_tab == 1;
     let border_color = if focused {
         app.theme.accent()
     } else {
@@ -457,7 +493,7 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(list, area);
 }
 
-/// Panel 3: Skills — loaded skill names.
+/// Panel 2b: Skills — loaded skill names (active when `info_tab = 0`).
 fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
     let unique_skills: Vec<&str> = {
         let set: std::collections::BTreeSet<&str> = app
@@ -468,7 +504,7 @@ fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
         set.into_iter().collect()
     };
 
-    let focused = app.focus == Focus::Skills;
+    let focused = app.focus == Focus::Info && app.info_tab == 0;
     let border_color = if focused {
         app.theme.accent()
     } else {
@@ -503,7 +539,7 @@ fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(" (3) Skills "),
+            .title(" (2) Skills "),
     );
 
     f.render_widget(list, area);
@@ -559,8 +595,7 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                 };
                 let item_style = if selected {
                     Style::default()
-                        .fg(Color::Black)
-                        .bg(app.theme.accent())
+                        .fg(app.theme.accent())
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
@@ -569,8 +604,7 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                     Span::styled(
                         if active { "▶ " } else { "  " },
                         Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Magenta)
+                            .fg(Color::Magenta)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
@@ -580,9 +614,8 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                     Span::styled(
                         &a.name,
                         Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(if active { Color::Magenta } else { Color::Reset }),
+                            .fg(if active { Color::Magenta } else { Color::White })
+                            .add_modifier(Modifier::BOLD),
                     ),
                     if a.status == AgentStatus::Working {
                         Span::styled(
@@ -610,7 +643,53 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(" (4) Agents "),
+            .title(" (3) Agents "),
+    );
+
+    f.render_widget(list, area);
+}
+
+/// Panel 4: Queue — the visible, interactive prompt queue.
+fn render_queue_panel(f: &mut Frame, area: Rect, app: &App) {
+    let focused = app.focus == Focus::Queue;
+    let border_color = if focused {
+        app.theme.accent()
+    } else {
+        Color::Blue
+    };
+
+    let items: Vec<ListItem> = if app.prompt_queue.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "(vacía)",
+            Style::default().fg(Color::DarkGray),
+        )))]
+    } else {
+        app.prompt_queue
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let style = if focused && i == app.prompt_queue_index {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(app.theme.accent())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(Line::from(Span::styled(
+                    format!("{:>2}. {}", i + 1, p),
+                    style,
+                )))
+            })
+            .collect()
+    };
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(border_color))
+            .title(" (4) Queue "),
     );
 
     f.render_widget(list, area);
@@ -677,15 +756,32 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
             String::new()
         };
         if m.starts_with("> ") && !m.starts_with("> /") {
-            let style = Style::default()
+            let content_style = Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD);
+
+            // Top border extension — ▐ without content, one line
+            lines.push(Line::from(Span::styled(
+                "▐",
+                Style::default().fg(Color::Rgb(60, 80, 60)),
+            )));
+
+            // Message content with left border and background
             for line_text in m.split('\n') {
-                lines.push(Line::from(Span::styled(
-                    format!("{}{}", ts, line_text),
-                    style,
-                )));
+                lines.push(Line::from(vec![
+                    Span::styled("▐ ", Style::default().fg(Color::Rgb(60, 80, 60))),
+                    Span::styled(
+                        format!("{}{}", ts, line_text.trim_start_matches("> ")),
+                        content_style,
+                    ),
+                ]));
             }
+
+            // Bottom border extension — ▐ without content, one line
+            lines.push(Line::from(Span::styled(
+                "▐",
+                Style::default().fg(Color::Rgb(60, 80, 60)),
+            )));
         } else if m.starts_with("> /") {
             let style = Style::default()
                 .fg(Color::Magenta)
@@ -790,13 +886,21 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
         } else {
             // AI responses — split by newline, render markdown per line
             let base = Style::default().fg(Color::Rgb(200, 220, 255));
+            let border_style = Style::default().fg(Color::Rgb(230, 190, 60));
+
+            // Top border extension — ▐ without content
+            lines.push(Line::from(Span::styled("▐", border_style)));
+
             for (i, line_text) in m.split('\n').enumerate() {
                 let prefix = if i == 0 { ts.as_str() } else { "" };
-                lines.push(render_markdown_line(
-                    &format!("{}{}", prefix, line_text),
-                    base,
-                ));
+                let mut rendered = render_markdown_line(&format!("{}{}", prefix, line_text), base);
+                // Prepend "▐ " to the rendered line
+                rendered.spans.insert(0, Span::styled("▐ ", border_style));
+                lines.push(rendered);
             }
+
+            // Bottom border extension — ▐ without content
+            lines.push(Line::from(Span::styled("▐", border_style)));
         }
     }
 

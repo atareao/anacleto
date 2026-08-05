@@ -42,9 +42,13 @@ pub enum Action {
     FocusSidebar,
     /// Focus the chat area.
     FocusChat,
-    /// Focus the MCPs sidebar panel.
+    /// Focus the Info panel (Skills/MCPs tabs).
+    FocusInfo,
+    /// Focus the Queue panel.
+    FocusQueue,
+    /// Focus the MCPs sidebar panel (config-compat; maps to Info tab MCPs).
     FocusMcps,
-    /// Focus the Skills sidebar panel.
+    /// Focus the Skills sidebar panel (config-compat; maps to Info tab Skills).
     FocusSkills,
     /// Focus the Agents sidebar panel.
     FocusAgents,
@@ -221,27 +225,31 @@ impl Default for Keymap {
             Action::Deny,
             vec![KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
         );
-        km.bind(
-            Action::FocusInput,
-            vec![KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT)],
-        );
         km.bind(Action::FocusSidebar, vec![]);
         km.bind(
             Action::FocusChat,
             vec![KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT)],
         );
         km.bind(
-            Action::FocusMcps,
+            Action::FocusInfo,
             vec![KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT)],
         );
         km.bind(
-            Action::FocusSkills,
+            Action::FocusAgents,
             vec![KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT)],
         );
         km.bind(
-            Action::FocusAgents,
+            Action::FocusQueue,
             vec![KeyEvent::new(KeyCode::Char('4'), KeyModifiers::ALT)],
         );
+        km.bind(
+            Action::FocusInput,
+            vec![KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT)],
+        );
+        // FocusMcps / FocusSkills retain no default binding but remain
+        // parseable for config compatibility.
+        km.bind(Action::FocusMcps, vec![]);
+        km.bind(Action::FocusSkills, vec![]);
         km.bind(Action::ClearInput, vec![key_event('c', true)]);
         km.bind(Action::OpenPromptQueue, vec![key_event('q', true)]);
         km.bind(Action::QuickSlot1, vec![key_event('1', true)]);
@@ -431,15 +439,15 @@ mod tests {
         ));
         assert!(km.matches(
             KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT),
-            Action::FocusMcps
+            Action::FocusInfo
         ));
         assert!(km.matches(
             KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT),
-            Action::FocusSkills
+            Action::FocusAgents
         ));
         assert!(km.matches(
             KeyEvent::new(KeyCode::Char('4'), KeyModifiers::ALT),
-            Action::FocusAgents
+            Action::FocusQueue
         ));
         assert!(km.matches(
             KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT),

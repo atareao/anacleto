@@ -36,6 +36,8 @@ pub(crate) fn format_keymap_table() -> String {
         (Action::FocusInput, "Enfocar input"),
         (Action::FocusSidebar, "Enfocar sidebar"),
         (Action::FocusChat, "Enfocar chat"),
+        (Action::FocusInfo, "Enfocar panel Info"),
+        (Action::FocusQueue, "Enfocar panel Queue"),
         (Action::FocusMcps, "Enfocar panel MCPs"),
         (Action::FocusSkills, "Enfocar panel Skills"),
         (Action::FocusAgents, "Enfocar panel Agents"),
@@ -139,6 +141,8 @@ pub(crate) fn parse_action(name: &str) -> Option<Action> {
         Action::FocusInput,
         Action::FocusSidebar,
         Action::FocusChat,
+        Action::FocusInfo,
+        Action::FocusQueue,
         Action::FocusMcps,
         Action::FocusSkills,
         Action::FocusAgents,
@@ -280,6 +284,8 @@ mod tests {
         assert_eq!(parse_action("FocusMcps"), Some(Action::FocusMcps));
         assert_eq!(parse_action("focus_skills"), Some(Action::FocusSkills));
         assert_eq!(parse_action("FocusAgents"), Some(Action::FocusAgents));
+        assert_eq!(parse_action("FocusInfo"), Some(Action::FocusInfo));
+        assert_eq!(parse_action("focus_queue"), Some(Action::FocusQueue));
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! Key handling for the non-input panels (Chat, MCPs, Skills, Agents).
+//! Key handling for the non-input panels (Chat, Info (Skills/MCPs), Agents,
+//! Queue).
 //!
 //! Contains the `App` methods that route keys while one of the sidebar/chat
 //! panels has focus, plus the shared list-navigation helper and the
@@ -41,28 +42,126 @@ impl App {
         }
     }
 
-    /// Handle a key while the MCPs sidebar panel (2) has focus.
-    pub(crate) fn handle_mcp_panel_key(
+    /// Handle a key while the Info panel (2) has focus — the unified
+    /// Skills/MCPs tabbed panel.
+    pub(crate) fn handle_info_panel_key(
         &mut self,
         key: KeyCode,
         modifiers: KeyModifiers,
         key_event: KeyEvent,
     ) {
-        let len = self.unique_mcp_count();
-        self.mcp_panel_index =
-            self.handle_list_nav_key(key, modifiers, key_event, len, self.mcp_panel_index);
+        // Tab/Shift+Tab or Left/Right cycle through the Skills/MCPs tabs.
+        match key {
+            KeyCode::Tab if modifiers.contains(KeyModifiers::SHIFT) => {
+                self.info_tab = self.info_tab.saturating_sub(1);
+                return;
+            }
+            KeyCode::Tab | KeyCode::Right => {
+                self.info_tab = (self.info_tab + 1) % 2;
+                return;
+            }
+            KeyCode::Left => {
+                self.info_tab = self.info_tab.saturating_sub(1);
+                return;
+            }
+            _ => {}
+        }
+
+        // Up/Down (and list navigation) move the selection within the active tab.
+        let (len, index) = if self.info_tab == 0 {
+            (self.unique_skill_count(), self.skill_panel_index)
+        } else {
+            (self.unique_mcp_count(), self.mcp_panel_index)
+        };
+        let new_index = self.handle_list_nav_key(key, modifiers, key_event, len, index);
+        if self.info_tab == 0 {
+            self.skill_panel_index = new_index;
+        } else {
+            self.mcp_panel_index = new_index;
+        }
     }
 
-    /// Handle a key while the Skills sidebar panel (3) has focus.
-    pub(crate) fn handle_skill_panel_key(
+    /// Handle a key while the Queue panel (5) has focus — the visible,
+    /// interactive prompt queue.
+    pub(crate) fn handle_queue_panel_key(
         &mut self,
         key: KeyCode,
-        modifiers: KeyModifiers,
-        key_event: KeyEvent,
+        _modifiers: KeyModifiers,
+        _key_event: KeyEvent,
     ) {
-        let len = self.unique_skill_count();
-        self.skill_panel_index =
-            self.handle_list_nav_key(key, modifiers, key_event, len, self.skill_panel_index);
+        match key {
+            KeyCode::Up => {
+                self.prompt_queue_index = self.prompt_queue_index.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                if self.prompt_queue_index + 1 < self.prompt_queue.len() {
+                    self.prompt_queue_index += 1;
+                }
+            }
+            KeyCode::Enter => {
+                // Send the selected item: remove it, then hand it to the engine.
+                if let Some(prompt) = self.prompt_queue.get(self.prompt_queue_index) {
+                    let text = prompt.clone();
+                    self.prompt_queue.remove(self.prompt_queue_index);
+                    // Send through the shared helper so `sent_message` is marked
+                    // (guards against double-send while the agent is busy).
+                    if !self.send_prompt(text.clone()) {
+                        // Send failed (channel full/closed): re-queue so it is
+                        // not lost; it will be retried.
+                        self.prompt_queue
+                            .insert(self.prompt_queue_index.min(self.prompt_queue.len()), text);
+                    }
+                    if self.prompt_queue.is_empty() {
+                        self.prompt_queue_index = 0;
+                    } else {
+                        self.prompt_queue_index =
+                            self.prompt_queue_index.min(self.prompt_queue.len() - 1);
+                    }
+                }
+            }
+            KeyCode::Char('d') => {
+                // Delete the selected item.
+                if !self.prompt_queue.is_empty() {
+                    self.prompt_queue.remove(self.prompt_queue_index);
+                    if self.prompt_queue.is_empty() {
+                        self.prompt_queue_index = 0;
+                    } else {
+                        self.prompt_queue_index =
+                            self.prompt_queue_index.min(self.prompt_queue.len() - 1);
+                    }
+                }
+            }
+            KeyCode::Char('e') => {
+                // Edit: load the selected item into the input buffer, remove it
+                // from the queue, and move focus to Input.
+                if let Some(prompt) = self.prompt_queue.get(self.prompt_queue_index) {
+                    self.input = prompt.clone();
+                    self.input_cursor = self.input.chars().count();
+                    self.prompt_queue.remove(self.prompt_queue_index);
+                    self.focus = Focus::Input;
+                }
+            }
+            KeyCode::Char('[') => {
+                // Move the selected item up in the queue.
+                if self.prompt_queue_index > 0 {
+                    self.prompt_queue
+                        .swap(self.prompt_queue_index, self.prompt_queue_index - 1);
+                    self.prompt_queue_index -= 1;
+                }
+            }
+            KeyCode::Char(']') => {
+                // Move the selected item down in the queue.
+                if self.prompt_queue_index + 1 < self.prompt_queue.len() {
+                    self.prompt_queue
+                        .swap(self.prompt_queue_index, self.prompt_queue_index + 1);
+                    self.prompt_queue_index += 1;
+                }
+            }
+            KeyCode::Esc => {
+                self.focus = Focus::Input;
+            }
+            _ => {}
+        }
     }
 
     /// Handle a key while the Agents sidebar panel (4) has focus.
@@ -116,5 +215,215 @@ impl App {
         };
         self.last_g_press = Some(now);
         double
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::types::{AgentId, AgentRole, AgentStatus};
+    use crate::config::Config;
+    use crate::engine::orchestrator::EngineCommand;
+    use crate::tui::types::AgentInfo;
+    use tokio::sync::mpsc;
+
+    fn test_app() -> App {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        App::new(cmd_tx, event_rx, false, &Config::default())
+    }
+
+    fn agent_with_skills(n: usize) -> AgentInfo {
+        AgentInfo {
+            id: AgentId::new(),
+            name: "agent".to_string(),
+            role: AgentRole::Root,
+            status: AgentStatus::Idle,
+            skills: (0..n).map(|i| format!("skill{i}")).collect(),
+            mcps: Vec::new(),
+            model: String::new(),
+            parent_id: None,
+            subagent_count: 0,
+        }
+    }
+
+    fn agent_with_mcps(n: usize) -> AgentInfo {
+        AgentInfo {
+            id: AgentId::new(),
+            name: "agent".to_string(),
+            role: AgentRole::Root,
+            status: AgentStatus::Idle,
+            skills: Vec::new(),
+            mcps: (0..n).map(|i| format!("mcp{i}")).collect(),
+            model: String::new(),
+            parent_id: None,
+            subagent_count: 0,
+        }
+    }
+
+    fn key(code: KeyCode) -> (KeyCode, KeyEvent, KeyModifiers) {
+        (
+            code,
+            KeyEvent::new(code, KeyModifiers::NONE),
+            KeyModifiers::NONE,
+        )
+    }
+
+    #[test]
+    fn info_tab_advances_on_tab() {
+        let mut app = test_app();
+        assert_eq!(app.info_tab, 0);
+        let (c, ev, m) = key(KeyCode::Tab);
+        app.handle_info_panel_key(c, m, ev);
+        assert_eq!(app.info_tab, 1);
+        app.handle_info_panel_key(c, m, ev);
+        assert_eq!(app.info_tab, 0);
+    }
+
+    #[test]
+    fn info_tab_shift_tab_goes_backward() {
+        let mut app = test_app();
+        app.info_tab = 1;
+        let ev = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
+        app.handle_info_panel_key(KeyCode::Tab, KeyModifiers::SHIFT, ev);
+        assert_eq!(app.info_tab, 0);
+        // Already at the first tab: stays at 0 (saturating, no wrap).
+        let ev = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
+        app.handle_info_panel_key(KeyCode::Tab, KeyModifiers::SHIFT, ev);
+        assert_eq!(app.info_tab, 0);
+    }
+
+    #[test]
+    fn info_tab_left_right_changes_tab() {
+        let mut app = test_app();
+        let (r, ev, m) = key(KeyCode::Right);
+        app.handle_info_panel_key(r, m, ev);
+        assert_eq!(app.info_tab, 1);
+        let (l, ev, m) = key(KeyCode::Left);
+        app.handle_info_panel_key(l, m, ev);
+        assert_eq!(app.info_tab, 0);
+    }
+
+    #[test]
+    fn info_tab_skill_down_navigates_skill_list() {
+        let mut app = test_app();
+        app.info_tab = 0;
+        app.agents.push(agent_with_skills(3));
+        app.skill_panel_index = 0;
+        let (d, ev, m) = key(KeyCode::Down);
+        app.handle_info_panel_key(d, m, ev);
+        assert_eq!(app.skill_panel_index, 1);
+        let (u, ev, m) = key(KeyCode::Up);
+        app.handle_info_panel_key(u, m, ev);
+        assert_eq!(app.skill_panel_index, 0);
+    }
+
+    #[test]
+    fn info_tab_mcp_down_navigates_mcp_list() {
+        let mut app = test_app();
+        app.info_tab = 1;
+        app.agents.push(agent_with_mcps(3));
+        app.mcp_panel_index = 0;
+        let (d, ev, m) = key(KeyCode::Down);
+        app.handle_info_panel_key(d, m, ev);
+        assert_eq!(app.mcp_panel_index, 1);
+    }
+
+    #[test]
+    fn info_tab_tab_switch_does_not_mutate_panel_indices() {
+        let mut app = test_app();
+        app.agents.push(agent_with_skills(3));
+        app.skill_panel_index = 2;
+        let (t, ev, m) = key(KeyCode::Tab);
+        app.handle_info_panel_key(t, m, ev);
+        assert_eq!(app.info_tab, 1);
+        assert_eq!(
+            app.skill_panel_index, 2,
+            "tab switch must not move the list"
+        );
+    }
+
+    #[test]
+    fn queue_enter_sends_selected_item_and_removes() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        app.prompt_queue = vec!["first".to_string(), "second".to_string()];
+        app.prompt_queue_index = 1;
+
+        let (e, ev, m) = key(KeyCode::Enter);
+        app.handle_queue_panel_key(e, m, ev);
+
+        assert_eq!(app.prompt_queue, vec!["first".to_string()]);
+        match cmd_rx.try_recv() {
+            Ok(EngineCommand::UserInput(text)) => assert_eq!(text, "second"),
+            other => panic!("expected UserInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn queue_d_deletes_selected_item() {
+        let mut app = test_app();
+        app.prompt_queue = vec!["first".to_string(), "second".to_string()];
+        app.prompt_queue_index = 0;
+
+        let (d, ev, m) = key(KeyCode::Char('d'));
+        app.handle_queue_panel_key(d, m, ev);
+
+        assert_eq!(app.prompt_queue, vec!["second".to_string()]);
+    }
+
+    #[test]
+    fn queue_e_edits_selected_item_and_focuses_input() {
+        let mut app = test_app();
+        app.focus = Focus::Queue;
+        app.prompt_queue = vec!["first".to_string(), "second".to_string()];
+        app.prompt_queue_index = 1;
+
+        let (e, ev, m) = key(KeyCode::Char('e'));
+        app.handle_queue_panel_key(e, m, ev);
+
+        assert_eq!(app.input, "second");
+        assert_eq!(app.input_cursor, 6);
+        assert_eq!(app.prompt_queue, vec!["first".to_string()]);
+        assert_eq!(app.focus, Focus::Input);
+    }
+
+    #[test]
+    fn queue_bracket_moves_selected_item_up_and_down() {
+        let mut app = test_app();
+        app.prompt_queue = vec!["first".to_string(), "second".to_string()];
+        app.prompt_queue_index = 1;
+
+        let (lb, ev, m) = key(KeyCode::Char('['));
+        app.handle_queue_panel_key(lb, m, ev);
+        assert_eq!(
+            app.prompt_queue,
+            vec!["second".to_string(), "first".to_string()]
+        );
+        assert_eq!(app.prompt_queue_index, 0);
+
+        let (rb, ev, m) = key(KeyCode::Char(']'));
+        app.handle_queue_panel_key(rb, m, ev);
+        assert_eq!(
+            app.prompt_queue,
+            vec!["first".to_string(), "second".to_string()]
+        );
+        assert_eq!(app.prompt_queue_index, 1);
+    }
+
+    #[test]
+    fn queue_up_down_navigates() {
+        let mut app = test_app();
+        app.prompt_queue = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        app.prompt_queue_index = 1;
+
+        let (u, ev, m) = key(KeyCode::Up);
+        app.handle_queue_panel_key(u, m, ev);
+        assert_eq!(app.prompt_queue_index, 0);
+
+        let (d, ev, m) = key(KeyCode::Down);
+        app.handle_queue_panel_key(d, m, ev);
+        assert_eq!(app.prompt_queue_index, 1);
     }
 }
