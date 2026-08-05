@@ -2470,7 +2470,14 @@ impl App {
     /// input buffer is empty, so that typing normally is never intercepted.
     fn keymap_applies(&self, key_event: KeyEvent) -> bool {
         match key_event.code {
-            KeyCode::Char(_) => key_event.modifiers != KeyModifiers::NONE || self.input.is_empty(),
+            KeyCode::Char(_) => {
+                // In the Input window, plain characters are always typed and never
+                // trigger global actions, even with an empty buffer.
+                if self.focus == Focus::Input && key_event.modifiers == KeyModifiers::NONE {
+                    return false;
+                }
+                key_event.modifiers != KeyModifiers::NONE || self.input.is_empty()
+            }
             _ => true,
         }
     }
@@ -4640,12 +4647,53 @@ mod tests {
     }
 
     #[test]
-    fn c_with_empty_input_switches_to_chat() {
-        // Legacy letter binding: with empty input, 'c' switches to Chat.
+    fn c_with_empty_input_typing_inserts_char() {
+        // Regression: 'c' with empty input must be typed, not switch to Chat.
         let mut app = test_app();
         app.focus = Focus::Input;
         app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
-        assert_eq!(app.focus, Focus::Chat);
+        assert_eq!(app.input, "c");
+        assert_eq!(app.focus, Focus::Input);
+    }
+
+    #[test]
+    fn q_with_empty_input_typing_inserts_char_not_quit() {
+        // Regression: 'q' with empty input must be typed, not quit.
+        let mut app = test_app();
+        app.focus = Focus::Input;
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(app.input, "q");
+        assert_eq!(app.focus, Focus::Input);
+        assert!(!app.should_exit);
+    }
+
+    #[test]
+    fn n_with_empty_input_typing_inserts_char() {
+        // Regression: 'N' with empty input must be typed.
+        let mut app = test_app();
+        app.focus = Focus::Input;
+        app.handle_key(KeyCode::Char('N'), KeyModifiers::NONE);
+        assert_eq!(app.input, "N");
+        assert_eq!(app.focus, Focus::Input);
+    }
+
+    #[test]
+    fn ctrl_q_with_input_focus_quits() {
+        // Ctrl+q must still quit even while focused on the Input window.
+        let mut app = test_app();
+        app.focus = Focus::Input;
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert!(app.should_exit);
+    }
+
+    #[test]
+    fn plain_letter_in_chat_focus_does_not_trigger_global_action() {
+        // With focus on Chat (not Input) and empty input, a plain letter must
+        // not trigger a global action such as Quit.
+        let mut app = test_app();
+        app.focus = Focus::Chat;
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(!app.should_exit);
     }
 
     #[test]

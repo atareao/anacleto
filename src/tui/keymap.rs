@@ -178,13 +178,10 @@ impl Default for Keymap {
             Action::CancelInput,
             vec![KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
         );
-        km.bind(
-            Action::Quit,
-            vec![key_event('q', false), key_event('q', true)],
-        );
+        km.bind(Action::Quit, vec![key_event('q', true)]);
         km.bind(Action::ToggleSidebar, vec![key_event('b', true)]);
         km.bind(Action::ToggleDiffViewer, vec![key_event('g', true)]);
-        km.bind(Action::OpenWhichKey, vec![key_event('?', false)]);
+        km.bind(Action::OpenWhichKey, vec![key_event('x', true)]);
         km.bind(Action::OpenModelPicker, vec![key_event('m', true)]);
         km.bind(Action::OpenEditor, vec![key_event('e', true)]);
         km.bind(
@@ -225,18 +222,12 @@ impl Default for Keymap {
         );
         km.bind(
             Action::FocusInput,
-            vec![
-                key_event('i', false),
-                KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT),
-            ],
+            vec![KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT)],
         );
-        km.bind(Action::FocusSidebar, vec![key_event('s', false)]);
+        km.bind(Action::FocusSidebar, vec![]);
         km.bind(
             Action::FocusChat,
-            vec![
-                key_event('c', false),
-                KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT),
-            ],
+            vec![KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT)],
         );
         km.bind(
             Action::FocusMcps,
@@ -667,9 +658,9 @@ mod tests {
     }
 
     #[test]
-    fn quit_bound_to_q_and_ctrl_q() {
+    fn quit_bound_only_to_ctrl_q() {
         let km = Keymap::default();
-        assert!(km.matches(key_event('q', false), Action::Quit));
+        assert!(!km.matches(key_event('q', false), Action::Quit));
         assert!(km.matches(key_event('q', true), Action::Quit));
     }
 
@@ -686,7 +677,7 @@ mod tests {
     fn resolve_returns_bound_keys() {
         let km = Keymap::default();
         let keys = km.resolve(Action::OpenWhichKey);
-        assert_eq!(keys, vec![key_event('?', false)]);
+        assert_eq!(keys, vec![key_event('x', true)]);
     }
 
     #[test]
@@ -723,10 +714,22 @@ mod tests {
     }
 
     #[test]
-    fn focus_actions_keep_legacy_letter_bindings() {
+    fn focus_actions_use_modified_keys_only() {
         let km = Keymap::default();
-        assert!(km.matches(key_event('c', false), Action::FocusChat));
-        assert!(km.matches(key_event('i', false), Action::FocusInput));
+        // Plain letters must NOT trigger focus switches (so typing is never
+        // intercepted in the Input window).
+        assert!(!km.matches(key_event('c', false), Action::FocusChat));
+        assert!(!km.matches(key_event('i', false), Action::FocusInput));
+        assert!(!km.matches(key_event('s', false), Action::FocusSidebar));
+        // Modified keys still switch focus.
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT),
+            Action::FocusChat
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT),
+            Action::FocusInput
+        ));
     }
 
     #[test]
