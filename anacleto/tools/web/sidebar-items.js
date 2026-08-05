@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["execute_webfetch_tool","execute_websearch_tool","webfetch_tool_definition","websearch_tool_definition"]};
+window.SIDEBAR_ITEMS = {"fn":["execute_webfetch_tool","execute_websearch_tool","web_search","webfetch_tool_definition","websearch_tool_definition"]};

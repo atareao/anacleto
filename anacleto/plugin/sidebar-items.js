@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["PluginManifest","PluginRegistry"],"trait":["Plugin"],"type":["HookResult","ToolHandler"]};

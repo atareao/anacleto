@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["expand_tilde","project_agents_dir","project_config_path","project_root"]};
+window.SIDEBAR_ITEMS = {"fn":["expand_tilde","global_plugins_dir","project_agents_dir","project_config_path","project_root"]};
