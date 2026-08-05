@@ -248,6 +248,33 @@ For example, a `read_file` tool exposed by the `filesystem` MCP server would be 
 
 ---
 
+## Plugins
+
+Plugins extend the engine with hooks and transforms. They are loaded
+**declaratively** from the global plugins directory `~/.config/anacleto/plugins/`.
+Each plugin is a subdirectory containing a `plugin.yaml` manifest:
+
+```yaml
+# ~/.config/anacleto/plugins/myplugin/plugin.yaml
+name: myplugin
+description: Example plugin
+version: 1.0.0
+```
+
+Plugins can hook into the engine lifecycle:
+
+- `on_agent_spawn` — transform an agent's system prompt before it is sent.
+- `on_tool_call` — intercept a tool call and return a replacement result.
+- `on_command` — handle a custom slash command.
+- `on_event` — react to engine events.
+- `register_tool` — register a custom tool and its handler, available to all
+  spawned agents at runtime.
+
+Plugins are trusted code from your own configuration. They are loaded once at
+engine startup and shared (read-only) across all agents.
+
+---
+
 ## Agents and Subagents
 
 Agents and subagents are the **same type** under the hood. The only difference is how they are invoked:
@@ -386,6 +413,35 @@ All commands are entered by typing in the input panel and pressing Enter.
 | `/sessions` | `/s` | List all sessions |
 | `/agents` | `/a` | Show agent list overlay |
 | `/subagents` | `/sa` | Show subagent tree overlay |
+
+### Custom slash commands
+
+Custom slash commands are defined in config under the `commands` key. Each
+command has a `name` (including the leading `/`), an optional `description`
+shown in the command palette, and a `template` that is expanded and sent to the
+engine as user input.
+
+```yaml
+commands:
+  - name: /deploy
+    description: Deploy the current branch
+    template: "Deploy branch {env:BRANCH} to production"
+  - name: /summarize
+    description: Summarize the README
+    template: "Summarize this file: {file:README.md}"
+```
+
+Templates support two placeholders:
+
+- `{env:VAR}` — replaced by the value of the environment variable `VAR`. If the
+  variable is unset, the placeholder is left literal.
+- `{file:path}` — replaced by the contents of the file at `path` (relative to
+  the current working directory). If the file cannot be read, the placeholder
+  is left literal.
+
+Arguments typed after the command are appended to the expanded template. Custom
+commands are dispatched before built-ins, so a custom command shadows a built-in
+with the same name.
 
 ### Other controls
 

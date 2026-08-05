@@ -778,9 +778,9 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - [x] Los comandos slash personalizados expanden `{env:VAR}`/`{file:path}`.
 - [x] Los plugins registran tools/providers en runtime.
 
-### Cierre de la release v0.6.0
+### Cierre de la release v0.7.0
 
 - [x] Fases 1-7 (incl. 5.5) completadas y verificadas.
-- [ ] `cargo doc --no-deps` genera sin errores.
-- [ ] Documentación de nuevas config (keymap, compaction, plugins, providers) actualizada.
-- [ ] Rama `develop` con commits atómicos por tarea, cada uno pasando fmt/clippy/test.
+- [x] `cargo doc --no-deps` genera sin errores.
+- [x] Documentación de nuevas config (keymap, compaction, plugins, providers) actualizada.
+- [x] Rama `develop` con commits atómicos por tarea, cada uno pasando fmt/clippy/test.
