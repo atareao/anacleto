@@ -206,10 +206,12 @@ pub struct App {
     pub messages: Vec<String>,
     /// Current streaming response being accumulated.
     pub current_stream: Option<String>,
-    /// Whether the in-progress stream was already committed to the message log
-    /// (via `commit_stream`) so that `AgentOutput` replaces it instead of
-    /// duplicating the partial content.
-    stream_committed: bool,
+    /// Index (into `messages`) of the in-progress stream that was already
+    /// committed via `commit_stream`, so that `AgentOutput` replaces exactly
+    /// that message instead of duplicating the partial content. Using the index
+    /// (rather than `last_mut()`) keeps the replacement correct even if other
+    /// messages are pushed in between.
+    stream_committed_index: Option<usize>,
     /// Whether the app should exit.
     pub should_exit: bool,
     /// Error message to display.
@@ -389,7 +391,7 @@ impl App {
             history_index: None,
             messages: Vec::new(),
             current_stream: None,
-            stream_committed: false,
+            stream_committed_index: None,
             should_exit: false,
             error: None,
             session_name: "default".into(),
@@ -478,7 +480,7 @@ impl App {
         if let Some(stream) = self.current_stream.take() {
             if !stream.is_empty() {
                 self.push_msg(stream);
-                self.stream_committed = true;
+                self.stream_committed_index = Some(self.messages.len() - 1);
             }
         }
     }
@@ -532,15 +534,14 @@ impl App {
             }
             EngineEvent::AgentOutput { content, .. } => {
                 self.current_stream = None;
-                if self.stream_committed {
-                    // The partial stream was already committed; replace it with
-                    // the full content to avoid duplication.
-                    if let Some(last) = self.messages.last_mut() {
-                        *last = content;
+                if let Some(idx) = self.stream_committed_index.take() {
+                    // The partial stream was already committed; replace exactly
+                    // that message with the full content to avoid duplication.
+                    if let Some(msg) = self.messages.get_mut(idx) {
+                        *msg = content;
                     } else {
                         self.push_msg(content);
                     }
-                    self.stream_committed = false;
                 } else {
                     self.push_msg(content);
                 }
