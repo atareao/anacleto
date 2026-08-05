@@ -9,8 +9,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::app::{App, InitFlow};
+use super::app::App;
 use super::render::copy_to_clipboard;
+use super::types::InitFlow;
 use crate::db::models::SessionSummary;
 use crate::engine::orchestrator::{EngineCommand, ExportFormat, InitAnswers};
 use crate::engine::template::expand_vars;

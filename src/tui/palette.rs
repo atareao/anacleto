@@ -10,7 +10,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem};
 
-use super::app::{App, fuzzy_score};
+use super::app::App;
+use super::state::fuzzy_score;
 
 impl App {
     /// Recompute the fuzzy command palette matches based on the current input.

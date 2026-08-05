@@ -1,0 +1,441 @@
+//! Engine event handling for the TUI.
+
+use crate::agent::types::{AgentRole, AgentStatus};
+use crate::engine::orchestrator::EngineEvent;
+use crate::tui::app::App;
+use crate::tui::toast::ToastKind;
+use crate::tui::types::{AgentInfo, ApprovalRequest, QuestionState};
+
+impl App {
+    /// Process a single event from the engine.
+    pub fn handle_event(&mut self, event: EngineEvent) {
+        match event {
+            EngineEvent::Started { debug } => {
+                self.debug_mode = debug;
+                self.push_msg("Anacleto started.");
+                self.chat_scroll = 0;
+                self.toasts
+                    .push("Anacleto listo — pulsa ? para atajos", ToastKind::Info);
+            }
+            EngineEvent::ModelChanged { model } => {
+                self.current_model = model.clone();
+                self.push_msg(format!("Model changed to: {}", model));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::ConversationCompacted { .. } => {
+                self.push_msg("Conversación compactada.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::AgentCreated {
+                id,
+                name,
+                role,
+                model,
+                skills,
+                mcps,
+            } => {
+                self.push_msg(format!("Agent '{}' created.", name));
+                self.chat_scroll = 0;
+                // Add to agent list
+                if !self.agents.iter().any(|a| a.id == id) {
+                    self.agents.push(AgentInfo {
+                        id,
+                        name: name.clone(),
+                        role,
+                        status: AgentStatus::Idle,
+                        skills,
+                        mcps,
+                        model,
+                        parent_id: None,
+                        subagent_count: 0,
+                    });
+                }
+            }
+            EngineEvent::AgentStreamChunk { content, .. } => {
+                *self.current_stream.get_or_insert_with(String::new) += &content;
+            }
+            EngineEvent::AgentOutput { content, .. } => {
+                self.current_stream = None;
+                if let Some(idx) = self.stream_committed_index.take() {
+                    // The partial stream was already committed; replace exactly
+                    // that message with the full content to avoid duplication.
+                    if let Some(msg) = self.messages.get_mut(idx) {
+                        *msg = content;
+                    } else {
+                        self.push_msg(content);
+                    }
+                } else {
+                    self.push_msg(content);
+                }
+                self.chat_scroll = 0;
+            }
+            EngineEvent::AgentStatusChanged {
+                agent_id, status, ..
+            } => {
+                if let Some(agent) = self.agents.iter_mut().find(|a| a.id == agent_id) {
+                    agent.status = status;
+                }
+            }
+            EngineEvent::SubagentCreated {
+                parent_id,
+                subagent_id,
+                subagent_name,
+                skills,
+                mcps,
+            } => {
+                self.messages
+                    .push(format!("Subagent '{}' created.", subagent_name));
+                self.chat_scroll = 0;
+                // Track subagent in the list (added later via AgentCreated?)
+                // Also bump parent's subagent_count
+                if let Some(parent) = self.agents.iter_mut().find(|a| a.id == parent_id) {
+                    parent.subagent_count += 1;
+                }
+                // Add subagent to list (if not already present)
+                if !self.agents.iter().any(|a| a.id == subagent_id) {
+                    self.agents.push(AgentInfo {
+                        id: subagent_id,
+                        name: subagent_name,
+                        role: AgentRole::SubAgent,
+                        status: AgentStatus::Working,
+                        skills,
+                        mcps,
+                        model: String::new(),
+                        parent_id: Some(parent_id),
+                        subagent_count: 0,
+                    });
+                }
+            }
+            EngineEvent::SubagentCompleted {
+                subagent_id,
+                subagent_name,
+                ..
+            } => {
+                self.messages
+                    .push(format!("Subagent '{}' completed.", subagent_name));
+                self.chat_scroll = 0;
+                if let Some(agent) = self.agents.iter_mut().find(|a| a.id == subagent_id) {
+                    agent.status = AgentStatus::Completed;
+                }
+            }
+            EngineEvent::SessionList(sessions) => {
+                self.session_list = sessions;
+                self.show_session_list = true;
+            }
+            EngineEvent::SessionSwitched { id, name } => {
+                self.session_id = Some(id);
+                self.session_name = name.clone();
+                self.show_session_list = false;
+                self.push_msg(format!("Switched to session: {}", name));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::AgentSwitched { name } => {
+                self.active_agent = name.clone();
+                self.push_msg(format!("Agente activo: {}", name));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SessionDeleted { id } => {
+                self.push_msg(format!("Session {} deleted.", &id[..8]));
+                self.chat_scroll = 0;
+                if self.session_id.as_deref() == Some(&id) {
+                    self.session_id = None;
+                    self.session_name = "none".into();
+                }
+            }
+            EngineEvent::SessionRenamed { name, .. } => {
+                self.session_name = name.clone();
+                self.push_msg(format!("Session renamed to: {}", name));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::Error { message, .. } => {
+                self.error = Some(message.clone());
+                self.push_msg(format!("Error: {}", message));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::ShuttingDown => {
+                self.push_msg("Anacleto shutting down.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::ApprovalRequired { id, operation } => {
+                self.pending_approval = Some(ApprovalRequest { id, operation });
+                self.toasts
+                    .push("Aprobación requerida (Y/N)", ToastKind::Info);
+            }
+            EngineEvent::Question {
+                id,
+                question,
+                options,
+                recommended,
+            } => {
+                self.pending_question = Some(QuestionState {
+                    id,
+                    question,
+                    options,
+                    recommended,
+                    selected: 0,
+                    answer_input: String::new(),
+                });
+            }
+            EngineEvent::TokenUsage {
+                total_tokens,
+                context_window,
+                cost,
+                ..
+            } => {
+                self.total_tokens += total_tokens as u64;
+                self.context_window = context_window as u64;
+                self.context_window_pct =
+                    (self.total_tokens as f64 / context_window as f64) * 100.0;
+                // Cost is computed in the engine from per-million-token prices.
+                self.total_cost += cost;
+            }
+            EngineEvent::ToolExecution {
+                tool_name, task, ..
+            } => {
+                self.messages
+                    .push(format!("\u{1f527} {}: {}", tool_name, task));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::ToolResult {
+                tool_name,
+                success,
+                summary,
+                ..
+            } => {
+                let icon = if success { "\u{2705}" } else { "\u{274c}" };
+                let msg = if success {
+                    format!("{} {} \u{2014} {}", icon, tool_name, summary)
+                } else {
+                    format!("{} {} failed: {}", icon, tool_name, summary)
+                };
+                self.push_msg(msg);
+                self.chat_scroll = 0;
+            }
+            EngineEvent::LlmRequestDebug {
+                agent_name,
+                model,
+                payload,
+                ..
+            } => {
+                self.push_msg(format!(
+                    "\u{1f50d} LLM Request [{}] ({}):",
+                    agent_name, model
+                ));
+                for line in payload.split('\n') {
+                    self.push_msg(format!("  {}", line));
+                }
+                self.chat_scroll = 0;
+            }
+            EngineEvent::LlmResponseDebug {
+                agent_name,
+                model,
+                payload,
+                ..
+            } => {
+                self.push_msg(format!(
+                    "\u{1f50d} LLM Response [{}] ({}):",
+                    agent_name, model
+                ));
+                for line in payload.split('\n') {
+                    self.push_msg(format!("  {}", line));
+                }
+                self.chat_scroll = 0;
+            }
+            // ── OpenCode-style slash command events ──────────────────
+            EngineEvent::UndoApplied { removed } => {
+                // Remove the undone messages from the display log.
+                let n = removed.len();
+                for _ in 0..n {
+                    self.messages.pop();
+                    self.message_timestamps.pop();
+                }
+                self.push_msg("\u{21a9} Undo applied.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::RedoApplied { restored } => {
+                // Re-add the restored messages to the display log.
+                for msg in restored {
+                    self.push_msg(msg);
+                }
+                self.push_msg("\u{21aa} Redo applied.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::Forked { new_session_id } => {
+                self.session_id = Some(new_session_id.to_string());
+                self.push_msg(format!(
+                    "\u{2382} Forked into new session: {}",
+                    new_session_id
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::Exported { path } => {
+                self.push_msg(format!("\u{1f4e4} Session exported to: {}", path.display()));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::Imported { session_id } => {
+                self.session_id = Some(session_id.to_string());
+                self.push_msg(format!("\u{1f4e5} Session imported: {}", session_id));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::ShareUpdated { shared, link } => {
+                if shared {
+                    let l = link.as_deref().unwrap_or("(no link)");
+                    self.push_msg(format!("\u{1f517} Session shared: {}", l));
+                } else {
+                    self.push_msg("\u{1f513} Session unshared.");
+                }
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SkillsListed(skills) => {
+                self.skills_list = skills;
+                self.push_msg(format!(
+                    "\u{2699} {} skill(s) available.",
+                    self.skills_list.len()
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::McpsListed(mcps) => {
+                self.mcps_list = mcps;
+                self.show_mcps = true;
+                self.push_msg(format!("\u{1f50c} {} MCP server(s).", self.mcps_list.len()));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::StatusReport(info) => {
+                self.status_info = Some(info);
+                self.push_msg("\u{1f4ca} Status updated.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::InitDone => {
+                self.push_msg("\u{2705} AGENTS.md initialized.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::ReviewResult(result) => {
+                self.push_msg(format!("\u{1f50d} Review: {}", result));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::WorkspaceChanged(dir) => {
+                self.working_dir = dir.to_string_lossy().to_string();
+                self.push_msg(format!("\u{1f4c1} Workspace changed to: {}", dir.display()));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::WorkspacesListed(workspaces) => {
+                self.workspaces_list = workspaces;
+                self.push_msg(format!(
+                    "\u{1f5c2} {} workspace(s).",
+                    self.workspaces_list.len()
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::Timeline(entries) => {
+                self.timeline = entries;
+                self.show_timeline = true;
+                self.timeline_index = 0;
+                self.push_msg(format!(
+                    "\u{1f550} {} timeline entrie(s).",
+                    self.timeline.len()
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SessionMoved {
+                session_id,
+                workspace,
+            } => {
+                self.push_msg(format!(
+                    "\u{27a1} Session {} moved to workspace '{}'.",
+                    session_id, workspace
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::CommandError(msg) => {
+                self.push_msg(format!("\u{26a0} Error: {}", msg));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::WorktreeResult(result) => {
+                self.push_msg(format!("\u{1f4c2} Worktree: {}", result));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::TodosUpdated(todos) => {
+                self.todos = todos;
+            }
+            EngineEvent::DiffAvailable { text, title } => {
+                self.diff_viewer.push_diff(&text, &title);
+                self.toasts
+                    .push("Diff disponible — pulsa Ctrl+G", ToastKind::Info);
+            }
+            EngineEvent::ModelsFrecency(frecency) => {
+                let recent = frecency.into_iter().map(|(m, _)| m).collect();
+                self.model_picker.set_recent(recent);
+            }
+            // ── FASE 1 y 2: build, jobs y snapshots ─────────────────
+            EngineEvent::SubagentFinished { task_id, summary } => {
+                self.push_msg(format!(
+                    "\u{1f4c4} Tarea '{}' finalizada: {}",
+                    task_id, summary
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::BuildDone => {
+                self.push_msg("\u{1f3d7} Build completado.");
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SessionTree(sessions) => {
+                if sessions.is_empty() {
+                    self.push_msg("\u{1f5c2} Sin sesiones hijas.");
+                } else {
+                    self.push_msg(format!("\u{1f5c2} Árbol de sesiones ({}):", sessions.len()));
+                    for s in &sessions {
+                        let parent = s
+                            .parent_id
+                            .map(|p| format!(" (padre: {})", &p.to_string()[..8]))
+                            .unwrap_or_default();
+                        self.push_msg(format!(
+                            "  \u{251c} {} — {} mensajes{}",
+                            s.name, s.message_count, parent
+                        ));
+                    }
+                }
+                self.chat_scroll = 0;
+            }
+            EngineEvent::JobsListed(jobs) => {
+                if jobs.is_empty() {
+                    self.push_msg("\u{1f4cb} Sin jobs activos.");
+                } else {
+                    self.push_msg(format!("\u{1f4cb} {} job(s) activo(s):", jobs.len()));
+                    for job in &jobs {
+                        self.push_msg(format!("  \u{2022} {}", job));
+                    }
+                }
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SnapshotCreated { snapshot } => {
+                self.push_msg(format!(
+                    "\u{1f4be} Snapshot '{}' creado ({} mensajes).",
+                    snapshot.name, snapshot.message_count
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SnapshotReverted { snapshot_id } => {
+                self.push_msg(format!(
+                    "\u{21a9} Sesión revertida al snapshot {}.",
+                    &snapshot_id.to_string()[..8]
+                ));
+                self.chat_scroll = 0;
+            }
+            EngineEvent::SnapshotsListed(snapshots) => {
+                if snapshots.is_empty() {
+                    self.push_msg("\u{1f4be} Sin snapshots para esta sesión.");
+                } else {
+                    self.push_msg(format!("\u{1f4be} {} snapshot(s):", snapshots.len()));
+                    for s in &snapshots {
+                        self.push_msg(format!(
+                            "  \u{2022} {} — {} mensajes",
+                            s.name, s.message_count
+                        ));
+                    }
+                }
+                self.chat_scroll = 0;
+            }
+            _ => {}
+        }
+    }
+}

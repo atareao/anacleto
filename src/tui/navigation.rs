@@ -8,7 +8,8 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::app::{App, Focus};
+use super::app::App;
+use super::types::Focus;
 use crate::tui::keymap::Action;
 
 impl App {

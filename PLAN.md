@@ -1074,3 +1074,165 @@ FASE 1 (orquestación) ──► FASE 2 (contexto/memoria) ──► FASE 3 (too
 - [x] Los tests existentes (incluidos los de FASE 8/9/10) siguen pasando.
 
 **Dependencia:** FASE 11 depende de FASE 8, FASE 9 y FASE 10 (refactoriza el código ya modificado por esas fases).
+
+### FASE 12 — Organización de archivos grandes restantes
+
+**Objetivo:** Dividir los archivos de `src/` que siguen siendo grandes (>500 líneas) en módulos cohesivos, aplicando la misma técnica de división de módulos de FASE 11, sin cambios de comportamiento. Cada tarea numerada corresponde a UN archivo grande a dividir.
+
+**Contexto técnico:** Tras FASE 11, `src/tui/app.rs` ya se dividió en módulos. Quedan por organizar los siguientes archivos grandes: `src/agent/lifecycle.rs` (3307), `src/engine/orchestrator.rs` (2448), `src/llm/provider.rs` (1898), `src/tui/app.rs` (1676, sigue grande), `src/db/session.rs` (1565), `src/tui/keymap.rs` (1019), `src/mcp/client.rs` (771), `src/lsp/mod.rs` (631) y `src/engine/apply_patch.rs` (558, borderline). Los números de línea citados son los actuales del código.
+
+#### Tarea 12.1: Dividir `src/agent/lifecycle.rs` (3307 líneas)
+
+**Archivos:**
+- Crear: `src/agent/tools.rs` (definición y ejecución de tools)
+- Crear: `src/agent/context.rs` (gestión de contexto)
+- Modificar: `src/agent/lifecycle.rs` (dejar `AgentHandle`, `SpawnAgentConfig`, `spawn_agent` y los tests correspondientes)
+- Modificar: `src/agent/mod.rs` (declaraciones `mod tools; mod context;`)
+
+- [x] **Paso 1:** En `src/agent/lifecycle.rs`, conservar `AgentHandle` (63), `SpawnAgentConfig` (88) y `spawn_agent` (129-860, el bucle principal del agente).
+- [x] **Paso 2:** Crear `src/agent/tools.rs` y mover la definición y ejecución de tools (860-2405): `check_tool_permission` (860), `classify_tool_operation` (964), `is_sensitive_operation` (1002), `skill_to_tool_definition` (1042), `todo_tool_definition` (1098), `execute_todo_tool` (1138), `question_tool_definition` (1219), `execute_question_tool` (1250), `apply_patch_tool_definition` (1302), `request_batch_approval` (1346), `execute_apply_patch_tool` (1382), `execute_skill_tool` (1438), `execute_shell_command` (1516), `extract_shell_command` (1589), `looks_like_shell_command` (1616), `execute_web_fetch` (1731), `execute_filesystem_operation` (1772), `subagent_config_to_tool_definition` (1778), `TaskToolArgs` (1805), `task_tool_definition` (1864), `plan_mode_blocked` (1909), `execute_task_tool` (1947), `resolve_provider_for_model` (2098), `SpawnSubagentConfig` (2118) y `spawn_subagent_and_delegate` (2146).
+- [x] **Paso 3:** Crear `src/agent/context.rs` y mover la gestión de contexto (2405-2658): `estimate_tokens` (2405), `should_compact` (2424), `build_summary_prompt` (2459), `trim_conversation` (2495) y `summarize_conversation` (2554).
+- [x] **Paso 4:** Mover los tests (2658-3307) a su módulo correspondiente (`tools.rs`/`context.rs`/`lifecycle.rs` según lo que prueben).
+- [x] **Paso 5:** Ajustar visibilidad (`pub(crate)`/`pub`) y declaraciones `mod` en `src/agent/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `lifecycle.rs` queda con el bucle principal del agente; las tools viven en `tools.rs` y la gestión de contexto en `context.rs`; los tests se mueven con su código; el crate compila y los tests pasan.
+
+#### Tarea 12.2: Dividir `src/engine/orchestrator.rs` (2448 líneas)
+
+**Archivos:**
+- Crear: `src/engine/sessions.rs` (comandos de sesión)
+- Crear: `src/engine/commands.rs` (resto de comandos `handle_*`)
+- Crear: `src/engine/events.rs` (tipos de eventos y comandos)
+- Modificar: `src/engine/orchestrator.rs` (dejar `Engine` struct + core)
+- Modificar: `src/engine/mod.rs` (declaraciones `mod`)
+
+- [x] **Paso 1:** Crear `src/engine/events.rs` y mover los tipos: `EngineEvent` (29), `InitAnswers` (209), `SkillInfo` (220), `McpStatus` (229), `StatusInfo` (238), `TimelineEntry` (259), `UsageEvent` (273) y `EngineCommand` (339).
+- [x] **Paso 2:** En `src/engine/orchestrator.rs`, conservar el struct `Engine` (281) y el core: `Engine::new` (444), `initialize` (501), `resolve_agent_provider` (707), `run` (728), `handle_user_input` (904), `handle_set_model` (926), `handle_switch_agent` (949), `handle_record_model_usage` (985), `handle_list_model_frecency` (993) y `respawn_active_agent` (1006).
+- [x] **Paso 3:** Crear `src/engine/sessions.rs` y mover los comandos de sesión (1087-1446): `handle_new_session` (1087), `handle_resume_session` (1109), `handle_list_sessions` (1164), `handle_set_session_pinned` (1176), `handle_delete_session` (1189), `handle_rename_session` (1206), `clear_undo_redo` (1224), `reload_history_to_root` (1230), `handle_undo` (1262), `handle_redo` (1288), `handle_fork` (1313), `handle_export` (1344), `handle_import` (1385), `handle_share` (1407) y `handle_unshare` (1427).
+- [x] **Paso 4:** Crear `src/engine/commands.rs` y mover el resto de comandos (1446-2448): `handle_list_skills` (1446), `handle_list_mcps` (1469), `handle_toggle_mcp` (1491), `handle_status` (1502), `handle_init` (1546), `handle_review` (1566), `handle_warp` (1604), `handle_list_workspaces` (1614), `handle_move_session` (1629), `handle_worktree_add/list/remove` (1654/1665/1675), `handle_timeline` (1686), `handle_build` (1716), `handle_parent` (1747), `handle_children` (1761), `handle_list_jobs` (1777), `handle_snapshot` (1787), `handle_revert` (1813), `handle_list_snapshots` (1850), `handle_stage` (1868), `handle_clear` (1890), `handle_commit` (1903) y `handle_approval_response` (1932).
+- [x] **Paso 5:** Ajustar visibilidad y declaraciones `mod` en `src/engine/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `orchestrator.rs` queda con el struct `Engine` y el core; los comandos de sesión viven en `sessions.rs`, el resto de comandos en `commands.rs` y los tipos en `events.rs`; el crate compila y los tests pasan.
+
+#### Tarea 12.3: Dividir `src/llm/provider.rs` (1898 líneas)
+
+**Archivos:**
+- Crear: `src/llm/openai.rs` (tipos OpenAI + `OpenAIProvider`)
+- Crear: `src/llm/anthropic.rs` (tipos Anthropic + `AnthropicProvider`)
+- Crear: `src/llm/ollama.rs` (tipos Ollama + `OllamaProvider`)
+- Crear: `src/llm/models.rs` (tipos de catálogo de modelos)
+- Modificar: `src/llm/provider.rs` (dejar trait `LlmProvider` + `create_provider` + helpers compartidos)
+- Modificar: `src/llm/mod.rs` (declaraciones `mod`)
+
+- [x] **Paso 1:** En `src/llm/provider.rs`, conservar el trait `LlmProvider` (18), `create_provider` (45) y los helpers compartidos (332-500): `http_client` (332), `into_openai_messages` (340), `into_anthropic_messages` (378), `into_ollama_messages` (399), `into_openai_tools` (416), `anthropic_tools` (431), `parse_sse_line` (444) y `strip_model_prefix` (465).
+- [x] **Paso 2:** Crear `src/llm/openai.rs` y mover los tipos OpenAI (62-180): `OpenAiChatRequest`, `OpenAiMessage`, `OpenAiTool`, `OpenAiFunction`, `OpenAiToolCall`, `OpenAiFunctionCall`, `OpenAiChatResponse`, `OpenAiChoice`, `OpenAiResponseMessage`, `OpenAiUsage`, `OpenAiStreamChunk`, `OpenAiStreamChoice`, `OpenAiStreamDelta`, `OpenAiStreamToolCall`, `OpenAiStreamFunction`, y el `OpenAIProvider` (501) con su impl `LlmProvider` (533).
+- [x] **Paso 3:** Crear `src/llm/anthropic.rs` y mover los tipos Anthropic (192-280): `AnthropicRequest`, `AnthropicThinking`, `AnthropicCacheControl`, `AnthropicMessage`, `AnthropicTool`, `AnthropicResponse`, `AnthropicContentBlock`, `AnthropicToolUse`, `AnthropicUsage`, y el `AnthropicProvider` con su impl `LlmProvider`.
+- [x] **Paso 4:** Crear `src/llm/ollama.rs` y mover los tipos Ollama (289-330): `OllamaChatRequest`, `OllamaMessage`, `OllamaOptions`, `OllamaChatResponse`, `OllamaResponseMessage`, y el `OllamaProvider` con su impl `LlmProvider`.
+- [x] **Paso 5:** Crear `src/llm/models.rs` y mover los tipos de catálogo (471-500): `OpenAiModelInfo` (471), `OpenRouterModelList` (478), `OpenRouterModelData` (483) y `OllamaShowResponse` (491).
+- [x] **Paso 6:** Ajustar visibilidad y declaraciones `mod` en `src/llm/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `provider.rs` queda con el trait, la factory y los helpers compartidos; cada provider vive en su módulo (`openai.rs`/`anthropic.rs`/`ollama.rs`) y los tipos de catálogo en `models.rs`; el crate compila y los tests pasan.
+
+#### Tarea 12.4: Dividir `src/tui/app.rs` (1676 líneas, sigue grande)
+
+**Archivos:**
+- Crear: `src/tui/events.rs` (`handle_event`)
+- Crear: `src/tui/keys.rs` (`handle_key` + `keymap_applies`)
+- Crear: `src/tui/types.rs` (tipos compartidos)
+- Crear: `src/tui/state.rs` (helpers de estado)
+- Modificar: `src/tui/app.rs` (dejar struct `App` + `new` + `run_tui` + `push_msg`/`commit_stream`)
+- Modificar: `src/tui/mod.rs` (declaraciones `mod`)
+
+- [x] **Paso 1:** En `src/tui/app.rs`, conservar el struct `App` + campos, `new` (386), `push_msg` (505), `commit_stream` (512) y `run_tui` (~2527).
+- [x] **Paso 2:** Crear `src/tui/events.rs` y mover `handle_event` (522-954, ~430 líneas).
+- [x] **Paso 3:** Crear `src/tui/keys.rs` y mover `handle_key` (954-1304, ~350 líneas) y `keymap_applies` (~2471).
+- [x] **Paso 4:** Crear `src/tui/types.rs` y mover los tipos compartidos: `Focus`, `AgentInfo`, `ApprovalRequest`, `QuestionState`, `InitFlow` y la const `BUILTIN_COMMANDS`.
+- [x] **Paso 5:** Crear `src/tui/state.rs` y mover los helpers de estado: `unique_mcp_count`, `unique_skill_count`, `agent_panel_count` y `fuzzy_score`.
+- [x] **Paso 6:** Mover el módulo `tests` a su módulo correspondiente; ajustar visibilidad y declaraciones `mod` en `src/tui/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `app.rs` queda con el struct `App`, `new`, `run_tui` y `push_msg`/`commit_stream`; el manejo de eventos vive en `events.rs`, las teclas en `keys.rs`, los tipos en `types.rs` y los helpers de estado en `state.rs`; el crate compila y los tests pasan.
+
+#### Tarea 12.5: Dividir `src/db/session.rs` (1565 líneas)
+
+**Archivos:**
+- Crear: `src/db/messages.rs` (mensajes)
+- Crear: `src/db/todos.rs` (todos)
+- Crear: `src/db/snapshots.rs` (snapshots)
+- Crear: `src/db/export.rs` (export/import/render)
+- Crear: `src/db/usage.rs` (uso de modelo)
+- Modificar: `src/db/session.rs` (dejar `Database` struct + CRUD de sesiones)
+- Modificar: `src/db/mod.rs` (declaraciones `mod`)
+
+- [x] **Paso 1:** En `src/db/session.rs`, conservar el struct `Database` + `open` (20), `run_migrations` (46), `ensure_column` (170) y el CRUD de sesiones: `create_session` (190), `create_session_with_parent` (195), `list_sessions` (355), `set_session_pinned` (400), `list_pinned_sessions` (410), `delete_session` (456), `rename_session` (472), `set_shared` (611), `get_session_metadata` (646), `get_session_name` (668), `set_session_workspace` (742), `set_parent` (752), `get_parent` (762) y `get_children` (773).
+- [x] **Paso 2:** Crear `src/db/messages.rs` y mover `store_message` (231), `store_message_full` (278), `get_session_messages` (317), `delete_messages` (485), `restore_messages` (547) y `copy_messages` (585).
+- [x] **Paso 3:** Crear `src/db/todos.rs` y mover `add_todo` (820), `update_todo` (856), `delete_todo` (885) y `list_todos` (894).
+- [x] **Paso 4:** Crear `src/db/snapshots.rs` y mover `create_snapshot` (967), `list_snapshots` (1003), `get_snapshot` (1037) y `delete_snapshot` (1068).
+- [x] **Paso 5:** Crear `src/db/export.rs` y mover `export_session` (678), `import_session` (719) y `render_markdown` (1078).
+- [x] **Paso 6:** Crear `src/db/usage.rs` y mover `record_model_usage` (924) y `list_model_frecency` (944).
+- [x] **Paso 7:** Mover los tests (1105-1565) a su módulo correspondiente; ajustar visibilidad y declaraciones `mod` en `src/db/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `session.rs` queda con el struct `Database` y el CRUD de sesiones; mensajes, todos, snapshots, export/import y uso de modelo viven en sus módulos; el crate compila y los tests pasan.
+
+#### Tarea 12.6: Dividir `src/tui/keymap.rs` (1019 líneas)
+
+**Archivos:**
+- Crear: `src/tui/keyparse.rs` (parseo y formateo de teclas)
+- Modificar: `src/tui/keymap.rs` (dejar enum `Action` + struct `Keymap`)
+- Modificar: `src/tui/mod.rs` (declaración `mod keyparse;`)
+
+- [x] **Paso 1:** En `src/tui/keymap.rs`, conservar el enum `Action` (~40 variantes), el struct `Keymap` + `new`/`bind`/`resolve`/`matches`/`apply_overrides` y `Keymap::default` (todos los bindings).
+- [x] **Paso 2:** Crear `src/tui/keyparse.rs` y mover `key_event`, `format_keymap_table`, `format_key`, `parse_action`, `to_snake_case` y `parse_key`.
+- [x] **Paso 3:** Mover los tests a su módulo correspondiente; ajustar visibilidad y declaración `mod keyparse;` en `src/tui/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `keymap.rs` queda con el enum `Action` y el struct `Keymap`; el parseo y formateo de teclas vive en `keyparse.rs`; los tests se mueven con su código; el crate compila y los tests pasan.
+
+#### Tarea 12.7: Dividir `src/mcp/client.rs` (771 líneas)
+
+**Archivos:**
+- Crear: `src/mcp/registry.rs` (`McpRegistry`)
+- Crear: `src/mcp/parse.rs` (helpers de parseo de respuestas)
+- Modificar: `src/mcp/client.rs` (dejar `McpClient` + impl transporte/JSON-RPC)
+- Modificar: `src/mcp/mod.rs` (declaraciones `mod`)
+
+- [x] **Paso 1:** En `src/mcp/client.rs`, conservar el struct `McpClient` + impl: `new` (34), `connect` (48), `connect_stdio` (56), `connect_tcp` (86), `perform_initialize` (100), `call_tool` (181), `list_tools` (224), `list_tools_inner` (229), `list_resources` (254), `list_resource_templates` (269), `read_resource` (288), `send_jsonrpc` (305), `read_jsonrpc` (325) y `disconnect` (360).
+- [x] **Paso 2:** Crear `src/mcp/registry.rs` y mover el struct `McpRegistry` + impl (471-607): `new`/`register`/`get`/`names`/`collect_tools`/`call_tool`/`list_resources`/`list_resource_templates`/`read_resource`/`disconnect_all`.
+- [x] **Paso 3:** Crear `src/mcp/parse.rs` y mover los helpers de parseo: `parse_resources_response` (374), `parse_resource_templates_response` (398) y `parse_read_resource_response` (427).
+- [x] **Paso 4:** Mover los tests (609-771) a su módulo correspondiente; ajustar visibilidad y declaraciones `mod` en `src/mcp/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `client.rs` queda con el `McpClient` y su transporte/JSON-RPC; el `McpRegistry` vive en `registry.rs` y los helpers de parseo en `parse.rs`; el crate compila y los tests pasan.
+
+#### Tarea 12.8: Dividir `src/lsp/mod.rs` (631 líneas)
+
+**Archivos:**
+- Crear: `src/lsp/format.rs` (formateo de resultados)
+- Modificar: `src/lsp/mod.rs` (dejar `LspClient` + impl transporte/consultas)
+- Modificar: `src/lsp/mod.rs` (declaración `mod format;`)
+
+- [x] **Paso 1:** En `src/lsp/mod.rs`, conservar el struct `LspClient` + impl: `new` (70), `start` (85), `initialize` (122), `request` (137), `notify` (156), `hover` (166), `definition` (176), `references` (186), `diagnostic` (197), `query_once` (209), `write_message` (230), `read_message` (253) y `shutdown` (295).
+- [x] **Paso 2:** Crear `src/lsp/format.rs` y mover el formateo (318-493): `parse_lsp_response` (318), `format_lsp_result` (335), `format_hover` (346), `format_locations` (380), `format_diagnostics` (413), `severity_label` (453), `path_to_uri` (464) y `default_server_for_extension` (476).
+- [x] **Paso 3:** Mover los tests (494-631) a su módulo correspondiente; ajustar visibilidad y declaración `mod format;`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+
+**Criterio de aceptación:** `mod.rs` queda con el `LspClient` y su transporte/consultas; el formateo de resultados vive en `format.rs`; el crate compila y los tests pasan.
+
+#### Tarea 12.9: Mover los tests de `src/engine/apply_patch.rs` (558 líneas, borderline)
+
+**Archivos:**
+- Crear: `src/engine/apply_patch_tests.rs` (tests movidos)
+- Modificar: `src/engine/apply_patch.rs` (dejar solo la lógica)
+- Modificar: `src/engine/mod.rs` (declaración `mod apply_patch_tests;`)
+
+- [x] **Paso 1:** En `src/engine/apply_patch.rs`, conservar la lógica: `PatchOpKind` (14), `PatchOp` (25), `PatchBatch` (37), `FileEncoding` (44), `parse_patch_batch` (55), `resolve_within_workspace` (87), `detect_encoding` (141), `encode_content` (152), `resolve_patch_path` (174), `apply_patch_batch` (197) y `batch_to_unified_diff` (259).
+- [x] **Paso 2:** Mover los tests (287-558, ~270 líneas) a `src/engine/apply_patch_tests.rs` (o `src/engine/apply_patch/tests.rs`), dejando `apply_patch.rs` con solo la lógica (~286 líneas).
+- [x] **Paso 3:** Ajustar visibilidad y declaración `mod` en `src/engine/mod.rs`; ejecutar `cargo fmt --check && cargo clippy && cargo test`.
+- [x] **Paso 4:** (Opcional) Si se prefiere, dejar `apply_patch.rs` como está al ser borderline; en ese caso marcar esta tarea como no aplicable.
+
+**Criterio de aceptación:** `apply_patch.rs` queda con solo la lógica y los tests viven en su propio módulo; el crate compila y los tests pasan (o la tarea se descarta por ser borderline).
+
+**Criterios de aceptación de FASE 12:**
+- [x] Ningún archivo de `src/` supera las 500 líneas (salvo los que se decida dejar, p.ej. `apply_patch.rs` si se descarta la Tarea 12.9).
+- [x] Cada archivo grande se divide en módulos cohesivos con nombres y símbolos reales del código.
+- [x] Los tests existentes se mueven con su código y siguen pasando.
+- [x] `cargo fmt --check && cargo clippy && cargo test` pasan sin cambios de comportamiento.
+- [x] No se añaden dependencias nuevas ni se cambia la interfaz pública consumida por otras fases.
+
+**Dependencia:** FASE 12 depende de FASE 11 (misma técnica de división de módulos).

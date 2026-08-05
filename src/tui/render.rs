@@ -12,9 +12,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{AgentInfo, App, Focus};
+use super::app::App;
 use super::markdown::{render_markdown_line, select_visible_start};
 use super::palette::{render_agent_palette, render_command_palette, render_model_palette};
+use super::types::{AgentInfo, Focus};
 use crate::agent::types::{AgentRole, AgentStatus};
 
 /// Render the TUI.
