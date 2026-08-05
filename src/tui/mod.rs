@@ -1,6 +1,13 @@
 pub mod app;
+mod commands;
 pub mod diff_viewer;
+mod input;
 pub mod keymap;
+mod markdown;
 pub mod model_picker;
+mod navigation;
+mod palette;
+mod render;
+mod theme;
 pub mod toast;
 pub mod which_key;
