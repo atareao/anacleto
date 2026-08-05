@@ -145,6 +145,11 @@ pub fn merge_configs(base: &mut Config, override_cfg: Config) {
         base.model_picker.favorites = override_cfg.model_picker.favorites;
     }
 
+    // Merge custom slash commands (project wins over global).
+    if !override_cfg.commands.is_empty() {
+        base.commands = override_cfg.commands;
+    }
+
     // NOTE: Agents are NOT merged here. They are defined exclusively as
     // Markdown files and loaded by crate::agent::loader::load_agents().
 }

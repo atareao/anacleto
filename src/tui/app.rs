@@ -20,11 +20,13 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::agent::types::{AgentId, AgentRole, AgentStatus};
 use crate::config::Config;
+use crate::config::types::CustomCommand;
 use crate::db::models::SessionSummary;
 use crate::engine::orchestrator::{
     EngineCommand, EngineEvent, ExportFormat, InitAnswers, McpStatus, SkillInfo, StatusInfo,
     TimelineEntry,
 };
+use crate::engine::template::expand_vars;
 use crate::tui::diff_viewer::DiffViewer;
 use crate::tui::keymap::{Action, Keymap};
 use crate::tui::model_picker::ModelPicker;
@@ -33,7 +35,7 @@ use crate::tui::which_key::WhichKeyPopup;
 
 /// All slash commands with a short description, used by the fuzzy command
 /// palette and Tab autocomplete.
-const COMMANDS: &[(&str, &str)] = &[
+const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/help", "Show help"),
     ("/h", "Show help (alias)"),
     ("/sessions", "List sessions"),
@@ -196,10 +198,20 @@ pub struct App {
     pub event_rx: mpsc::Receiver<EngineEvent>,
     /// Current user input buffer.
     pub input: String,
+    /// History of previously submitted inputs (for Up/Down arrow navigation).
+    input_history: Vec<String>,
+    /// Current position in input history while navigating (None = editing fresh).
+    history_index: Option<usize>,
     /// Message log (displayed in the chat panel).
     pub messages: Vec<String>,
     /// Current streaming response being accumulated.
     pub current_stream: Option<String>,
+    /// Index (into `messages`) of the in-progress stream that was already
+    /// committed via `commit_stream`, so that `AgentOutput` replaces exactly
+    /// that message instead of duplicating the partial content. Using the index
+    /// (rather than `last_mut()`) keeps the replacement correct even if other
+    /// messages are pushed in between.
+    stream_committed_index: Option<usize>,
     /// Whether the app should exit.
     pub should_exit: bool,
     /// Error message to display.
@@ -255,8 +267,10 @@ pub struct App {
     pub debug_mode: bool,
     /// Keyboard locale (from $LANG), used for shift mapping with Kitty protocol.
     lang: String,
-    /// All slash commands for Tab autocomplete.
-    commands: Vec<&'static str>,
+    /// All slash commands (built-in + custom) for Tab autocomplete and palette.
+    commands: Vec<(String, String)>,
+    /// Custom slash commands with their templates (for dispatch).
+    custom_commands: Vec<CustomCommand>,
     /// Current autocomplete matches for Tab cycling.
     tab_matches: Vec<String>,
     /// Index into tab_matches for cycling.
@@ -373,8 +387,11 @@ impl App {
             cmd_tx,
             event_rx,
             input: String::new(),
+            input_history: Vec::new(),
+            history_index: None,
             messages: Vec::new(),
             current_stream: None,
+            stream_committed_index: None,
             should_exit: false,
             error: None,
             session_name: "default".into(),
@@ -398,7 +415,17 @@ impl App {
             kb_supported,
             lang,
             debug_mode: false,
-            commands: COMMANDS.iter().map(|(c, _)| *c).collect(),
+            commands: {
+                let mut cmds: Vec<(String, String)> = BUILTIN_COMMANDS
+                    .iter()
+                    .map(|(c, d)| (c.to_string(), d.to_string()))
+                    .collect();
+                for cc in &config.commands {
+                    cmds.push((cc.name.clone(), cc.description.clone()));
+                }
+                cmds
+            },
+            custom_commands: config.commands.clone(),
             tab_matches: Vec::new(),
             tab_index: 0,
             show_command_palette: false,
@@ -445,6 +472,17 @@ impl App {
     fn push_msg(&mut self, msg: impl Into<String>) {
         self.message_timestamps.push(Utc::now());
         self.messages.push(msg.into());
+    }
+
+    /// Commit any in-progress streaming response to the message log so that a
+    /// newly submitted user message appears AFTER it, preserving chat order.
+    fn commit_stream(&mut self) {
+        if let Some(stream) = self.current_stream.take() {
+            if !stream.is_empty() {
+                self.push_msg(stream);
+                self.stream_committed_index = Some(self.messages.len() - 1);
+            }
+        }
     }
 
     /// Process a single event from the engine.
@@ -496,7 +534,17 @@ impl App {
             }
             EngineEvent::AgentOutput { content, .. } => {
                 self.current_stream = None;
-                self.push_msg(content);
+                if let Some(idx) = self.stream_committed_index.take() {
+                    // The partial stream was already committed; replace exactly
+                    // that message with the full content to avoid duplication.
+                    if let Some(msg) = self.messages.get_mut(idx) {
+                        *msg = content;
+                    } else {
+                        self.push_msg(content);
+                    }
+                } else {
+                    self.push_msg(content);
+                }
                 self.chat_scroll = 0;
             }
             EngineEvent::AgentStatusChanged {
@@ -1226,6 +1274,17 @@ impl App {
                         .palette_index
                         .saturating_sub(1)
                         .min(self.palette_matches.len() - 1);
+                } else if !self.input_history.is_empty() {
+                    // Navigate backwards through input history.
+                    let next = match self.history_index {
+                        Some(i) if i > 0 => i - 1,
+                        Some(_) => 0,
+                        None => self.input_history.len() - 1,
+                    };
+                    self.history_index = Some(next);
+                    self.input = self.input_history[next].clone();
+                    self.tab_matches.clear();
+                    self.tab_index = 0;
                 } else {
                     self.chat_scroll = self.chat_scroll.saturating_add(1);
                 }
@@ -1237,6 +1296,20 @@ impl App {
                     self.agent_index = (self.agent_index + 1) % self.agent_matches.len();
                 } else if self.show_command_palette && !self.palette_matches.is_empty() {
                     self.palette_index = (self.palette_index + 1) % self.palette_matches.len();
+                } else if self.history_index.is_some() {
+                    // Navigate forwards through input history; past the newest returns to empty.
+                    match self.history_index {
+                        Some(i) if i + 1 < self.input_history.len() => {
+                            self.history_index = Some(i + 1);
+                            self.input = self.input_history[i + 1].clone();
+                        }
+                        _ => {
+                            self.history_index = None;
+                            self.input.clear();
+                        }
+                    }
+                    self.tab_matches.clear();
+                    self.tab_index = 0;
                 } else {
                     self.chat_scroll = self.chat_scroll.saturating_sub(1);
                 }
@@ -1255,8 +1328,8 @@ impl App {
                     self.tab_matches = self
                         .commands
                         .iter()
-                        .filter(|c| c.starts_with(&prefix))
-                        .map(|c| c.to_string())
+                        .filter(|(c, _)| c.starts_with(&prefix))
+                        .map(|(c, _)| c.clone())
                         .collect();
                 }
                 if self.tab_matches.is_empty() {
@@ -1327,7 +1400,7 @@ impl App {
                 } else if self.show_command_palette && !self.palette_matches.is_empty() {
                     // Execute the highlighted command from the palette.
                     let idx = self.palette_matches[self.palette_index];
-                    let cmd = COMMANDS[idx].0.to_string();
+                    let cmd = self.commands[idx].0.clone();
                     self.show_command_palette = false;
                     self.palette_matches.clear();
                     self.palette_index = 0;
@@ -1336,6 +1409,11 @@ impl App {
                 } else {
                     let input = std::mem::take(&mut self.input);
                     if !input.is_empty() {
+                        // Record in input history (dedupe consecutive repeats).
+                        if self.input_history.last() != Some(&input) {
+                            self.input_history.push(input.clone());
+                        }
+                        self.history_index = None;
                         self.process_input(input);
                     }
                 }
@@ -1412,15 +1490,17 @@ impl App {
         self.model_index = 0;
 
         let query = self.input.trim_start_matches('/');
-        let mut scored: Vec<(u32, usize)> = COMMANDS
+        let mut scored: Vec<(u32, String, usize)> = self
+            .commands
             .iter()
             .enumerate()
-            .filter_map(|(i, (cmd, _))| fuzzy_score(query, cmd).map(|s| (s, i)))
+            .filter_map(|(i, (cmd, _))| fuzzy_score(query, cmd).map(|s| (s, cmd.to_string(), i)))
             .collect();
-        // Sort by score descending (best match first), then by original order.
+        // Sort by score descending (best match first), then alphabetically by
+        // command name so the combo is stable and predictable.
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
 
-        self.palette_matches = scored.into_iter().map(|(_, i)| i).collect();
+        self.palette_matches = scored.into_iter().map(|(_, _, i)| i).collect();
         self.show_command_palette = !self.palette_matches.is_empty();
         if self.palette_index >= self.palette_matches.len() {
             self.palette_index = 0;
@@ -1486,6 +1566,10 @@ impl App {
 
     /// Process a line of input — check for slash commands or send to engine.
     fn process_input(&mut self, input: String) {
+        // Commit any in-progress stream first so whatever the user does next
+        // (slash command, shell, or message) is ordered after the previous
+        // assistant response.
+        self.commit_stream();
         if input.starts_with('/') {
             self.handle_command(input);
         } else if let Some(cmd) = input.strip_prefix('!') {
@@ -1523,6 +1607,21 @@ impl App {
     fn handle_command(&mut self, input: String) {
         let parts: Vec<&str> = input.splitn(3, ' ').collect();
         let cmd = parts[0];
+
+        // Dispatch custom slash commands defined in config before built-ins.
+        if let Some(cc) = self.custom_commands.iter().find(|c| c.name == cmd) {
+            let args = parts.get(1).copied().unwrap_or("");
+            let env = std::env::vars().collect::<HashMap<_, _>>();
+            let expanded = expand_vars(&cc.template, &env);
+            let final_input = if args.is_empty() {
+                expanded
+            } else {
+                format!("{} {}", expanded, args)
+            };
+            self.push_msg(format!("> {}", cmd));
+            let _ = self.cmd_tx.try_send(EngineCommand::UserInput(final_input));
+            return;
+        }
 
         match cmd {
             "/sessions" | "/s" => {
@@ -3534,7 +3633,7 @@ fn render_command_palette(f: &mut Frame, input_area: Rect, app: &App) {
         .iter()
         .take(max_items)
         .map(|&i| {
-            let (cmd, desc) = COMMANDS[i];
+            let (cmd, desc) = &app.commands[i];
             let line = Line::from(vec![
                 Span::styled(
                     format!(" {:<12}", cmd),
@@ -3679,9 +3778,27 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    // Bottom-anchored scroll: show last N lines where N = visible rows minus borders
+    // Content width available for text (minus borders and prompt/indent).
+    let inner_width = area.width.saturating_sub(2) as usize; // 2 for borders
+    let first_line_width = inner_width.saturating_sub(3); // " ❯ " prompt
+    let rest_line_width = inner_width.saturating_sub(3); // 3-space indent
+
+    // Compute how many visual rows each logical line occupies when wrapped.
+    let mut visual_rows: Vec<usize> = Vec::with_capacity(lines.len());
+    for (i, line_text) in lines.iter().enumerate() {
+        let w = if i == 0 {
+            first_line_width
+        } else {
+            rest_line_width
+        };
+        let len = line_text.chars().count();
+        visual_rows.push(if w == 0 { 1 } else { len.div_ceil(w).max(1) });
+    }
+    let total_visual: usize = visual_rows.iter().sum();
+
+    // Bottom-anchored scroll: show last N visual rows where N = visible rows minus borders
     let visible_rows = (area.height.saturating_sub(2)) as usize; // 2 for borders
-    let scroll_offset = lines.len().saturating_sub(visible_rows);
+    let scroll_offset = total_visual.saturating_sub(visible_rows);
 
     let title = if let Some(flow) = &app.init_flow {
         format!(" Init — {} ", flow.prompt())
@@ -3698,17 +3815,35 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
                 .title(title),
         )
         .scroll((scroll_offset as u16, 0))
+        .wrap(Wrap { trim: false })
         .style(Style::default().fg(Color::White));
 
     f.render_widget(paragraph, area);
 
-    // Cursor: position at end of the last line
-    // +1 for left border, +3 for " ❯ " prompt, + chars of last line
-    let last_line = lines.last().unwrap_or(&"");
-    let last_line_len = last_line.chars().count() as u16;
+    // Cursor: position at the end of the last logical line, accounting for wrap.
     let last_line_idx = lines.len().saturating_sub(1);
-    let cursor_row = area.y + 1 + (last_line_idx.saturating_sub(scroll_offset)) as u16;
-    let cursor_col = area.x + 1 + 3 + last_line_len;
+    let last_line = lines[last_line_idx];
+    let last_line_len = last_line.chars().count();
+    let last_w = if last_line_idx == 0 {
+        first_line_width
+    } else {
+        rest_line_width
+    };
+    // Visual row of the cursor within the last logical line (0-based).
+    // Integer division: when the line fills the width exactly, the cursor sits
+    // at the start of the next wrapped row. `checked_div` handles `last_w == 0`.
+    let cursor_visual_in_line = last_line_len.checked_div(last_w).unwrap_or(0);
+    // Column within the wrapped row (0-based), plus prompt/indent offset.
+    let col_in_row = if last_w == 0 {
+        0
+    } else {
+        last_line_len % last_w
+    };
+    // Visual row of the last logical line start (sum of previous lines' visual rows).
+    let last_line_start: usize = visual_rows[..last_line_idx].iter().sum();
+    let cursor_visual = last_line_start + cursor_visual_in_line;
+    let cursor_row = area.y + 1 + (cursor_visual.saturating_sub(scroll_offset)) as u16;
+    let cursor_col = area.x + 1 + 3 + col_in_row as u16;
     f.set_cursor_position((cursor_col, cursor_row));
 }
 

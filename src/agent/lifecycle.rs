@@ -28,6 +28,7 @@ use crate::permissions::checker::{
     check_skill_use,
 };
 use crate::permissions::types::Permissions;
+use crate::plugin::PluginRegistry;
 use crate::skill::loader::load_agent_skills;
 use crate::skill::types::Skill;
 use crate::tools::glob::{execute_glob_tool, glob_tool_definition};
@@ -115,6 +116,8 @@ pub struct SpawnAgentConfig {
     /// Shared registry of background jobs, used to track `task` tool
     /// background delegations.
     pub job_registry: Option<Arc<tokio::sync::Mutex<JobRegistry>>>,
+    /// Loaded plugins and their custom tools.
+    pub plugins: Option<Arc<PluginRegistry>>,
 }
 
 /// Spawn a new agent task and return a handle to it.
@@ -146,6 +149,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         depth,
         mode,
         job_registry,
+        plugins,
     } = config;
     let (tx, mut rx) = mpsc::channel::<AgentMessage>(256);
     let handle = AgentHandle::new(tx);
@@ -178,6 +182,11 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     tools.push(lsp_query_tool_definition());
     tools.push(task_tool_definition());
 
+    // Add custom tools registered by plugins.
+    if let Some(plugins) = &plugins {
+        tools.extend(plugins.custom_tools().iter().cloned());
+    }
+
     // Render the system prompt template (supports {model}, {workspace}, {tools}).
     let system_prompt = {
         let tool_names = tools
@@ -193,6 +202,13 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         );
         vars.insert("tools".to_string(), tool_names);
         render_template(&agent.description, &vars)
+    };
+
+    // Let plugins transform the system prompt before it is sent to the model.
+    let system_prompt = if let Some(plugins) = &plugins {
+        plugins.on_agent_spawn(&agent_name, &system_prompt)
+    } else {
+        system_prompt
     };
 
     // Clone what the task needs
@@ -551,6 +567,11 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             "Operation '{}' was denied by user or permissions.",
                                             tc.function.name
                                         )
+                                    } else if let Some(hook_result) =
+                                        plugins.as_ref().and_then(|p| p.on_tool_call(tc))
+                                    {
+                                        // A plugin short-circuited this tool call.
+                                        hook_result
                                     } else if tc.function.name == "task" {
                                         execute_task_tool(
                                             tc,
@@ -756,6 +777,11 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                                 tc.function.name
                                             )
                                         }
+                                    } else if let Some(handler) = plugins
+                                        .as_ref()
+                                        .and_then(|p| p.custom_tool_handler(&tc.function.name))
+                                    {
+                                        handler(tc)
                                     } else {
                                         format!("Unknown tool or subagent: {}", tc.function.name)
                                     };
@@ -1495,8 +1521,11 @@ async fn execute_shell_command(task: &str) -> std::result::Result<String, String
         );
     }
 
-    let shell = crate::shell::inventory().shell.path.clone();
-    let child = tokio::process::Command::new(&shell)
+    // Execute with a POSIX shell (`/bin/sh`) rather than the user's interactive
+    // shell (`$SHELL`, e.g. fish). The commands the LLM generates are bash/POSIX
+    // style (nested double quotes, `bash -c '...'`), which fish cannot parse.
+    let shell = "/bin/sh";
+    let child = tokio::process::Command::new(shell)
         .arg("-c")
         .arg(&command)
         .stdout(std::process::Stdio::piped())
@@ -1564,8 +1593,13 @@ fn extract_shell_command(task: &str) -> String {
         if line.is_empty() {
             continue;
         }
-        // "description: command" -> take the part after the last colon.
-        let candidate = if let Some(idx) = line.rfind(':') {
+        // If the whole line already looks like a shell command, use it as-is.
+        // This avoids splitting on colons inside URLs (e.g. https://...) which
+        // would truncate the command and cause unbalanced quotes / EOF errors.
+        let candidate = if looks_like_shell_command(line) {
+            line
+        } else if let Some(idx) = line.rfind(':') {
+            // "description: command" -> take the part after the last colon.
             let after = line[idx + 1..].trim();
             if after.is_empty() { line } else { after }
         } else {
@@ -1707,10 +1741,10 @@ async fn execute_web_fetch(task: &str) -> std::result::Result<String, String> {
         let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
         rest[..end].to_string()
     } else {
-        return Err(
-            "No URL found in the task. Please provide a valid URL (starting with http:// or https://) to fetch."
-                .into(),
-        );
+        // No explicit URL in the task: fall back to a web search so that
+        // general research tasks (e.g. "what will the weather be tomorrow")
+        // still return useful results instead of failing.
+        return crate::tools::web::web_search(trimmed).await;
     };
 
     let response = tokio::time::timeout(std::time::Duration::from_secs(30), reqwest::get(&url))
@@ -2853,6 +2887,26 @@ mod tests {
         assert_eq!(
             extract_shell_command("echo 'hello from anacleto'"),
             "echo 'hello from anacleto'"
+        );
+    }
+
+    #[test]
+    fn test_extract_shell_command_with_url_colon() {
+        // URLs contain colons (https://); the command must be kept whole and
+        // not truncated at the last colon (which would unbalance quotes).
+        let task = "curl -s \"https://wttr.in/Sevilla?format=3&lang=es\"";
+        assert_eq!(
+            extract_shell_command(task),
+            "curl -s \"https://wttr.in/Sevilla?format=3&lang=es\""
+        );
+    }
+
+    #[test]
+    fn test_extract_shell_command_multiline_with_urls() {
+        let task = "Fetch weather:\n  curl -s \"https://wttr.in/Sevilla?1&lang=es\"";
+        assert_eq!(
+            extract_shell_command(task),
+            "curl -s \"https://wttr.in/Sevilla?1&lang=es\""
         );
     }
 
