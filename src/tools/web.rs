@@ -98,7 +98,11 @@ pub async fn execute_webfetch_tool(
     Ok(result)
 }
 
-/// Execute a `websearch` tool call (stub).
+/// Execute a `websearch` tool call using the DuckDuckGo Instant Answer API.
+///
+/// Returns the abstract/summary and top related topics for the query. No API
+/// key is required. If no instant answer is available, returns a helpful
+/// message suggesting `webfetch` with a specific URL.
 pub async fn execute_websearch_tool(
     permissions: &Permissions,
     tool_call: &ToolCall,
@@ -108,12 +112,95 @@ pub async fn execute_websearch_tool(
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse websearch arguments: {e}"))?;
     let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+    if query.trim().is_empty() {
+        return Err("websearch requires a non-empty 'query'".to_string());
+    }
 
-    Ok(format!(
-        "Web search is not configured. No search backend is available, so the \
-         query '{query}' could not be executed. Use `webfetch` to fetch a \
-         specific URL instead."
-    ))
+    web_search(query.trim()).await
+}
+
+/// Perform a DuckDuckGo Instant Answer search for `query` and format the
+/// result as text. Shared by the `websearch` tool and the `web-research`
+/// skill fallback (when no URL is provided).
+pub async fn web_search(query: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse_with_params(
+        "https://api.duckduckgo.com/",
+        &[
+            ("q", query.trim()),
+            ("format", "json"),
+            ("no_html", "1"),
+            ("skip_disambig", "1"),
+        ],
+    )
+    .map_err(|e| format!("Failed to build search URL: {e}"))?;
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(30), reqwest::get(url))
+        .await
+        .map_err(|_| format!("Search request timed out for query: {query}"))?
+        .map_err(|e| format!("Search request failed for query: {query}: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {} searching for '{query}'", status.as_u16()));
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse search response: {e}"))?;
+
+    let mut out = String::new();
+    if let Some(abstract_text) = json.get("AbstractText").and_then(|v| v.as_str()) {
+        if !abstract_text.is_empty() {
+            out.push_str("Summary: ");
+            out.push_str(abstract_text);
+            out.push('\n');
+        }
+    }
+    if let Some(abstract_url) = json.get("AbstractURL").and_then(|v| v.as_str()) {
+        if !abstract_url.is_empty() {
+            out.push_str("Source: ");
+            out.push_str(abstract_url);
+            out.push('\n');
+        }
+    }
+
+    // Collect related topics (name + URL) up to a reasonable limit.
+    let mut topics: Vec<String> = Vec::new();
+    if let Some(related) = json.get("RelatedTopics").and_then(|v| v.as_array()) {
+        for topic in related {
+            if let Some(name) = topic.get("Text").and_then(|v| v.as_str()) {
+                let url = topic.get("FirstURL").and_then(|v| v.as_str()).unwrap_or("");
+                topics.push(format!("- {name} ({url})"));
+            }
+            // Nested topics (topics with a `Topics` array).
+            if let Some(nested) = topic.get("Topics").and_then(|v| v.as_array()) {
+                for t in nested {
+                    if let Some(name) = t.get("Text").and_then(|v| v.as_str()) {
+                        let url = t.get("FirstURL").and_then(|v| v.as_str()).unwrap_or("");
+                        topics.push(format!("- {name} ({url})"));
+                    }
+                }
+            }
+            if topics.len() >= 8 {
+                break;
+            }
+        }
+    }
+
+    if !topics.is_empty() {
+        out.push_str("\nRelated:\n");
+        out.push_str(&topics.join("\n"));
+        out.push('\n');
+    }
+
+    if out.trim().is_empty() {
+        return Ok(format!(
+            "No instant answer found for '{query}'. Try `webfetch` with a specific URL instead."
+        ));
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -158,12 +245,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websearch_stub_returns_not_configured() {
+    async fn websearch_rejects_empty_query() {
+        let result =
+            execute_websearch_tool(&allow_all(), &tool_call("websearch", r#"{"query":""}"#)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("non-empty"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network access"]
+    async fn websearch_returns_results() {
         let result =
             execute_websearch_tool(&allow_all(), &tool_call("websearch", r#"{"query":"rust"}"#))
                 .await;
         assert!(result.is_ok());
-        assert!(result.unwrap().contains("not configured"));
     }
 
     #[tokio::test]
