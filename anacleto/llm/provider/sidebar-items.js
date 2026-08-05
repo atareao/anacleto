@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["create_provider"],"struct":["AnthropicProvider","LlmProviderRegistry","OllamaProvider","OpenAIProvider","OpenRouterProvider"],"trait":["LlmProvider"]};
+window.SIDEBAR_ITEMS = {"fn":["create_provider"],"struct":["LlmProviderRegistry","OpenAIProvider","OpenRouterProvider"],"trait":["LlmProvider"]};

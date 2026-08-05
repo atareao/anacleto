@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["COMPACTION_THRESHOLD_RATIO","SUMMARY_ANCHOR_MARKER","SUMMARY_TEMPLATE","TOOL_RESULT_MAX_CHARS"],"fn":["should_compact","spawn_agent"],"struct":["AgentHandle","SpawnAgentConfig","SpawnSubagentConfig"]};
+window.SIDEBAR_ITEMS = {"constant":["TOOL_RESULT_MAX_CHARS"],"fn":["spawn_agent"],"struct":["AgentHandle","SpawnAgentConfig"]};
