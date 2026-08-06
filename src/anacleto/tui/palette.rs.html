@@ -60,9 +60,9 @@
 <a href=#60 id=60 data-nosnippet>60</a>            .enumerate()
 <a href=#61 id=61 data-nosnippet>61</a>            .filter_map(|(i, (cmd, <span class="kw">_</span>))| fuzzy_score(query, cmd).map(|s| (s, cmd.to_string(), i)))
 <a href=#62 id=62 data-nosnippet>62</a>            .collect();
-<a href=#63 id=63 data-nosnippet>63</a>        <span class="comment">// Sort by score descending (best match first), then alphabetically by
-<a href=#64 id=64 data-nosnippet>64</a>        // command name so the combo is stable and predictable.
-<a href=#65 id=65 data-nosnippet>65</a>        </span>scored.sort_by(|a, b| b.<span class="number">0</span>.cmp(<span class="kw-2">&amp;</span>a.<span class="number">0</span>).then(a.<span class="number">1</span>.cmp(<span class="kw-2">&amp;</span>b.<span class="number">1</span>)));
+<a href=#63 id=63 data-nosnippet>63</a>        <span class="comment">// Keep the fuzzy filtering (scored only contains matches) but always
+<a href=#64 id=64 data-nosnippet>64</a>        // order the list alphabetically by command name.
+<a href=#65 id=65 data-nosnippet>65</a>        </span>scored.sort_by(|a, b| a.<span class="number">1</span>.cmp(<span class="kw-2">&amp;</span>b.<span class="number">1</span>));
 <a href=#66 id=66 data-nosnippet>66</a>
 <a href=#67 id=67 data-nosnippet>67</a>        <span class="self">self</span>.palette_matches = scored.into_iter().map(|(<span class="kw">_</span>, <span class="kw">_</span>, i)| i).collect();
 <a href=#68 id=68 data-nosnippet>68</a>        <span class="self">self</span>.show_command_palette = !<span class="self">self</span>.palette_matches.is_empty();
