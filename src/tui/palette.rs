@@ -60,9 +60,9 @@ impl App {
             .enumerate()
             .filter_map(|(i, (cmd, _))| fuzzy_score(query, cmd).map(|s| (s, cmd.to_string(), i)))
             .collect();
-        // Sort by score descending (best match first), then alphabetically by
-        // command name so the combo is stable and predictable.
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        // Keep the fuzzy filtering (scored only contains matches) but always
+        // order the list alphabetically by command name.
+        scored.sort_by(|a, b| a.1.cmp(&b.1));
 
         self.palette_matches = scored.into_iter().map(|(_, _, i)| i).collect();
         self.show_command_palette = !self.palette_matches.is_empty();

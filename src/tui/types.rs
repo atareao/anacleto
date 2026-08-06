@@ -126,12 +126,12 @@ impl InitFlow {
 pub(crate) enum Focus {
     /// (1) Chat panel.
     Chat,
-    /// (2) MCPs sidebar panel.
-    Mcps,
-    /// (3) Skills sidebar panel.
-    Skills,
-    /// (4) Agents sidebar panel.
+    /// (2) Info panel (unified Skills/MCPs tabs).
+    Info,
+    /// (3) Agents sidebar panel.
     Agents,
+    /// (4) Queue panel (visible prompt queue).
+    Queue,
     /// (5) Input box.
     Input,
 }

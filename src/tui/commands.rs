@@ -49,10 +49,11 @@ impl App {
             }
             self.chat_scroll = 0;
         } else {
-            let msg = format!("> {}", input);
-            self.push_msg(msg);
-            let cmd = EngineCommand::UserInput(input);
-            let _ = self.cmd_tx.try_send(cmd);
+            // Enqueue the prompt and drain immediately if the active agent is
+            // idle; otherwise it waits in the visible/editable queue until the
+            // agent is free.
+            self.prompt_queue.push(input);
+            self.drain_queue_if_idle();
         }
     }
 
@@ -156,6 +157,9 @@ impl App {
                 } else {
                     self.prompt_queue.push(text.to_string());
                     self.push_msg(format!("> /enqueue ({} en cola)", self.prompt_queue.len()));
+                    // Drain immediately if the active agent is idle, otherwise
+                    // the item would sit in the queue until a future Idle event.
+                    self.drain_queue_if_idle();
                 }
             }
             // ── Agent info commands ────────────────────────────────

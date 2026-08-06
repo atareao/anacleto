@@ -6,7 +6,7 @@ use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 
-use crate::agent::types::AgentRole;
+use crate::agent::types::{AgentRole, AgentStatus};
 use crate::config::Config;
 use crate::config::types::CustomCommand;
 use crate::db::models::SessionSummary;
@@ -36,6 +36,8 @@ pub struct App {
     pub(crate) input_cursor: usize,
     /// Which window currently has keyboard focus.
     pub(crate) focus: Focus,
+    /// Active tab in the Info panel (0 = Skills, 1 = MCPs).
+    pub(crate) info_tab: usize,
     /// Selected index in the MCPs sidebar panel.
     pub(crate) mcp_panel_index: usize,
     /// Selected index in the Skills sidebar panel.
@@ -199,6 +201,8 @@ pub struct App {
     pub show_prompt_queue: bool,
     /// Selected index in the prompt queue popup.
     pub prompt_queue_index: usize,
+    /// Whether a message has been sent to the agent and we're awaiting idle.
+    pub sent_message: bool,
 }
 
 impl App {
@@ -235,6 +239,7 @@ impl App {
             input: String::new(),
             input_cursor: 0,
             focus: Focus::Input,
+            info_tab: 0,
             mcp_panel_index: 0,
             skill_panel_index: 0,
             agent_panel_index: 0,
@@ -317,6 +322,7 @@ impl App {
             prompt_queue: Vec::new(),
             show_prompt_queue: false,
             prompt_queue_index: 0,
+            sent_message: false,
         }
     }
 
@@ -334,6 +340,58 @@ impl App {
                 self.push_msg(stream);
                 self.stream_committed_index = Some(self.messages.len() - 1);
             }
+        }
+    }
+
+    /// Whether the active agent is currently busy (working or waiting for a
+    /// subagent). If the active agent is not tracked in `self.agents` or
+    /// `active_agent` is empty, the agent is treated as idle.
+    pub(crate) fn active_agent_is_busy(&self) -> bool {
+        if self.active_agent.is_empty() {
+            return false;
+        }
+        self.agents
+            .iter()
+            .find(|a| a.name == self.active_agent)
+            .map(|a| {
+                matches!(
+                    a.status,
+                    AgentStatus::Working | AgentStatus::WaitingForSubAgent
+                )
+            })
+            .unwrap_or(false)
+    }
+
+    /// Send a user prompt to the engine and mark a message as in-flight on a
+    /// successful send. Returns `true` when the send succeeded. On failure the
+    /// caller is responsible for retrying or re-queuing the prompt.
+    pub(crate) fn send_prompt(&mut self, text: String) -> bool {
+        match self.cmd_tx.try_send(EngineCommand::UserInput(text)) {
+            Ok(()) => {
+                self.sent_message = true;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Drain the prompt queue one item at a time. Sends the first queued
+    /// prompt to the engine only if no message is already in flight (i.e.
+    /// `sent_message` is false) AND the active agent is idle. When the agent
+    /// finishes processing and emits `Idle`, `handle_event` clears
+    /// `sent_message` and calls this again.
+    pub(crate) fn drain_queue_if_idle(&mut self) {
+        if self.sent_message || self.active_agent_is_busy() || self.prompt_queue.is_empty() {
+            return;
+        }
+        let item = self.prompt_queue.remove(0);
+        if self.send_prompt(item.clone()) {
+            self.push_msg(format!("> {}", item));
+        } else {
+            // Channel full (or closed): put the prompt back at the front of
+            // the queue so it is not lost; it will be retried on the next
+            // drain.
+            self.prompt_queue.insert(0, item);
         }
     }
 }
@@ -382,6 +440,7 @@ pub async fn run_tui<B: ratatui::backend::Backend<Error = std::io::Error>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::types::{AgentId, AgentStatus};
     use crate::tui::state::fuzzy_score;
     use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -679,5 +738,139 @@ mod tests {
         app.chat_scroll = 3;
         app.handle_key(KeyCode::PageUp, KeyModifiers::NONE);
         assert_eq!(app.chat_scroll, 13);
+    }
+
+    /// Build an `AgentInfo` with the given name and status.
+    fn agent(name: &str, status: AgentStatus) -> AgentInfo {
+        AgentInfo {
+            id: AgentId::new(),
+            name: name.to_string(),
+            role: AgentRole::Root,
+            status,
+            skills: Vec::new(),
+            mcps: Vec::new(),
+            model: String::new(),
+            parent_id: None,
+            subagent_count: 0,
+        }
+    }
+
+    #[test]
+    fn drain_queue_if_idle_sends_first_item() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        app.active_agent = "root".to_string();
+        app.agents.push(agent("root", AgentStatus::Idle));
+        app.prompt_queue = vec!["first".to_string(), "second".to_string()];
+
+        app.drain_queue_if_idle();
+
+        assert_eq!(app.prompt_queue, vec!["second".to_string()]);
+        match cmd_rx.try_recv() {
+            Ok(EngineCommand::UserInput(text)) => assert_eq!(text, "first"),
+            other => panic!("expected UserInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn drain_queue_if_idle_does_nothing_when_sent_message_is_true() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        app.sent_message = true;
+        app.prompt_queue = vec!["first".to_string()];
+
+        app.drain_queue_if_idle();
+
+        assert_eq!(app.prompt_queue, vec!["first".to_string()]);
+        assert!(cmd_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn drain_queue_if_idle_does_nothing_when_agent_busy() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        app.active_agent = "root".to_string();
+        app.agents.push(agent("root", AgentStatus::Working));
+        app.prompt_queue = vec!["first".to_string()];
+
+        app.drain_queue_if_idle();
+
+        // sent_message is false, but the agent is busy —
+        // the item must stay queued.
+        assert_eq!(app.prompt_queue, vec!["first".to_string()]);
+        assert!(cmd_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn drain_queue_if_idle_does_nothing_when_queue_empty() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        app.active_agent = "root".to_string();
+        app.agents.push(agent("root", AgentStatus::Idle));
+
+        app.drain_queue_if_idle();
+
+        assert!(cmd_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn drain_queue_if_idle_drains_one_item_at_a_time() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        app.active_agent = "root".to_string();
+        app.agents.push(agent("root", AgentStatus::Idle));
+        app.prompt_queue = vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+        ];
+
+        // First drain sends only the first item; the rest stay queued.
+        app.drain_queue_if_idle();
+        assert_eq!(
+            app.prompt_queue,
+            vec!["second".to_string(), "third".to_string()]
+        );
+        match cmd_rx.try_recv() {
+            Ok(EngineCommand::UserInput(text)) => assert_eq!(text, "first"),
+            other => panic!("expected UserInput, got {:?}", other),
+        }
+
+        // Second drain sends the next item, one at a time.
+        // Clear sent_message first to simulate receiving an Idle event.
+        app.sent_message = false;
+        app.drain_queue_if_idle();
+        assert_eq!(app.prompt_queue, vec!["third".to_string()]);
+        match cmd_rx.try_recv() {
+            Ok(EngineCommand::UserInput(text)) => assert_eq!(text, "second"),
+            other => panic!("expected UserInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn drain_queue_if_idle_reinserts_item_when_channel_full() {
+        // Channel with capacity 1, pre-filled so try_send fails with Full.
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        app.active_agent = "root".to_string();
+        app.agents.push(agent("root", AgentStatus::Idle));
+        app.prompt_queue = vec!["first".to_string(), "second".to_string()];
+
+        // Fill the channel so the next try_send fails.
+        let _ = app.cmd_tx.try_send(EngineCommand::Status);
+
+        app.drain_queue_if_idle();
+
+        // The item must be re-inserted at the front, not lost.
+        assert_eq!(
+            app.prompt_queue,
+            vec!["first".to_string(), "second".to_string()]
+        );
     }
 }
