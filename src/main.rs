@@ -12,6 +12,7 @@ use crossterm::event::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
+use tracing_subscriber::prelude::*;
 
 /// Anacleto — Agent orchestration engine.
 #[derive(Parser, Debug)]
@@ -50,13 +51,33 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(if cli.verbose {
-            "anacleto=debug"
-        } else {
-            "anacleto=info"
-        })
+    // Initialize logging: stdout + file with daily rotation
+    let log_filter = if cli.verbose {
+        "anacleto=debug"
+    } else {
+        "anacleto=info"
+    };
+
+    // File appender with daily rotation
+    let log_dir = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("anacleto")
+        .join("logs");
+    std::fs::create_dir_all(&log_dir).ok();
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "anacleto.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    let filter = tracing_subscriber::EnvFilter::new(log_filter);
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_filter(filter.clone());
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_filter(filter);
+
+    tracing_subscriber::registry()
+        .with(file_layer)
+        .with(stdout_layer)
         .init();
 
     // Load configuration
