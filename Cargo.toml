@@ -69,4 +69,5 @@ rand = "0.8"
 
 [dev-dependencies]
 proptest = "1"
+tarpaulin = "0.31"
 tempfile = "3"

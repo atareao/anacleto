@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-08-07
+
+### Added
+
+- **Streaming en subagentes** — Los subagentes ahora usan `complete_stream()` en lugar de `complete()`, transmitiendo fragmentos de respuesta en tiempo real a la TUI a través de `EngineEvent::AgentStreamChunk`.
+- **Modo headless** — Nuevo flag `--headless` para ejecutar Anacleto sin TUI, con `--task` opcional para enviar un prompt inicial. Las respuestas se escriben a stdout.
+- **Config hot-reload (SIGHUP)** — `kill -HUP <pid>` recarga la configuración YAML del disco sin reiniciar el proceso. Nuevos `EngineCommand::ReloadConfig` y `EngineEvent::ConfigReloaded`.
+- **Logs a archivo** — Los logs se escriben simultáneamente a stdout y a `~/.local/share/anacleto/logs/anacleto.log` con rotación diaria vía `tracing-appender`.
+- **History search en TUI** — Ctrl+R abre un overlay de búsqueda en el historial de la conversación con filtrado case-insensitive, navegación ↑↓, Enter para saltar al mensaje y Esc para cerrar.
+- **CI/CD pipeline** — GitHub Actions con jobs separados para fmt, clippy, build y test en cada push/PR a main/development.
+
+### Changed
+
+- `src/agent/tools.rs`: subagentes cambian de `complete()` a `complete_stream()` con emisión de chunks.
+- `src/main.rs`: nuevo flag `--headless`, inicialización dual de tracing (stdout + archivo), listener SIGHUP.
+- `src/engine/events.rs`: nuevos variants `ReloadConfig` y `ConfigReloaded`.
+- `src/engine/orchestrator.rs`: nuevo método `reload_config()`.
+- `src/tui/keymap.rs`: nuevo action `ToggleSearch`.
+- `src/tui/keys.rs`: manejo del overlay de búsqueda.
+- `src/tui/render.rs`: renderizado del overlay de búsqueda.
+- `src/tui/types.rs`: nuevo tipo `SearchState`.
+- `src/tui/app.rs`: nuevo campo `search`, métodos `update_search_matches()` y `chat_height_at()`.
+
+[0.10.0]: https://github.com/atareao/anacleto/releases/tag/v0.10.0
+
 ## [0.9.0] - 2026-08-07
 
 ### Added
