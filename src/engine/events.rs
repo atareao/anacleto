@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::agent::types::{AgentId, AgentRole, AgentStatus};
+use crate::agent::types::{AgentId, AgentRole, AgentStatus, TaskMode};
 use crate::db::models::{SessionSummary, Snapshot};
 
 /// Events emitted by the engine for the TUI to display.
@@ -58,6 +58,11 @@ pub enum EngineEvent {
         subagent_name: String,
         skills: Vec<String>,
         mcps: Vec<String>,
+        /// Name of the configured subagent type (e.g. "reviewer"), or `None`
+        /// for a dynamic/generic subagent.
+        agent_type: Option<String>,
+        /// Execution mode of the subagent (Foreground/Background).
+        mode: TaskMode,
     },
     /// Subagent completed.
     SubagentCompleted {

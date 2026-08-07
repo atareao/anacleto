@@ -1,7 +1,7 @@
 //! Shared types for the TUI: focus windows, agent info, approval/question
 //! dialogs, the `/init` flow, and the built-in slash command list.
 
-use crate::agent::types::{AgentId, AgentRole, AgentStatus};
+use crate::agent::types::{AgentId, AgentRole, AgentStatus, TaskMode};
 
 /// All slash commands with a short description, used by the fuzzy command
 /// palette and Tab autocomplete.
@@ -77,6 +77,11 @@ pub(crate) struct AgentInfo {
     pub(crate) parent_id: Option<AgentId>,
     /// Number of child subagents (only for Root agents)
     pub(crate) subagent_count: usize,
+    /// Name of the configured subagent type (e.g. "reviewer"), or `None` for a
+    /// dynamic/generic subagent. Root agents have no type.
+    pub(crate) agent_type: Option<String>,
+    /// Execution mode (Foreground/Background). Root agents have no mode.
+    pub(crate) mode: Option<TaskMode>,
 }
 
 /// A pending human approval request.

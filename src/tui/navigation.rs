@@ -244,6 +244,8 @@ mod tests {
             model: String::new(),
             parent_id: None,
             subagent_count: 0,
+            agent_type: None,
+            mode: None,
         }
     }
 
@@ -258,6 +260,8 @@ mod tests {
             model: String::new(),
             parent_id: None,
             subagent_count: 0,
+            agent_type: None,
+            mode: None,
         }
     }
 
