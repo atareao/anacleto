@@ -752,126 +752,128 @@
 <a href=#752 id=752 data-nosnippet>752</a>            model: String::new(),
 <a href=#753 id=753 data-nosnippet>753</a>            parent_id: <span class="prelude-val">None</span>,
 <a href=#754 id=754 data-nosnippet>754</a>            subagent_count: <span class="number">0</span>,
-<a href=#755 id=755 data-nosnippet>755</a>        }
-<a href=#756 id=756 data-nosnippet>756</a>    }
-<a href=#757 id=757 data-nosnippet>757</a>
-<a href=#758 id=758 data-nosnippet>758</a>    <span class="attr">#[test]
-<a href=#759 id=759 data-nosnippet>759</a>    </span><span class="kw">fn </span>drain_queue_if_idle_sends_first_item() {
-<a href=#760 id=760 data-nosnippet>760</a>        <span class="kw">let </span>(cmd_tx, <span class="kw-2">mut </span>cmd_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#761 id=761 data-nosnippet>761</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#762 id=762 data-nosnippet>762</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
-<a href=#763 id=763 data-nosnippet>763</a>        app.active_agent = <span class="string">"root"</span>.to_string();
-<a href=#764 id=764 data-nosnippet>764</a>        app.agents.push(agent(<span class="string">"root"</span>, AgentStatus::Idle));
-<a href=#765 id=765 data-nosnippet>765</a>        app.prompt_queue = <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string(), <span class="string">"second"</span>.to_string()];
-<a href=#766 id=766 data-nosnippet>766</a>
-<a href=#767 id=767 data-nosnippet>767</a>        app.drain_queue_if_idle();
+<a href=#755 id=755 data-nosnippet>755</a>            agent_type: <span class="prelude-val">None</span>,
+<a href=#756 id=756 data-nosnippet>756</a>            mode: <span class="prelude-val">None</span>,
+<a href=#757 id=757 data-nosnippet>757</a>        }
+<a href=#758 id=758 data-nosnippet>758</a>    }
+<a href=#759 id=759 data-nosnippet>759</a>
+<a href=#760 id=760 data-nosnippet>760</a>    <span class="attr">#[test]
+<a href=#761 id=761 data-nosnippet>761</a>    </span><span class="kw">fn </span>drain_queue_if_idle_sends_first_item() {
+<a href=#762 id=762 data-nosnippet>762</a>        <span class="kw">let </span>(cmd_tx, <span class="kw-2">mut </span>cmd_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#763 id=763 data-nosnippet>763</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#764 id=764 data-nosnippet>764</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
+<a href=#765 id=765 data-nosnippet>765</a>        app.active_agent = <span class="string">"root"</span>.to_string();
+<a href=#766 id=766 data-nosnippet>766</a>        app.agents.push(agent(<span class="string">"root"</span>, AgentStatus::Idle));
+<a href=#767 id=767 data-nosnippet>767</a>        app.prompt_queue = <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string(), <span class="string">"second"</span>.to_string()];
 <a href=#768 id=768 data-nosnippet>768</a>
-<a href=#769 id=769 data-nosnippet>769</a>        <span class="macro">assert_eq!</span>(app.prompt_queue, <span class="macro">vec!</span>[<span class="string">"second"</span>.to_string()]);
-<a href=#770 id=770 data-nosnippet>770</a>        <span class="kw">match </span>cmd_rx.try_recv() {
-<a href=#771 id=771 data-nosnippet>771</a>            <span class="prelude-val">Ok</span>(EngineCommand::UserInput(text)) =&gt; <span class="macro">assert_eq!</span>(text, <span class="string">"first"</span>),
-<a href=#772 id=772 data-nosnippet>772</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected UserInput, got {:?}"</span>, other),
-<a href=#773 id=773 data-nosnippet>773</a>        }
-<a href=#774 id=774 data-nosnippet>774</a>    }
-<a href=#775 id=775 data-nosnippet>775</a>
-<a href=#776 id=776 data-nosnippet>776</a>    <span class="attr">#[test]
-<a href=#777 id=777 data-nosnippet>777</a>    </span><span class="kw">fn </span>drain_queue_if_idle_does_nothing_when_sent_message_is_true() {
-<a href=#778 id=778 data-nosnippet>778</a>        <span class="kw">let </span>(cmd_tx, <span class="kw-2">mut </span>cmd_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#779 id=779 data-nosnippet>779</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#780 id=780 data-nosnippet>780</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
-<a href=#781 id=781 data-nosnippet>781</a>        app.sent_message = <span class="bool-val">true</span>;
-<a href=#782 id=782 data-nosnippet>782</a>        app.prompt_queue = <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string()];
-<a href=#783 id=783 data-nosnippet>783</a>
-<a href=#784 id=784 data-nosnippet>784</a>        app.drain_queue_if_idle();
+<a href=#769 id=769 data-nosnippet>769</a>        app.drain_queue_if_idle();
+<a href=#770 id=770 data-nosnippet>770</a>
+<a href=#771 id=771 data-nosnippet>771</a>        <span class="macro">assert_eq!</span>(app.prompt_queue, <span class="macro">vec!</span>[<span class="string">"second"</span>.to_string()]);
+<a href=#772 id=772 data-nosnippet>772</a>        <span class="kw">match </span>cmd_rx.try_recv() {
+<a href=#773 id=773 data-nosnippet>773</a>            <span class="prelude-val">Ok</span>(EngineCommand::UserInput(text)) =&gt; <span class="macro">assert_eq!</span>(text, <span class="string">"first"</span>),
+<a href=#774 id=774 data-nosnippet>774</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected UserInput, got {:?}"</span>, other),
+<a href=#775 id=775 data-nosnippet>775</a>        }
+<a href=#776 id=776 data-nosnippet>776</a>    }
+<a href=#777 id=777 data-nosnippet>777</a>
+<a href=#778 id=778 data-nosnippet>778</a>    <span class="attr">#[test]
+<a href=#779 id=779 data-nosnippet>779</a>    </span><span class="kw">fn </span>drain_queue_if_idle_does_nothing_when_sent_message_is_true() {
+<a href=#780 id=780 data-nosnippet>780</a>        <span class="kw">let </span>(cmd_tx, <span class="kw-2">mut </span>cmd_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#781 id=781 data-nosnippet>781</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#782 id=782 data-nosnippet>782</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
+<a href=#783 id=783 data-nosnippet>783</a>        app.sent_message = <span class="bool-val">true</span>;
+<a href=#784 id=784 data-nosnippet>784</a>        app.prompt_queue = <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string()];
 <a href=#785 id=785 data-nosnippet>785</a>
-<a href=#786 id=786 data-nosnippet>786</a>        <span class="macro">assert_eq!</span>(app.prompt_queue, <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string()]);
-<a href=#787 id=787 data-nosnippet>787</a>        <span class="macro">assert!</span>(cmd_rx.try_recv().is_err());
-<a href=#788 id=788 data-nosnippet>788</a>    }
-<a href=#789 id=789 data-nosnippet>789</a>
-<a href=#790 id=790 data-nosnippet>790</a>    <span class="attr">#[test]
-<a href=#791 id=791 data-nosnippet>791</a>    </span><span class="kw">fn </span>drain_queue_if_idle_does_nothing_when_agent_busy() {
-<a href=#792 id=792 data-nosnippet>792</a>        <span class="kw">let </span>(cmd_tx, <span class="kw-2">mut </span>cmd_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#793 id=793 data-nosnippet>793</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#794 id=794 data-nosnippet>794</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
-<a href=#795 id=795 data-nosnippet>795</a>        app.active_agent = <span class="string">"root"</span>.to_string();
-<a href=#796 id=796 data-nosnippet>796</a>        app.agents.push(agent(<span class="string">"root"</span>, AgentStatus::Working));
-<a href=#797 id=797 data-nosnippet>797</a>        app.prompt_queue = <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string()];
-<a href=#798 id=798 data-nosnippet>798</a>
-<a href=#799 id=799 data-nosnippet>799</a>        app.drain_queue_if_idle();
+<a href=#786 id=786 data-nosnippet>786</a>        app.drain_queue_if_idle();
+<a href=#787 id=787 data-nosnippet>787</a>
+<a href=#788 id=788 data-nosnippet>788</a>        <span class="macro">assert_eq!</span>(app.prompt_queue, <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string()]);
+<a href=#789 id=789 data-nosnippet>789</a>        <span class="macro">assert!</span>(cmd_rx.try_recv().is_err());
+<a href=#790 id=790 data-nosnippet>790</a>    }
+<a href=#791 id=791 data-nosnippet>791</a>
+<a href=#792 id=792 data-nosnippet>792</a>    <span class="attr">#[test]
+<a href=#793 id=793 data-nosnippet>793</a>    </span><span class="kw">fn </span>drain_queue_if_idle_does_nothing_when_agent_busy() {
+<a href=#794 id=794 data-nosnippet>794</a>        <span class="kw">let </span>(cmd_tx, <span class="kw-2">mut </span>cmd_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#795 id=795 data-nosnippet>795</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#796 id=796 data-nosnippet>796</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
+<a href=#797 id=797 data-nosnippet>797</a>        app.active_agent = <span class="string">"root"</span>.to_string();
+<a href=#798 id=798 data-nosnippet>798</a>        app.agents.push(agent(<span class="string">"root"</span>, AgentStatus::Working));
+<a href=#799 id=799 data-nosnippet>799</a>        app.prompt_queue = <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string()];
 <a href=#800 id=800 data-nosnippet>800</a>
-<a href=#801 id=801 data-nosnippet>801</a>        <span class="comment">// sent_message is false, but the agent is busy —
-<a href=#802 id=802 data-nosnippet>802</a>        // the item must stay queued.
-<a href=#803 id=803 data-nosnippet>803</a>        </span><span class="macro">assert_eq!</span>(app.prompt_queue, <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string()]);
-<a href=#804 id=804 data-nosnippet>804</a>        <span class="macro">assert!</span>(cmd_rx.try_recv().is_err());
-<a href=#805 id=805 data-nosnippet>805</a>    }
-<a href=#806 id=806 data-nosnippet>806</a>
-<a href=#807 id=807 data-nosnippet>807</a>    <span class="attr">#[test]
-<a href=#808 id=808 data-nosnippet>808</a>    </span><span class="kw">fn </span>drain_queue_if_idle_does_nothing_when_queue_empty() {
-<a href=#809 id=809 data-nosnippet>809</a>        <span class="kw">let </span>(cmd_tx, <span class="kw-2">mut </span>cmd_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#810 id=810 data-nosnippet>810</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#811 id=811 data-nosnippet>811</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
-<a href=#812 id=812 data-nosnippet>812</a>        app.active_agent = <span class="string">"root"</span>.to_string();
-<a href=#813 id=813 data-nosnippet>813</a>        app.agents.push(agent(<span class="string">"root"</span>, AgentStatus::Idle));
-<a href=#814 id=814 data-nosnippet>814</a>
-<a href=#815 id=815 data-nosnippet>815</a>        app.drain_queue_if_idle();
+<a href=#801 id=801 data-nosnippet>801</a>        app.drain_queue_if_idle();
+<a href=#802 id=802 data-nosnippet>802</a>
+<a href=#803 id=803 data-nosnippet>803</a>        <span class="comment">// sent_message is false, but the agent is busy —
+<a href=#804 id=804 data-nosnippet>804</a>        // the item must stay queued.
+<a href=#805 id=805 data-nosnippet>805</a>        </span><span class="macro">assert_eq!</span>(app.prompt_queue, <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string()]);
+<a href=#806 id=806 data-nosnippet>806</a>        <span class="macro">assert!</span>(cmd_rx.try_recv().is_err());
+<a href=#807 id=807 data-nosnippet>807</a>    }
+<a href=#808 id=808 data-nosnippet>808</a>
+<a href=#809 id=809 data-nosnippet>809</a>    <span class="attr">#[test]
+<a href=#810 id=810 data-nosnippet>810</a>    </span><span class="kw">fn </span>drain_queue_if_idle_does_nothing_when_queue_empty() {
+<a href=#811 id=811 data-nosnippet>811</a>        <span class="kw">let </span>(cmd_tx, <span class="kw-2">mut </span>cmd_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#812 id=812 data-nosnippet>812</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#813 id=813 data-nosnippet>813</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
+<a href=#814 id=814 data-nosnippet>814</a>        app.active_agent = <span class="string">"root"</span>.to_string();
+<a href=#815 id=815 data-nosnippet>815</a>        app.agents.push(agent(<span class="string">"root"</span>, AgentStatus::Idle));
 <a href=#816 id=816 data-nosnippet>816</a>
-<a href=#817 id=817 data-nosnippet>817</a>        <span class="macro">assert!</span>(cmd_rx.try_recv().is_err());
-<a href=#818 id=818 data-nosnippet>818</a>    }
-<a href=#819 id=819 data-nosnippet>819</a>
-<a href=#820 id=820 data-nosnippet>820</a>    <span class="attr">#[test]
-<a href=#821 id=821 data-nosnippet>821</a>    </span><span class="kw">fn </span>drain_queue_if_idle_drains_one_item_at_a_time() {
-<a href=#822 id=822 data-nosnippet>822</a>        <span class="kw">let </span>(cmd_tx, <span class="kw-2">mut </span>cmd_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#823 id=823 data-nosnippet>823</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#824 id=824 data-nosnippet>824</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
-<a href=#825 id=825 data-nosnippet>825</a>        app.active_agent = <span class="string">"root"</span>.to_string();
-<a href=#826 id=826 data-nosnippet>826</a>        app.agents.push(agent(<span class="string">"root"</span>, AgentStatus::Idle));
-<a href=#827 id=827 data-nosnippet>827</a>        app.prompt_queue = <span class="macro">vec!</span>[
-<a href=#828 id=828 data-nosnippet>828</a>            <span class="string">"first"</span>.to_string(),
-<a href=#829 id=829 data-nosnippet>829</a>            <span class="string">"second"</span>.to_string(),
-<a href=#830 id=830 data-nosnippet>830</a>            <span class="string">"third"</span>.to_string(),
-<a href=#831 id=831 data-nosnippet>831</a>        ];
-<a href=#832 id=832 data-nosnippet>832</a>
-<a href=#833 id=833 data-nosnippet>833</a>        <span class="comment">// First drain sends only the first item; the rest stay queued.
-<a href=#834 id=834 data-nosnippet>834</a>        </span>app.drain_queue_if_idle();
-<a href=#835 id=835 data-nosnippet>835</a>        <span class="macro">assert_eq!</span>(
-<a href=#836 id=836 data-nosnippet>836</a>            app.prompt_queue,
-<a href=#837 id=837 data-nosnippet>837</a>            <span class="macro">vec!</span>[<span class="string">"second"</span>.to_string(), <span class="string">"third"</span>.to_string()]
-<a href=#838 id=838 data-nosnippet>838</a>        );
-<a href=#839 id=839 data-nosnippet>839</a>        <span class="kw">match </span>cmd_rx.try_recv() {
-<a href=#840 id=840 data-nosnippet>840</a>            <span class="prelude-val">Ok</span>(EngineCommand::UserInput(text)) =&gt; <span class="macro">assert_eq!</span>(text, <span class="string">"first"</span>),
-<a href=#841 id=841 data-nosnippet>841</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected UserInput, got {:?}"</span>, other),
-<a href=#842 id=842 data-nosnippet>842</a>        }
-<a href=#843 id=843 data-nosnippet>843</a>
-<a href=#844 id=844 data-nosnippet>844</a>        <span class="comment">// Second drain sends the next item, one at a time.
-<a href=#845 id=845 data-nosnippet>845</a>        // Clear sent_message first to simulate receiving an Idle event.
-<a href=#846 id=846 data-nosnippet>846</a>        </span>app.sent_message = <span class="bool-val">false</span>;
-<a href=#847 id=847 data-nosnippet>847</a>        app.drain_queue_if_idle();
-<a href=#848 id=848 data-nosnippet>848</a>        <span class="macro">assert_eq!</span>(app.prompt_queue, <span class="macro">vec!</span>[<span class="string">"third"</span>.to_string()]);
-<a href=#849 id=849 data-nosnippet>849</a>        <span class="kw">match </span>cmd_rx.try_recv() {
-<a href=#850 id=850 data-nosnippet>850</a>            <span class="prelude-val">Ok</span>(EngineCommand::UserInput(text)) =&gt; <span class="macro">assert_eq!</span>(text, <span class="string">"second"</span>),
-<a href=#851 id=851 data-nosnippet>851</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected UserInput, got {:?}"</span>, other),
-<a href=#852 id=852 data-nosnippet>852</a>        }
-<a href=#853 id=853 data-nosnippet>853</a>    }
-<a href=#854 id=854 data-nosnippet>854</a>
-<a href=#855 id=855 data-nosnippet>855</a>    <span class="attr">#[test]
-<a href=#856 id=856 data-nosnippet>856</a>    </span><span class="kw">fn </span>drain_queue_if_idle_reinserts_item_when_channel_full() {
-<a href=#857 id=857 data-nosnippet>857</a>        <span class="comment">// Channel with capacity 1, pre-filled so try_send fails with Full.
-<a href=#858 id=858 data-nosnippet>858</a>        </span><span class="kw">let </span>(cmd_tx, _cmd_rx) = mpsc::channel(<span class="number">1</span>);
-<a href=#859 id=859 data-nosnippet>859</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#860 id=860 data-nosnippet>860</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
-<a href=#861 id=861 data-nosnippet>861</a>        app.active_agent = <span class="string">"root"</span>.to_string();
-<a href=#862 id=862 data-nosnippet>862</a>        app.agents.push(agent(<span class="string">"root"</span>, AgentStatus::Idle));
-<a href=#863 id=863 data-nosnippet>863</a>        app.prompt_queue = <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string(), <span class="string">"second"</span>.to_string()];
-<a href=#864 id=864 data-nosnippet>864</a>
-<a href=#865 id=865 data-nosnippet>865</a>        <span class="comment">// Fill the channel so the next try_send fails.
-<a href=#866 id=866 data-nosnippet>866</a>        </span><span class="kw">let _ </span>= app.cmd_tx.try_send(EngineCommand::Status);
-<a href=#867 id=867 data-nosnippet>867</a>
-<a href=#868 id=868 data-nosnippet>868</a>        app.drain_queue_if_idle();
+<a href=#817 id=817 data-nosnippet>817</a>        app.drain_queue_if_idle();
+<a href=#818 id=818 data-nosnippet>818</a>
+<a href=#819 id=819 data-nosnippet>819</a>        <span class="macro">assert!</span>(cmd_rx.try_recv().is_err());
+<a href=#820 id=820 data-nosnippet>820</a>    }
+<a href=#821 id=821 data-nosnippet>821</a>
+<a href=#822 id=822 data-nosnippet>822</a>    <span class="attr">#[test]
+<a href=#823 id=823 data-nosnippet>823</a>    </span><span class="kw">fn </span>drain_queue_if_idle_drains_one_item_at_a_time() {
+<a href=#824 id=824 data-nosnippet>824</a>        <span class="kw">let </span>(cmd_tx, <span class="kw-2">mut </span>cmd_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#825 id=825 data-nosnippet>825</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#826 id=826 data-nosnippet>826</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
+<a href=#827 id=827 data-nosnippet>827</a>        app.active_agent = <span class="string">"root"</span>.to_string();
+<a href=#828 id=828 data-nosnippet>828</a>        app.agents.push(agent(<span class="string">"root"</span>, AgentStatus::Idle));
+<a href=#829 id=829 data-nosnippet>829</a>        app.prompt_queue = <span class="macro">vec!</span>[
+<a href=#830 id=830 data-nosnippet>830</a>            <span class="string">"first"</span>.to_string(),
+<a href=#831 id=831 data-nosnippet>831</a>            <span class="string">"second"</span>.to_string(),
+<a href=#832 id=832 data-nosnippet>832</a>            <span class="string">"third"</span>.to_string(),
+<a href=#833 id=833 data-nosnippet>833</a>        ];
+<a href=#834 id=834 data-nosnippet>834</a>
+<a href=#835 id=835 data-nosnippet>835</a>        <span class="comment">// First drain sends only the first item; the rest stay queued.
+<a href=#836 id=836 data-nosnippet>836</a>        </span>app.drain_queue_if_idle();
+<a href=#837 id=837 data-nosnippet>837</a>        <span class="macro">assert_eq!</span>(
+<a href=#838 id=838 data-nosnippet>838</a>            app.prompt_queue,
+<a href=#839 id=839 data-nosnippet>839</a>            <span class="macro">vec!</span>[<span class="string">"second"</span>.to_string(), <span class="string">"third"</span>.to_string()]
+<a href=#840 id=840 data-nosnippet>840</a>        );
+<a href=#841 id=841 data-nosnippet>841</a>        <span class="kw">match </span>cmd_rx.try_recv() {
+<a href=#842 id=842 data-nosnippet>842</a>            <span class="prelude-val">Ok</span>(EngineCommand::UserInput(text)) =&gt; <span class="macro">assert_eq!</span>(text, <span class="string">"first"</span>),
+<a href=#843 id=843 data-nosnippet>843</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected UserInput, got {:?}"</span>, other),
+<a href=#844 id=844 data-nosnippet>844</a>        }
+<a href=#845 id=845 data-nosnippet>845</a>
+<a href=#846 id=846 data-nosnippet>846</a>        <span class="comment">// Second drain sends the next item, one at a time.
+<a href=#847 id=847 data-nosnippet>847</a>        // Clear sent_message first to simulate receiving an Idle event.
+<a href=#848 id=848 data-nosnippet>848</a>        </span>app.sent_message = <span class="bool-val">false</span>;
+<a href=#849 id=849 data-nosnippet>849</a>        app.drain_queue_if_idle();
+<a href=#850 id=850 data-nosnippet>850</a>        <span class="macro">assert_eq!</span>(app.prompt_queue, <span class="macro">vec!</span>[<span class="string">"third"</span>.to_string()]);
+<a href=#851 id=851 data-nosnippet>851</a>        <span class="kw">match </span>cmd_rx.try_recv() {
+<a href=#852 id=852 data-nosnippet>852</a>            <span class="prelude-val">Ok</span>(EngineCommand::UserInput(text)) =&gt; <span class="macro">assert_eq!</span>(text, <span class="string">"second"</span>),
+<a href=#853 id=853 data-nosnippet>853</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected UserInput, got {:?}"</span>, other),
+<a href=#854 id=854 data-nosnippet>854</a>        }
+<a href=#855 id=855 data-nosnippet>855</a>    }
+<a href=#856 id=856 data-nosnippet>856</a>
+<a href=#857 id=857 data-nosnippet>857</a>    <span class="attr">#[test]
+<a href=#858 id=858 data-nosnippet>858</a>    </span><span class="kw">fn </span>drain_queue_if_idle_reinserts_item_when_channel_full() {
+<a href=#859 id=859 data-nosnippet>859</a>        <span class="comment">// Channel with capacity 1, pre-filled so try_send fails with Full.
+<a href=#860 id=860 data-nosnippet>860</a>        </span><span class="kw">let </span>(cmd_tx, _cmd_rx) = mpsc::channel(<span class="number">1</span>);
+<a href=#861 id=861 data-nosnippet>861</a>        <span class="kw">let </span>(_ev_tx, event_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#862 id=862 data-nosnippet>862</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(cmd_tx, event_rx, <span class="bool-val">false</span>, <span class="kw-2">&amp;</span>Config::default());
+<a href=#863 id=863 data-nosnippet>863</a>        app.active_agent = <span class="string">"root"</span>.to_string();
+<a href=#864 id=864 data-nosnippet>864</a>        app.agents.push(agent(<span class="string">"root"</span>, AgentStatus::Idle));
+<a href=#865 id=865 data-nosnippet>865</a>        app.prompt_queue = <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string(), <span class="string">"second"</span>.to_string()];
+<a href=#866 id=866 data-nosnippet>866</a>
+<a href=#867 id=867 data-nosnippet>867</a>        <span class="comment">// Fill the channel so the next try_send fails.
+<a href=#868 id=868 data-nosnippet>868</a>        </span><span class="kw">let _ </span>= app.cmd_tx.try_send(EngineCommand::Status);
 <a href=#869 id=869 data-nosnippet>869</a>
-<a href=#870 id=870 data-nosnippet>870</a>        <span class="comment">// The item must be re-inserted at the front, not lost.
-<a href=#871 id=871 data-nosnippet>871</a>        </span><span class="macro">assert_eq!</span>(
-<a href=#872 id=872 data-nosnippet>872</a>            app.prompt_queue,
-<a href=#873 id=873 data-nosnippet>873</a>            <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string(), <span class="string">"second"</span>.to_string()]
-<a href=#874 id=874 data-nosnippet>874</a>        );
-<a href=#875 id=875 data-nosnippet>875</a>    }
-<a href=#876 id=876 data-nosnippet>876</a>}
+<a href=#870 id=870 data-nosnippet>870</a>        app.drain_queue_if_idle();
+<a href=#871 id=871 data-nosnippet>871</a>
+<a href=#872 id=872 data-nosnippet>872</a>        <span class="comment">// The item must be re-inserted at the front, not lost.
+<a href=#873 id=873 data-nosnippet>873</a>        </span><span class="macro">assert_eq!</span>(
+<a href=#874 id=874 data-nosnippet>874</a>            app.prompt_queue,
+<a href=#875 id=875 data-nosnippet>875</a>            <span class="macro">vec!</span>[<span class="string">"first"</span>.to_string(), <span class="string">"second"</span>.to_string()]
+<a href=#876 id=876 data-nosnippet>876</a>        );
+<a href=#877 id=877 data-nosnippet>877</a>    }
+<a href=#878 id=878 data-nosnippet>878</a>}
 </code></pre></div></section></main></body></html>
