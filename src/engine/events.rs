@@ -193,6 +193,8 @@ pub enum EngineEvent {
     SnapshotReverted { snapshot_id: Uuid },
     /// The snapshots of the active session were listed (via `/snapshots`).
     SnapshotsListed(Vec<Snapshot>),
+    /// Configuration was reloaded from disk (triggered by SIGHUP).
+    ConfigReloaded,
 }
 
 /// Output format for a session export.
@@ -372,6 +374,8 @@ pub enum EngineCommand {
     Clear,
     /// Commit the staged snapshot (via `/commit`).
     Commit { name: Option<String> },
+    /// Reload configuration from disk (triggered by SIGHUP).
+    ReloadConfig,
     /// Shutdown the engine.
     Shutdown,
 }

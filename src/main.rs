@@ -82,6 +82,24 @@ async fn main() -> anyhow::Result<()> {
     let mut engine = Engine::new(config.clone(), event_tx.clone(), cmd_rx);
     engine.initialize().await?;
 
+    // SIGHUP handler for config hot-reload
+    let sighup_cmd_tx = cmd_tx.clone();
+    tokio::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut stream = match signal(SignalKind::hangup()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Could not install SIGHUP handler: {}", e);
+                return;
+            }
+        };
+        loop {
+            stream.recv().await;
+            tracing::info!("Received SIGHUP, reloading config...");
+            let _ = sighup_cmd_tx.send(EngineCommand::ReloadConfig).await;
+        }
+    });
+
     if cli.headless {
         // Headless mode: no TUI, run engine in background
         // If a task is provided, send it as user input

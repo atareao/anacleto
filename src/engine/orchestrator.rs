@@ -361,6 +361,14 @@ impl Engine {
         })
     }
 
+    /// Reload configuration from disk. Called on SIGHUP.
+    pub fn reload_config(&mut self, config: Config) {
+        self.config = config;
+        // Propagate any config changes that affect running state
+        // (e.g., session settings, MCP definitions)
+        tracing::info!("Configuration reloaded from disk");
+    }
+
     pub async fn run(&mut self) -> Result<()> {
         loop {
             tokio::select! {
@@ -513,6 +521,25 @@ impl Engine {
                                 self.handle_commit(name.as_deref()).await?;
                             }
                             EngineCommand::Shutdown => unreachable!(),
+                            EngineCommand::ReloadConfig => {
+                                match crate::config::loader::load_config(None) {
+                                    Ok(new_config) => {
+                                        self.reload_config(new_config);
+                                        let _ = self.event_tx
+                                            .send(EngineEvent::ConfigReloaded)
+                                            .await;
+                                        tracing::info!("Configuration reloaded successfully");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to reload config: {}", e);
+                                        let _ = self.event_tx
+                                            .send(EngineEvent::CommandError(
+                                                format!("Failed to reload config: {}", e),
+                                            ))
+                                            .await;
+                                    }
+                                }
+                            }
                         }
                         Ok(())
                     }
