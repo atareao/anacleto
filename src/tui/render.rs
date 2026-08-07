@@ -78,6 +78,11 @@ pub(crate) fn render(f: &mut Frame, app: &mut App) {
     // Render the prompt queue popup if visible.
     render_prompt_queue(f, f.area(), app);
 
+    // Render the search overlay if visible.
+    if app.search.visible {
+        render_search_overlay(f, f.area(), app);
+    }
+
     // Render transient toasts in the bottom-right corner.
     app.toasts.render(f, f.area());
 }
@@ -118,6 +123,80 @@ fn render_prompt_queue(f: &mut Frame, area: Rect, app: &App) {
     };
     f.render_widget(Clear, popup);
     f.render_widget(list, popup);
+}
+
+/// Render the conversation history search overlay (Ctrl+R).
+fn render_search_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let dialog_width = area.width.min(60);
+    let dialog_height = 10;
+    let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+    f.render_widget(Clear, dialog_area);
+
+    // Build content lines
+    let mut lines = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("> {}", app.search.query),
+        Style::default().fg(Color::White),
+    )));
+    lines.push(Line::from(Span::raw("")));
+
+    // Show match count
+    let match_text = if app.search.query.is_empty() {
+        "Type to search conversation history...".to_string()
+    } else {
+        format!(
+            "{} match(es) found",
+            app.search.matches.len()
+        )
+    };
+    lines.push(Line::from(Span::styled(
+        match_text,
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Show current match preview if any
+    if !app.search.matches.is_empty() {
+        let idx = app.search.matches[app.search.selected];
+        if let Some(msg) = app.messages.get(idx) {
+            let preview = if msg.len() > 60 {
+                format!("{}...", &msg[..60])
+            } else {
+                msg.clone()
+            };
+            lines.push(Line::from(Span::raw("")));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "[{}/{}] {}",
+                    app.search.selected + 1,
+                    app.search.matches.len(),
+                    preview,
+                ),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+    }
+
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        " ↑↓ navigate  ↵ jump  Esc close ",
+        Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(" Search History (Ctrl+R) ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Cyan))
+                .style(Style::default().bg(Color::Rgb(20, 20, 40))),
+        )
+        .alignment(Alignment::Left);
+
+    f.render_widget(dialog, dialog_area);
 }
 
 /// Render the top status bar with agent/session info.

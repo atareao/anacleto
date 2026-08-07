@@ -13,6 +13,48 @@ impl App {
     pub fn handle_key(&mut self, key: KeyCode, modifiers: KeyModifiers) {
         let key_event = KeyEvent::new(key, modifiers);
 
+        // If the search overlay is open, all keys drive the search box.
+        if self.search.visible {
+            match key {
+                KeyCode::Esc => {
+                    self.search.visible = false;
+                    self.search.query.clear();
+                    self.search.matches.clear();
+                    self.search.selected = 0;
+                }
+                KeyCode::Enter => {
+                    // Jump to the selected match in the chat.
+                    if let Some(idx) = self.search.matches.get(self.search.selected) {
+                        self.chat_scroll = self.chat_height_at(*idx);
+                    }
+                    self.search.visible = false;
+                    self.search.query.clear();
+                    self.search.matches.clear();
+                    self.search.selected = 0;
+                }
+                KeyCode::Up => {
+                    if !self.search.matches.is_empty() {
+                        self.search.selected = self.search.selected.saturating_sub(1);
+                    }
+                }
+                KeyCode::Down => {
+                    if self.search.selected + 1 < self.search.matches.len() {
+                        self.search.selected += 1;
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.search.query.pop();
+                    self.update_search_matches();
+                }
+                KeyCode::Char(c) => {
+                    self.search.query.push(c);
+                    self.update_search_matches();
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // If the which-key popup is open, any key press closes it.
         if self.which_key.visible {
             self.which_key.visible = false;
@@ -367,6 +409,14 @@ impl App {
             if self.keymap.matches(key_event, Action::OpenPromptQueue) {
                 self.show_prompt_queue = true;
                 self.prompt_queue_index = 0;
+                return;
+            }
+            if self.keymap.matches(key_event, Action::ToggleSearch) {
+                self.search.visible = !self.search.visible;
+                if self.search.visible {
+                    self.search.query.clear();
+                    self.update_search_matches();
+                }
                 return;
             }
             // Quick slots 1..9 resume the pinned session at that index.

@@ -20,7 +20,7 @@ use crate::tui::render::render;
 use crate::tui::theme::Theme;
 use crate::tui::toast::ToastQueue;
 use crate::tui::types::{
-    AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, Focus, InitFlow, QuestionState,
+    AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, Focus, InitFlow, QuestionState, SearchState,
 };
 use crate::tui::which_key::WhichKeyPopup;
 
@@ -203,6 +203,8 @@ pub struct App {
     pub prompt_queue_index: usize,
     /// Whether a message has been sent to the agent and we're awaiting idle.
     pub sent_message: bool,
+    /// Search overlay state (Ctrl+R).
+    pub(crate) search: SearchState,
 }
 
 impl App {
@@ -323,6 +325,7 @@ impl App {
             show_prompt_queue: false,
             prompt_queue_index: 0,
             sent_message: false,
+            search: SearchState::default(),
         }
     }
 
@@ -393,6 +396,33 @@ impl App {
             // drain.
             self.prompt_queue.insert(0, item);
         }
+    }
+
+    /// Update the list of matching message indices from the current search query.
+    pub(crate) fn update_search_matches(&mut self) {
+        if self.search.query.is_empty() {
+            self.search.matches.clear();
+            self.search.selected = 0;
+            return;
+        }
+        let query = self.search.query.to_lowercase();
+        self.search.matches = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, msg)| msg.to_lowercase().contains(&query))
+            .map(|(i, _)| i)
+            .collect();
+        self.search.selected = 0;
+    }
+
+    /// Approximate the vertical scroll offset for a message index.
+    /// This is a rough estimate since each message may wrap multiple lines.
+    pub(crate) fn chat_height_at(&self, msg_index: usize) -> u16 {
+        // Each message is at least 1 line, plus some overhead for spacing.
+        // The exact value depends on terminal width, but we use the index
+        // as a rough scroll offset so Enter jumps to the right area.
+        msg_index as u16 * 3
     }
 }
 
