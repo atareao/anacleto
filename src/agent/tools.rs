@@ -15,9 +15,7 @@ use crate::engine::jobs::JobRegistry;
 use crate::engine::orchestrator::{EngineEvent, UsageEvent};
 use crate::error::{Error, Result};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry};
-use crate::llm::types::{
-    LlmMessage, LlmRequest, LlmResponse, MessageRole, ToolCall, ToolDefinition,
-};
+use crate::llm::types::{LlmMessage, LlmRequest, LlmResponse, LlmStreamChunk, LlmUsage, MessageRole, ToolCall, ToolDefinition,};
 use crate::permissions::checker::{
     check_command_run, check_fs_read, check_fs_write, check_mcp_use, check_net_http,
     check_skill_use,
@@ -1509,7 +1507,7 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
                 tools: subagent_tools.clone(),
                 max_tokens: None,
                 temperature: None,
-                stream: false, // non-streaming for subagents
+                stream: true,
                 cache_control: None,
             };
 
@@ -1526,22 +1524,75 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
                     .await;
             }
 
-            // Wrap subagent LLM call with retries
+            // Wrap subagent LLM call with retries (streaming)
             let sub_retry_cfg = subagent_retry_config.clone();
             let sub_agent_name = agent_name.clone();
-            let complete_result = retry_with_backoff(
+            let sub_agent_id = agent_id.clone();
+            let sub_event_tx = event_tx.clone();
+            let stream_result = retry_with_backoff(
                 |_attempt| {
                     let req = request.clone();
                     let prov = provider.clone();
-                    async move { prov.complete(req).await }
+                    async move { prov.complete_stream(req).await }
                 },
                 &sub_retry_cfg,
-                &format!("Subagent LLM call for '{}'", sub_agent_name),
+                &format!("Subagent LLM stream call for '{}'", sub_agent_name),
             )
             .await;
 
-            match complete_result {
-                Ok(response) => {
+            match stream_result {
+                Ok(mut stream_rx) => {
+                    let mut full_response = String::new();
+                    let mut tool_calls: Vec<ToolCall> = Vec::new();
+                    let mut stream_error: Option<String> = None;
+                    let mut usage_info: Option<LlmUsage> = None;
+
+                    // Collect all chunks from the stream
+                    while let Some(chunk) = stream_rx.recv().await {
+                        match chunk {
+                            Ok(LlmStreamChunk::Content(text)) => {
+                                full_response.push_str(&text);
+                                let _ = sub_event_tx
+                                    .send(EngineEvent::AgentStreamChunk {
+                                        agent_id: sub_agent_id.clone(),
+                                        agent_name: sub_agent_name.clone(),
+                                        content: text,
+                                    })
+                                    .await;
+                            }
+                            Ok(LlmStreamChunk::ToolCall(tc)) => {
+                                tool_calls.push(tc);
+                            }
+                            Ok(LlmStreamChunk::Done(usage)) => {
+                                usage_info = Some(usage);
+                            }
+                            Ok(LlmStreamChunk::Error(e)) => {
+                                stream_error = Some(e);
+                            }
+                            Err(e) => {
+                                stream_error = Some(e.to_string());
+                            }
+                        }
+                    }
+
+                    if let Some(err) = stream_error {
+                        let _ = response_tx.send(format!("[Error en subagente] {}", err));
+                        return;
+                    }
+
+                    // Build a synthetic LlmResponse from the collected stream
+                    let response = LlmResponse {
+                        content: full_response,
+                        tool_calls: tool_calls.clone(),
+                        usage: usage_info,
+                        finish_reason: if tool_calls.is_empty() {
+                            "stop".to_string()
+                        } else {
+                            "tool_use".to_string()
+                        },
+                        thinking: None,
+                    };
+
                     // Emit token usage if available
                     if let Some(ref usage) = response.usage {
                         let cost = (usage.prompt_tokens as f64
