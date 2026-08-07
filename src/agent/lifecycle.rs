@@ -16,7 +16,7 @@ use crate::agent::tools::{
     spawn_subagent_and_delegate, subagent_config_to_tool_definition, task_tool_definition,
     todo_tool_definition,
 };
-use crate::agent::types::{Agent, AgentMessage, AgentMode, AgentStatus};
+use crate::agent::types::{Agent, AgentMessage, AgentMode, AgentStatus, TaskMode};
 use crate::config::types::AgentConfig;
 use crate::config::types::RetryConfig;
 use crate::db::session::Database;
@@ -541,21 +541,51 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                     tool_call_id: None,
                                 });
 
-                                // Execute each tool call — try skills first, then subagents, then MCP
-                                for tc in &tool_calls {
+                                // Execute each tool call — try skills first, then subagents, then MCP.
+                                //
+                                // `execute_one` runs a single tool call and returns
+                                // `(tool_call_id, result_string)`. It captures the shared
+                                // state by reference so it can be invoked concurrently for
+                                // multiple `task` calls in the same batch.
+                                //
+                                // Bind shared state as references (Copy) so the `async move`
+                                // closure captures only references and remains `Fn` (callable
+                                // multiple times, including concurrently).
+                                let agent_permissions = &agent_permissions;
+                                let llm_registry = &llm_registry;
+                                let skills = &skills;
+                                let event_tx = &event_tx;
+                                let usage_tx = &usage_tx;
+                                let db = &db;
+                                let retry_config = &retry_config;
+                                let debug_mode = &debug_mode;
+                                let agent_name = &agent_name;
+                                let agent_id = &agent_id;
+                                let model = &model;
+                                let job_registry = &job_registry;
+                                let subagent_configs = &subagent_configs;
+                                let workspace = &workspace;
+                                let pending_approvals = &pending_approvals;
+                                let pending_questions = &pending_questions;
+                                let plugins = &plugins;
+                                let mcp_registry = &mcp_registry;
+                                let mcp_tool_map = &mcp_tool_map;
+                                let mode = &mode;
+
+                                let execute_one = |tc: ToolCall| async move {
                                     // Check permissions before executing
                                     let permission_ok = check_tool_permission(
-                                        tc,
-                                        &agent_permissions,
-                                        &pending_approvals,
-                                        &event_tx,
-                                        &agent_name,
+                                        &tc,
+                                        agent_permissions,
+                                        pending_approvals,
+                                        event_tx,
+                                        agent_name,
                                     )
                                     .await;
 
                                     // In Plan mode, block write tools (read-only).
                                     let plan_blocked = plan_mode_blocked(
-                                        &mode,
+                                        mode,
                                         &tc.function.name,
                                         &tc.function.arguments,
                                     );
@@ -568,77 +598,78 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             tc.function.name
                                         )
                                     } else if let Some(hook_result) =
-                                        plugins.as_ref().and_then(|p| p.on_tool_call(tc))
+                                        plugins.as_ref().and_then(|p| p.on_tool_call(&tc))
                                     {
                                         // A plugin short-circuited this tool call.
                                         hook_result
                                     } else if tc.function.name == "task" {
                                         execute_task_tool(
-                                            tc,
-                                            &agent_permissions,
-                                            &llm_registry,
-                                            &skills,
-                                            &event_tx,
-                                            &usage_tx,
-                                            &db,
+                                            &tc,
+                                            agent_permissions,
+                                            llm_registry,
+                                            skills,
+                                            event_tx,
+                                            usage_tx,
+                                            db,
                                             session_id,
                                             history_limit_percent,
-                                            &retry_config,
-                                            &debug_mode,
+                                            retry_config,
+                                            debug_mode,
                                             depth,
                                             subagent_depth,
-                                            &agent_name,
-                                            &agent_id,
-                                            &model,
-                                            &job_registry,
+                                            agent_name,
+                                            agent_id,
+                                            model,
+                                            job_registry,
+                                            subagent_configs,
                                         )
                                         .await
                                         .unwrap_or_else(|e| e)
                                     } else if tc.function.name == "todo" {
-                                        execute_todo_tool(&db, session_id, tc, &event_tx)
+                                        execute_todo_tool(db, session_id, &tc, event_tx)
                                             .await
                                             .unwrap_or_else(|e| e)
                                     } else if tc.function.name == "question" {
-                                        execute_question_tool(&pending_questions, tc, &event_tx)
+                                        execute_question_tool(pending_questions, &tc, event_tx)
                                             .await
                                             .unwrap_or_else(|e| e)
                                     } else if tc.function.name == "apply_patch" {
                                         execute_apply_patch_tool(
-                                            &workspace,
-                                            &agent_permissions,
-                                            &pending_approvals,
-                                            &event_tx,
-                                            &agent_name,
-                                            tc,
+                                            workspace,
+                                            agent_permissions,
+                                            pending_approvals,
+                                            event_tx,
+                                            agent_name,
+                                            &tc,
                                         )
                                         .await
                                         .unwrap_or_else(|e| e)
                                     } else if tc.function.name == "read" {
-                                        execute_read_tool(&workspace, &agent_permissions, tc)
+                                        execute_read_tool(workspace, agent_permissions, &tc)
                                             .await
                                             .unwrap_or_else(|e| e)
                                     } else if tc.function.name == "grep" {
-                                        execute_grep_tool(&workspace, &agent_permissions, tc)
+                                        execute_grep_tool(workspace, agent_permissions, &tc)
                                             .await
                                             .unwrap_or_else(|e| e)
                                     } else if tc.function.name == "glob" {
-                                        execute_glob_tool(&workspace, &agent_permissions, tc)
+                                        execute_glob_tool(workspace, agent_permissions, &tc)
                                             .await
                                             .unwrap_or_else(|e| e)
                                     } else if tc.function.name == "webfetch" {
-                                        execute_webfetch_tool(&agent_permissions, tc)
+                                        execute_webfetch_tool(agent_permissions, &tc)
                                             .await
                                             .unwrap_or_else(|e| e)
                                     } else if tc.function.name == "websearch" {
-                                        execute_websearch_tool(&agent_permissions, tc)
+                                        execute_websearch_tool(agent_permissions, &tc)
                                             .await
                                             .unwrap_or_else(|e| e)
                                     } else if tc.function.name == "mcp_list_resources" {
                                         match mcp_registry {
-                                            Some(ref reg) => execute_mcp_list_resources_tool(
+                                            Some(reg) => execute_mcp_list_resources_tool(
                                                 reg,
-                                                &agent_permissions,
-                                                tc,
+                                                agent_permissions,
+                                                &tc,
                                             )
                                             .await
                                             .unwrap_or_else(|e| e),
@@ -649,10 +680,10 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                         }
                                     } else if tc.function.name == "mcp_read_resource" {
                                         match mcp_registry {
-                                            Some(ref reg) => execute_mcp_read_resource_tool(
+                                            Some(reg) => execute_mcp_read_resource_tool(
                                                 reg,
-                                                &agent_permissions,
-                                                tc,
+                                                agent_permissions,
+                                                &tc,
                                             )
                                             .await
                                             .unwrap_or_else(|e| e),
@@ -663,9 +694,9 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                         }
                                     } else if tc.function.name == "mcp_list_resource_templates" {
                                         match mcp_registry {
-                                            Some(ref reg) => {
+                                            Some(reg) => {
                                                 execute_mcp_list_resource_templates_tool(
-                                                    reg, &agent_permissions, tc,
+                                                    reg, agent_permissions, &tc,
                                                 )
                                                 .await
                                                 .unwrap_or_else(|e| e)
@@ -676,18 +707,14 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             }
                                         }
                                     } else if tc.function.name == "lsp_query" {
-                                        execute_lsp_query_tool(&agent_permissions, tc)
+                                        execute_lsp_query_tool(agent_permissions, &tc)
                                             .await
                                             .unwrap_or_else(|e| e)
                                     } else if let Some(_skill) =
                                         skills.iter().find(|s| s.name == tc.function.name)
                                     {
                                         execute_skill_tool(
-                                            &skills,
-                                            &agent_name,
-                                            tc,
-                                            &event_tx,
-                                            &agent_id,
+                                            skills, agent_name, &tc, event_tx, agent_id,
                                         )
                                         .await
                                         .unwrap_or_else(|e| e)
@@ -726,6 +753,8 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             depth: depth + 1,
                                             skills_override: None,
                                             permissions_override: None,
+                                            agent_type: Some(config.name.clone()),
+                                            mode: TaskMode::Foreground,
                                         })
                                         .await
                                         {
@@ -739,7 +768,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                         let args: serde_json::Value =
                                             serde_json::from_str(&tc.function.arguments)
                                                 .unwrap_or_default();
-                                        if let Some(ref mcp_reg) = mcp_registry {
+                                        if let Some(mcp_reg) = mcp_registry {
                                             let mcp_retry_cfg = retry_config.clone();
                                             let mcp_server = server_name.clone();
                                             let mcp_tool = original_name.clone();
@@ -781,24 +810,64 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                         .as_ref()
                                         .and_then(|p| p.custom_tool_handler(&tc.function.name))
                                     {
-                                        handler(tc)
+                                        handler(&tc)
                                     } else {
                                         format!("Unknown tool or subagent: {}", tc.function.name)
                                     };
 
-                                    // Store the full tool output for later
-                                    // re-query, and pass a truncated version
-                                    // to the LLM to keep the context bounded.
-                                    tool_store.insert(tc.id.clone(), result.clone());
-                                    let llm_result =
-                                        truncate_output(&result, TOOL_RESULT_MAX_CHARS);
+                                    (tc.id.clone(), result)
+                                };
 
-                                    conversation.push(LlmMessage {
-                                        role: MessageRole::Tool,
-                                        content: llm_result,
-                                        tool_calls: None,
-                                        tool_call_id: Some(tc.id.clone()),
-                                    });
+                                // Count how many `task` tool calls are in this batch.
+                                let task_call_count = tool_calls
+                                    .iter()
+                                    .filter(|tc| tc.function.name == "task")
+                                    .count();
+
+                                if task_call_count > 1 {
+                                    // Multiple `task` calls: run ALL tool calls in the batch
+                                    // concurrently, then record results in the ORIGINAL order
+                                    // to preserve the tool_call_id → result mapping and the
+                                    // conversation ordering.
+                                    let results = futures::future::join_all(
+                                        tool_calls.into_iter().map(&execute_one),
+                                    )
+                                    .await;
+                                    for (tool_call_id, result) in results {
+                                        // Store the full tool output for later re-query, and
+                                        // pass a truncated version to the LLM to keep the
+                                        // context bounded.
+                                        tool_store.insert(tool_call_id.clone(), result.clone());
+                                        let llm_result =
+                                            truncate_output(&result, TOOL_RESULT_MAX_CHARS);
+
+                                        conversation.push(LlmMessage {
+                                            role: MessageRole::Tool,
+                                            content: llm_result,
+                                            tool_calls: None,
+                                            tool_call_id: Some(tool_call_id),
+                                        });
+                                    }
+                                } else {
+                                    // Sequential execution (0 or 1 `task` calls): preserve the
+                                    // exact original behavior.
+                                    for tc in tool_calls {
+                                        let (tool_call_id, result) = execute_one(tc).await;
+
+                                        // Store the full tool output for later re-query, and
+                                        // pass a truncated version to the LLM to keep the
+                                        // context bounded.
+                                        tool_store.insert(tool_call_id.clone(), result.clone());
+                                        let llm_result =
+                                            truncate_output(&result, TOOL_RESULT_MAX_CHARS);
+
+                                        conversation.push(LlmMessage {
+                                            role: MessageRole::Tool,
+                                            content: llm_result,
+                                            tool_calls: None,
+                                            tool_call_id: Some(tool_call_id),
+                                        });
+                                    }
                                 }
                                 // Loop back: LLM now has tool results
                             }

@@ -983,6 +983,10 @@ struct TaskToolArgs {
     mode: TaskMode,
     model: Option<String>,
     tools: Vec<String>,
+    /// Optional name of a configured subagent type (e.g. "reviewer") used as
+    /// the template for this subagent. When `None`, a dynamic subagent is
+    /// created from the task description.
+    agent: Option<String>,
 }
 
 impl TaskToolArgs {
@@ -1018,12 +1022,14 @@ impl TaskToolArgs {
                     .collect()
             })
             .unwrap_or_default();
+        let agent = args.get("agent").and_then(|v| v.as_str()).map(String::from);
         Ok(Self {
             task_id,
             description,
             mode,
             model,
             tools,
+            agent,
         })
     }
 }
@@ -1072,6 +1078,10 @@ pub(crate) fn task_tool_definition() -> ToolDefinition {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Optional list of tool/skill names to grant the subagent."
+                },
+                "agent": {
+                    "type": "string",
+                    "description": "Optional name of a configured subagent type (e.g. 'reviewer', 'writer') to use as the template for this subagent. When provided, the subagent inherits all instructions, skills, MCPs, model and permissions of that configured type. When omitted, a dynamic subagent is created from the task description."
                 }
             },
             "required": ["task_id", "description"]
@@ -1141,6 +1151,7 @@ pub(crate) async fn execute_task_tool(
     parent_id: &AgentId,
     parent_model: &str,
     job_registry: &Option<Arc<tokio::sync::Mutex<JobRegistry>>>,
+    subagent_configs: &[AgentConfig],
 ) -> std::result::Result<String, String> {
     let args = TaskToolArgs::parse(&tool_call.function.arguments)?;
 
@@ -1151,65 +1162,112 @@ pub(crate) async fn execute_task_tool(
         ));
     }
 
-    // Derive the child's permissions: parent ∩ child (deny propagates down).
-    //
-    // NOTE: The `tools` argument does NOT restrict the child's permissions.
-    // The child's effective permissions are always `parent ∩ child` — the
-    // parent's permissions intersected with the child's own (here the default,
-    // i.e. allow-by-default). The `tools` list only filters which *skills* the
-    // child is granted (see `skills_override` below); it is a capability
-    // allow-list for skills, not a permission restriction. Reimplementing
-    // per-tool permission filtering is intentionally out of scope here.
-    let child_permissions = parent_permissions.intersection(&Permissions::default());
-
-    // Filter the parent's skills by the requested tool names (or grant all).
-    // This is the ONLY effect of the `tools` list: it narrows the set of
-    // skills the child can invoke. It does not alter the child's permissions.
-    let skills_override: Vec<Skill> = if args.tools.is_empty() {
-        parent_skills.to_vec()
-    } else {
-        parent_skills
+    // Build the `SpawnSubagentConfig` either from a configured subagent type
+    // (when `args.agent` is provided) or dynamically from the task description.
+    let sub_cfg = if let Some(agent_name) = &args.agent {
+        // Resolve the configured subagent type by name. When found, the
+        // subagent inherits ALL of that type's instructions: description /
+        // system prompt, skills, MCPs, model and permissions.
+        let config = subagent_configs
             .iter()
-            .filter(|s| args.tools.iter().any(|t| t == &s.name))
-            .cloned()
-            .collect()
-    };
+            .find(|c| c.name == *agent_name)
+            .ok_or_else(|| {
+                let available = subagent_configs
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("Configured subagent type '{agent_name}' not found. Available: {available}")
+            })?;
 
-    let model = args
-        .model
-        .clone()
-        .unwrap_or_else(|| parent_model.to_string());
+        // Derive the child's effective permissions: parent ∩ configured child.
+        let child_permissions =
+            parent_permissions.intersection(&Permissions::from_config(&config.permissions));
 
-    let config = AgentConfig {
-        name: args.task_id.clone(),
-        description: args.description.clone(),
-        role: AgentRole::SubAgent,
-        model,
-        skills: Vec::new(), // skills provided via `skills_override`
-        mcps: Vec::new(),
-        permissions: crate::config::PermissionConfig::default(),
-        subagents: Vec::new(),
-        system_prompt: args.description.clone(),
-        max_steps: 90,
-        subagent_depth,
-    };
+        SpawnSubagentConfig {
+            config: config.clone(),
+            parent_id: parent_id.clone(),
+            llm_registry: llm_registry.clone(),
+            task: args.description.clone(),
+            db: db.clone(),
+            session_id,
+            event_tx: event_tx.clone(),
+            usage_tx: usage_tx.clone(),
+            history_limit_percent,
+            retry_config: retry_config.clone(),
+            debug: debug.clone(),
+            max_steps: config.max_steps,
+            depth: depth + 1,
+            // Load the configured type's own skills from `config.skills`.
+            skills_override: None,
+            permissions_override: Some(child_permissions),
+            agent_type: args.agent.clone(),
+            mode: args.mode.clone(),
+        }
+    } else {
+        // Derive the child's permissions: parent ∩ child (deny propagates down).
+        //
+        // NOTE: The `tools` argument does NOT restrict the child's permissions.
+        // The child's effective permissions are always `parent ∩ child` — the
+        // parent's permissions intersected with the child's own (here the
+        // default, i.e. allow-by-default). The `tools` list only filters which
+        // *skills* the child is granted (see `skills_override` below); it is a
+        // capability allow-list for skills, not a permission restriction.
+        // Reimplementing per-tool permission filtering is intentionally out of
+        // scope here.
+        let child_permissions = parent_permissions.intersection(&Permissions::default());
 
-    let sub_cfg = SpawnSubagentConfig {
-        config,
-        parent_id: parent_id.clone(),
-        llm_registry: llm_registry.clone(),
-        task: args.description.clone(),
-        db: db.clone(),
-        session_id,
-        event_tx: event_tx.clone(),
-        usage_tx: usage_tx.clone(),
-        history_limit_percent,
-        retry_config: retry_config.clone(),
-        debug: debug.clone(),
-        max_steps: 90,
-        depth: depth + 1,
-        skills_override: Some(skills_override),
-        permissions_override: Some(child_permissions),
+        // Filter the parent's skills by the requested tool names (or grant all).
+        // This is the ONLY effect of the `tools` list: it narrows the set of
+        // skills the child can invoke. It does not alter the child's permissions.
+        let skills_override: Vec<Skill> = if args.tools.is_empty() {
+            parent_skills.to_vec()
+        } else {
+            parent_skills
+                .iter()
+                .filter(|s| args.tools.iter().any(|t| t == &s.name))
+                .cloned()
+                .collect()
+        };
+
+        let model = args
+            .model
+            .clone()
+            .unwrap_or_else(|| parent_model.to_string());
+
+        let config = AgentConfig {
+            name: args.task_id.clone(),
+            description: args.description.clone(),
+            role: AgentRole::SubAgent,
+            model,
+            skills: Vec::new(), // skills provided via `skills_override`
+            mcps: Vec::new(),
+            permissions: crate::config::PermissionConfig::default(),
+            subagents: Vec::new(),
+            system_prompt: args.description.clone(),
+            max_steps: 90,
+            subagent_depth,
+        };
+
+        SpawnSubagentConfig {
+            config,
+            parent_id: parent_id.clone(),
+            llm_registry: llm_registry.clone(),
+            task: args.description.clone(),
+            db: db.clone(),
+            session_id,
+            event_tx: event_tx.clone(),
+            usage_tx: usage_tx.clone(),
+            history_limit_percent,
+            retry_config: retry_config.clone(),
+            debug: debug.clone(),
+            max_steps: 90,
+            depth: depth + 1,
+            skills_override: Some(skills_override),
+            permissions_override: Some(child_permissions),
+            agent_type: None,
+            mode: args.mode.clone(),
+        }
     };
 
     match args.mode {
@@ -1315,6 +1373,11 @@ pub struct SpawnSubagentConfig {
     /// Effective permissions for the subagent (parent ∩ child). If `Some`,
     /// overrides the permissions derived from `config.permissions`.
     pub permissions_override: Option<Permissions>,
+    /// Name of the configured subagent type (e.g. "reviewer"), or `None` for a
+    /// dynamic/generic subagent.
+    pub agent_type: Option<String>,
+    /// Execution mode of the subagent (Foreground/Background).
+    pub mode: TaskMode,
 }
 
 /// Spawn a subagent on-demand, delegate a task to it, and wait for the response.
@@ -1339,6 +1402,8 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
         depth: _depth,
         skills_override,
         permissions_override,
+        agent_type,
+        mode,
     } = cfg;
     // Create agent with SubAgent role
     let mut agent = Agent::from_config(&config, AgentRole::SubAgent);
@@ -1364,6 +1429,8 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
                 })
                 .collect(),
             mcps: agent.mcps.clone(),
+            agent_type,
+            mode,
         })
         .await;
 
@@ -1848,5 +1915,72 @@ mod tests {
     #[test]
     fn test_build_mode_allows_writes() {
         assert!(plan_mode_blocked(&AgentMode::Build, "apply_patch", "{}").is_none());
+    }
+
+    #[test]
+    fn test_task_tool_args_parse_with_agent() {
+        let args = TaskToolArgs::parse(
+            r#"{"task_id":"t1","description":"review the file","agent":"reviewer"}"#,
+        )
+        .unwrap();
+        assert_eq!(args.agent.as_deref(), Some("reviewer"));
+        assert_eq!(args.description, "review the file");
+    }
+
+    #[test]
+    fn test_task_tool_args_parse_without_agent() {
+        let args = TaskToolArgs::parse(
+            r#"{"task_id":"t2","description":"do the thing","mode":"foreground"}"#,
+        )
+        .unwrap();
+        assert_eq!(args.agent, None);
+    }
+
+    #[tokio::test]
+    async fn test_execute_task_tool_agent_not_found() {
+        // A `task` call referencing a configured subagent type that does not
+        // exist must return a clear error listing the available types.
+        let tool_call = ToolCall {
+            id: "call_task".into(),
+            call_type: "function".into(),
+            function: crate::llm::types::ToolFunction {
+                name: "task".into(),
+                arguments:
+                    r#"{"task_id":"t1","description":"review the file","agent":"nonexistent"}"#
+                        .into(),
+            },
+        };
+        let (tx, _) = mpsc::channel(64);
+        let id = crate::agent::types::AgentId::new();
+        let result = execute_task_tool(
+            &tool_call,
+            &Permissions::default(),
+            &LlmProviderRegistry::default(),
+            &[],
+            &tx,
+            &None,
+            &None,
+            None,
+            0.5,
+            &RetryConfig::default(),
+            &Arc::new(AtomicBool::new(false)),
+            0,
+            3,
+            "parent",
+            &id,
+            "claude-sonnet-4",
+            &None,
+            &[],
+        )
+        .await;
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("nonexistent"),
+            "error should mention the type: {err}"
+        );
+        assert!(
+            err.contains("not found"),
+            "error should say not found: {err}"
+        );
     }
 }

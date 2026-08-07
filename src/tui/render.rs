@@ -18,7 +18,7 @@ use super::app::App;
 use super::markdown::{render_markdown_line, select_visible_start};
 use super::palette::{render_agent_palette, render_command_palette, render_model_palette};
 use super::types::{AgentInfo, Focus};
-use crate::agent::types::{AgentRole, AgentStatus};
+use crate::agent::types::{AgentRole, AgentStatus, TaskMode};
 
 /// Render the TUI.
 pub(crate) fn render(f: &mut Frame, app: &mut App) {
@@ -631,6 +631,19 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                         Span::raw("")
                     },
                     Span::styled(format!(" [{}]", role), Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!(" [{}]", a.agent_type.as_deref().unwrap_or("generic")),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    if let Some(mode) = &a.mode {
+                        let label = match mode {
+                            TaskMode::Foreground => "fg",
+                            TaskMode::Background => "bg",
+                        };
+                        Span::styled(format!(" ({label})"), Style::default().fg(Color::DarkGray))
+                    } else {
+                        Span::raw("")
+                    },
                     Span::styled(format!(" ({})", status_str), Style::default().fg(dot_color)),
                 ]))
                 .style(item_style)
@@ -1172,6 +1185,30 @@ fn build_agent_list_item(agent: &AgentInfo, active: bool) -> ListItem<'static> {
         spans.push(Span::raw("]".to_string()));
     }
 
+    // Type (configured subagent type, or "generic" for dynamic subagents).
+    if agent.role == AgentRole::SubAgent {
+        spans.push(Span::raw(" [".to_string()));
+        spans.push(Span::styled(
+            agent
+                .agent_type
+                .clone()
+                .unwrap_or_else(|| "generic".to_string()),
+            Style::default().fg(Color::Cyan),
+        ));
+        spans.push(Span::raw("]".to_string()));
+    }
+
+    // Mode (only for subagents that carry one).
+    if let Some(mode) = &agent.mode {
+        let label = match mode {
+            TaskMode::Foreground => "fg",
+            TaskMode::Background => "bg",
+        };
+        spans.push(Span::raw(" (".to_string()));
+        spans.push(Span::styled(label, Style::default().fg(Color::DarkGray)));
+        spans.push(Span::raw(")".to_string()));
+    }
+
     // Skills
     if !agent.skills.is_empty() {
         spans.push(Span::raw("  skills: ".to_string()));
@@ -1308,6 +1345,22 @@ fn render_subagent_tree(f: &mut Frame, area: Rect, app: &App) {
                         ),
                         Span::raw(" "),
                         Span::styled(&child.name, Style::default().fg(Color::Magenta)),
+                        Span::styled(
+                            format!(" [{}]", child.agent_type.as_deref().unwrap_or("generic")),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                        if let Some(mode) = &child.mode {
+                            let label = match mode {
+                                TaskMode::Foreground => "fg",
+                                TaskMode::Background => "bg",
+                            };
+                            Span::styled(
+                                format!(" ({label})"),
+                                Style::default().fg(Color::DarkGray),
+                            )
+                        } else {
+                            Span::raw("")
+                        },
                     ];
                     items.push(ListItem::new(Line::from(child_spans)));
                 }

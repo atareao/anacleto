@@ -48,6 +48,8 @@ impl App {
                         model,
                         parent_id: None,
                         subagent_count: 0,
+                        agent_type: None,
+                        mode: None,
                     });
                 }
             }
@@ -90,6 +92,8 @@ impl App {
                 subagent_name,
                 skills,
                 mcps,
+                agent_type,
+                mode,
             } => {
                 self.messages
                     .push(format!("Subagent '{}' created.", subagent_name));
@@ -111,6 +115,8 @@ impl App {
                         model: String::new(),
                         parent_id: Some(parent_id),
                         subagent_count: 0,
+                        agent_type,
+                        mode: Some(mode),
                     });
                 }
             }
@@ -472,6 +478,8 @@ mod tests {
             model: String::new(),
             parent_id: None,
             subagent_count: 0,
+            agent_type: None,
+            mode: None,
         }
     }
 
