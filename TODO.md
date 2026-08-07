@@ -21,7 +21,7 @@
 - [x] Tests de concurrencia (tests/concurrency_test.rs, 178 líneas)
 - [x] Tests de integración MCP (tests/mcp_integration_test.rs, 141 líneas)
 - [x] proptest en Cargo.toml
-- [x] tarpaulin en Cargo.toml (cobertura)
+- [x] tarpaulin (cargo install cargo-tarpaulin — binary tool, no dep)
 - [x] Tests específicos para headless, streaming, SIGHUP y search
 
 ### Features post-ADR

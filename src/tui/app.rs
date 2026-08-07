@@ -905,4 +905,58 @@ mod tests {
             vec!["first".to_string(), "second".to_string()]
         );
     }
+
+    #[test]
+    fn search_empty_query_clears_matches() {
+        let mut app = test_app();
+        app.messages = vec!["hello world".to_string(), "foo bar".to_string()];
+        app.search.query = "".to_string();
+        app.update_search_matches();
+        assert!(app.search.matches.is_empty());
+    }
+
+    #[test]
+    fn search_finds_matching_messages() {
+        let mut app = test_app();
+        app.messages = vec![
+            "hello world".to_string(),
+            "foo bar".to_string(),
+            "hello again".to_string(),
+        ];
+        app.search.query = "hello".to_string();
+        app.update_search_matches();
+        assert_eq!(app.search.matches, vec![0, 2]);
+        assert_eq!(app.search.selected, 0);
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let mut app = test_app();
+        app.messages = vec!["Hello World".to_string(), "goodbye".to_string()];
+        app.search.query = "hello".to_string();
+        app.update_search_matches();
+        assert_eq!(app.search.matches, vec![0]);
+    }
+
+    #[test]
+    fn search_no_match_returns_empty() {
+        let mut app = test_app();
+        app.messages = vec!["abc".to_string(), "def".to_string()];
+        app.search.query = "xyz".to_string();
+        app.update_search_matches();
+        assert!(app.search.matches.is_empty());
+    }
+
+    #[test]
+    fn search_resets_selected_on_update() {
+        let mut app = test_app();
+        app.messages = vec!["a".to_string(), "b".to_string(), "a".to_string()];
+        app.search.query = "a".to_string();
+        app.update_search_matches();
+        assert_eq!(app.search.selected, 0);
+        app.search.selected = 1;
+        app.search.query = "b".to_string();
+        app.update_search_matches();
+        assert_eq!(app.search.selected, 0);
+    }
 }

@@ -1244,4 +1244,34 @@ mod tests {
         assert_eq!(engine.current_model, "claude-sonnet-4");
         assert_eq!(engine.active_agent, "root");
     }
+
+    #[test]
+    fn test_reload_config_updates_engine_config() {
+        let (mut engine, _rx) = engine_with_agents();
+        let original_model = engine.current_model.clone();
+
+        // Create a new config with a different model
+        let mut new_config = Config::default();
+        new_config.agents = vec![AgentConfig {
+            name: "root".into(),
+            description: "updated root".into(),
+            role: AgentRole::Root,
+            model: "gpt-4o".into(),
+            skills: vec![],
+            mcps: vec![],
+            permissions: crate::config::types::PermissionConfig::default(),
+            subagents: vec![],
+            system_prompt: String::new(),
+            max_steps: 90,
+            subagent_depth: 3,
+        }];
+
+        engine.reload_config(new_config);
+
+        // The config was updated
+        assert_eq!(engine.config.agents[0].name, "root");
+        assert_eq!(engine.config.agents[0].description, "updated root");
+        // The current_model is NOT changed by reload_config (only the config is updated)
+        assert_eq!(engine.current_model, original_model);
+    }
 }
