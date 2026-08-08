@@ -97,6 +97,8 @@ pub enum Action {
     TabComplete,
     /// Insert a newline into the input.
     InsertNewline,
+    /// Open the conversation history search overlay (Ctrl+R style).
+    ToggleSearch,
     // ── Chat navigation ────────────────────────────────────────────
     /// Jump to the top of the chat.
     ChatTop,
@@ -339,6 +341,12 @@ impl Default for Keymap {
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
             ],
+        );
+
+        // ── History search ───────────────────────────────────────────
+        km.bind(
+            Action::ToggleSearch,
+            vec![KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)],
         );
 
         // ── Chat navigation ────────────────────────────────────────

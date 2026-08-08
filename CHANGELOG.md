@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-08-08
+
+### Added
+
+- **SkillRegistry centralizado** — Nuevo `SkillRegistry` con caché, hot-reload y lookup O(1) por nombre. Los skills se cargan una vez al inicio del engine en lugar de re-parsificar del disco por cada agente.
+- **DefaultSkillExecutor** — Implementación concreta del trait `SkillExecutor` que despacha a handlers built-in (shell, web, filesystem) según el nombre del skill.
+- **Límite de concurrencia configurable** — Nueva opción `max_concurrency` en `SessionConfig` (default: 4). Los subagentes paralelos se limitan mediante un `tokio::sync::Semaphore`.
+- **Integración del registry en el engine** — `Engine` ahora tiene un campo `skill_registry: SharedSkillRegistry` inicializado en startup. `SpawnAgentConfig` usa `skill_names: Vec<String>` + referencia al registry en lugar de `Vec<Skill>`.
+
+### Changed
+
+- `src/skill/registry.rs` (nuevo): `SkillRegistry` con `load_from_paths()`, `get()`, `list()`, `reload()`, `contains()`.
+- `src/skill/executor.rs` (nuevo): `DefaultSkillExecutor` con dispatch a shell, web y filesystem.
+- `src/agent/lifecycle.rs`: `SpawnAgentConfig` reemplaza `skills: Vec<Skill>` por `skill_registry + skill_names`; añade `concurrency_semaphore`.
+- `src/agent/tools.rs`: sistema de subagentes migrado al registry.
+- `src/config/types.rs`: nuevo campo `max_concurrency` en `SessionConfig`.
+- `src/engine/orchestrator.rs`: `Engine` con `skill_registry` cargado una vez al inicio.
+- `src/engine/commands.rs`: comando `/skills` usando el registry.
+
+[0.11.0]: https://github.com/atareao/anacleto/releases/tag/v0.11.0
+
+## [0.10.0] - 2026-08-07
+
+### Added
+
+- **Streaming en subagentes** — Los subagentes ahora usan `complete_stream()` en lugar de `complete()`, transmitiendo fragmentos de respuesta en tiempo real a la TUI a través de `EngineEvent::AgentStreamChunk`.
+- **Modo headless** — Nuevo flag `--headless` para ejecutar Anacleto sin TUI, con `--task` opcional para enviar un prompt inicial. Las respuestas se escriben a stdout.
+- **Config hot-reload (SIGHUP)** — `kill -HUP <pid>` recarga la configuración YAML del disco sin reiniciar el proceso. Nuevos `EngineCommand::ReloadConfig` y `EngineEvent::ConfigReloaded`.
+- **Logs a archivo** — Los logs se escriben simultáneamente a stdout y a `~/.local/share/anacleto/logs/anacleto.log` con rotación diaria vía `tracing-appender`.
+- **History search en TUI** — Ctrl+R abre un overlay de búsqueda en el historial de la conversación con filtrado case-insensitive, navegación ↑↓, Enter para saltar al mensaje y Esc para cerrar.
+- **CI/CD pipeline** — GitHub Actions con jobs separados para fmt, clippy, build y test en cada push/PR a main/development.
+
+### Changed
+
+- `src/agent/tools.rs`: subagentes cambian de `complete()` a `complete_stream()` con emisión de chunks.
+- `src/main.rs`: nuevo flag `--headless`, inicialización dual de tracing (stdout + archivo), listener SIGHUP.
+- `src/engine/events.rs`: nuevos variants `ReloadConfig` y `ConfigReloaded`.
+- `src/engine/orchestrator.rs`: nuevo método `reload_config()`.
+- `src/tui/keymap.rs`: nuevo action `ToggleSearch`.
+- `src/tui/keys.rs`: manejo del overlay de búsqueda.
+- `src/tui/render.rs`: renderizado del overlay de búsqueda.
+- `src/tui/types.rs`: nuevo tipo `SearchState`.
+- `src/tui/app.rs`: nuevo campo `search`, métodos `update_search_matches()` y `chat_height_at()`.
+
+[0.10.0]: https://github.com/atareao/anacleto/releases/tag/v0.10.0
+
 ## [0.9.0] - 2026-08-07
 
 ### Added

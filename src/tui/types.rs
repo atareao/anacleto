@@ -140,3 +140,16 @@ pub(crate) enum Focus {
     /// (5) Input box.
     Input,
 }
+
+/// State for the conversation history search overlay (Ctrl+R).
+#[derive(Debug, Clone, Default)]
+pub struct SearchState {
+    /// Whether the search overlay is visible.
+    pub visible: bool,
+    /// The current search query.
+    pub query: String,
+    /// Indices of matching messages in the conversation.
+    pub matches: Vec<usize>,
+    /// Currently selected match index.
+    pub selected: usize,
+}

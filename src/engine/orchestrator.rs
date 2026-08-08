@@ -17,7 +17,7 @@ use crate::llm::provider::{LlmProvider, LlmProviderRegistry, create_provider};
 use crate::llm::types::{CacheControl, LlmProviderConfig, LlmProviderType};
 use crate::mcp::client::McpRegistry;
 use crate::plugin::PluginRegistry;
-use crate::skill::loader::load_agent_skills;
+use crate::skill::registry::{SharedSkillRegistry, SkillRegistry};
 
 // Re-export the event/command types defined in `events` so the rest of the
 // crate (TUI, agent lifecycle, main) can keep importing them from
@@ -83,6 +83,8 @@ pub struct Engine {
     pub(crate) staged_snapshot: Option<Snapshot>,
     /// Loaded plugins and their custom tools.
     pub(crate) plugins: Arc<PluginRegistry>,
+    /// Central skill registry, loaded once at startup.
+    pub(crate) skill_registry: SharedSkillRegistry,
 }
 impl Engine {
     pub fn new(
@@ -127,6 +129,7 @@ impl Engine {
             job_registry: Arc::new(tokio::sync::Mutex::new(JobRegistry::new())),
             staged_snapshot: None,
             plugins: Arc::new(PluginRegistry::new()),
+            skill_registry: Arc::new(tokio::sync::RwLock::new(SkillRegistry::new())),
         }
     }
 
@@ -257,6 +260,29 @@ impl Engine {
             }
         }
 
+        // Create concurrency semaphore for subagent spawning
+        let concurrency_semaphore = if self.config.session.max_concurrency > 0 {
+            Some(Arc::new(tokio::sync::Semaphore::new(
+                self.config.session.max_concurrency as usize,
+            )))
+        } else {
+            None
+        };
+
+        // Load all skills into the central registry once
+        {
+            let all_skill_paths: Vec<PathBuf> = self
+                .config
+                .agents
+                .iter()
+                .flat_map(|a| a.skills.clone())
+                .collect();
+            if !all_skill_paths.is_empty() {
+                let mut reg = self.skill_registry.write().await;
+                reg.load_from_paths(&all_skill_paths)?;
+            }
+        }
+
         // Build a name-to-config map for quick lookup
         let config_by_name: std::collections::HashMap<String, &crate::config::AgentConfig> = self
             .config
@@ -296,8 +322,15 @@ impl Engine {
             // Resolve the LLM provider for this agent based on model name
             let provider = self.resolve_agent_provider(&agent)?;
 
-            // Load skills for this agent
-            let skills = load_agent_skills(&agent.skills);
+            // Collect skill names for this agent from its config paths
+            let skill_names: Vec<String> = agent
+                .skills
+                .iter()
+                .filter_map(|p| {
+                    p.file_stem()
+                        .and_then(|f| f.to_str().map(|s| s.to_string()))
+                })
+                .collect();
 
             // Collect subagent configs for this agent
             let my_subagent_configs: Vec<crate::config::AgentConfig> = agent_config
@@ -312,7 +345,8 @@ impl Engine {
             let handle = spawn_agent(SpawnAgentConfig {
                 agent,
                 provider,
-                skills,
+                skill_registry: self.skill_registry.clone(),
+                skill_names,
                 subagent_configs: my_subagent_configs,
                 llm_registry: self.llm_registry.clone(),
                 mcp_registry: Some(self.mcp_registry.clone()),
@@ -332,7 +366,9 @@ impl Engine {
                 mode: AgentMode::Build,
                 job_registry: Some(self.job_registry.clone()),
                 plugins: Some(self.plugins.clone()),
-            });
+                concurrency_semaphore: concurrency_semaphore.clone(),
+            })
+            .await;
 
             self.agents.insert(name, id.clone());
             self.handles.insert(id, handle);
@@ -359,6 +395,14 @@ impl Engine {
                  Ensure the corresponding section is configured in models config."
             ))
         })
+    }
+
+    /// Reload configuration from disk. Called on SIGHUP.
+    pub fn reload_config(&mut self, config: Config) {
+        self.config = config;
+        // Propagate any config changes that affect running state
+        // (e.g., session settings, MCP definitions)
+        tracing::info!("Configuration reloaded from disk");
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -513,6 +557,25 @@ impl Engine {
                                 self.handle_commit(name.as_deref()).await?;
                             }
                             EngineCommand::Shutdown => unreachable!(),
+                            EngineCommand::ReloadConfig => {
+                                match crate::config::loader::load_config(None) {
+                                    Ok(new_config) => {
+                                        self.reload_config(new_config);
+                                        let _ = self.event_tx
+                                            .send(EngineEvent::ConfigReloaded)
+                                            .await;
+                                        tracing::info!("Configuration reloaded successfully");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to reload config: {}", e);
+                                        let _ = self.event_tx
+                                            .send(EngineEvent::CommandError(
+                                                format!("Failed to reload config: {}", e),
+                                            ))
+                                            .await;
+                                    }
+                                }
+                            }
                         }
                         Ok(())
                     }
@@ -648,8 +711,15 @@ impl Engine {
         // Resolve the new provider
         let provider = self.resolve_agent_provider(&agent)?;
 
-        // Load skills
-        let skills = load_agent_skills(&agent.skills);
+        // Collect skill names for this agent from its config paths
+        let skill_names: Vec<String> = agent
+            .skills
+            .iter()
+            .filter_map(|p| {
+                p.file_stem()
+                    .and_then(|f| f.to_str().map(|s| s.to_string()))
+            })
+            .collect();
 
         // Collect subagent configs
         let _subagent_names: std::collections::HashSet<String> = self
@@ -682,10 +752,18 @@ impl Engine {
         // Spawn new agent
         let history_limit = self.config.session.history_limit_percent;
         let retry_cfg = self.config.session.retry.clone();
+        let concurrency_semaphore = if self.config.session.max_concurrency > 0 {
+            Some(Arc::new(tokio::sync::Semaphore::new(
+                self.config.session.max_concurrency as usize,
+            )))
+        } else {
+            None
+        };
         let handle = spawn_agent(SpawnAgentConfig {
             agent,
             provider,
-            skills,
+            skill_registry: self.skill_registry.clone(),
+            skill_names,
             subagent_configs: my_subagent_configs,
             llm_registry: self.llm_registry.clone(),
             mcp_registry: Some(self.mcp_registry.clone()),
@@ -705,7 +783,9 @@ impl Engine {
             mode: AgentMode::Build,
             job_registry: Some(self.job_registry.clone()),
             plugins: Some(self.plugins.clone()),
-        });
+            concurrency_semaphore: concurrency_semaphore.clone(),
+        })
+        .await;
 
         self.agents.insert(name.clone(), id.clone());
         self.handles.insert(id, handle);
@@ -1216,5 +1296,35 @@ mod tests {
         engine.handle_switch_agent("root").await.unwrap();
         assert_eq!(engine.current_model, "claude-sonnet-4");
         assert_eq!(engine.active_agent, "root");
+    }
+
+    #[test]
+    fn test_reload_config_updates_engine_config() {
+        let (mut engine, _rx) = engine_with_agents();
+        let original_model = engine.current_model.clone();
+
+        // Create a new config with a different model
+        let mut new_config = Config::default();
+        new_config.agents = vec![AgentConfig {
+            name: "root".into(),
+            description: "updated root".into(),
+            role: AgentRole::Root,
+            model: "gpt-4o".into(),
+            skills: vec![],
+            mcps: vec![],
+            permissions: crate::config::types::PermissionConfig::default(),
+            subagents: vec![],
+            system_prompt: String::new(),
+            max_steps: 90,
+            subagent_depth: 3,
+        }];
+
+        engine.reload_config(new_config);
+
+        // The config was updated
+        assert_eq!(engine.config.agents[0].name, "root");
+        assert_eq!(engine.config.agents[0].description, "updated root");
+        // The current_model is NOT changed by reload_config (only the config is updated)
+        assert_eq!(engine.current_model, original_model);
     }
 }

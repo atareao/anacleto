@@ -301,6 +301,10 @@ pub struct SessionConfig {
     /// Enable debug mode (show LLM request/response payloads in TUI).
     #[serde(default)]
     pub debug: bool,
+
+    /// Maximum number of concurrent subagent tasks. 0 means unlimited.
+    #[serde(default = "default_max_concurrency")]
+    pub max_concurrency: u32,
 }
 
 impl Default for SessionConfig {
@@ -311,6 +315,7 @@ impl Default for SessionConfig {
             retry: RetryConfig::default(),
             max_steps: default_max_steps(),
             debug: false,
+            max_concurrency: default_max_concurrency(),
         }
     }
 }
@@ -324,6 +329,10 @@ fn default_db_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("anacleto")
         .join("sessions.db")
+}
+
+fn default_max_concurrency() -> u32 {
+    4
 }
 
 /// Agent/subagent configuration.
