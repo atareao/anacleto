@@ -76,12 +76,22 @@ impl App {
                 }
             }
             EngineEvent::AgentOutput { content, .. } => {
-                self.current_thinking = None;
                 // Capture the accumulated stream (which includes tool markers
                 // appended by ToolExecution/ToolResult handlers) before
                 // clearing it, so tool calls remain visible in the final
                 // rendered message instead of disappearing.
-                let final_content = self.current_stream.take().unwrap_or(content);
+                let mut final_content = self.current_stream.take().unwrap_or(content);
+                // Persist the thinking accumulated during streaming so the
+                // reasoning is not lost when the answer completes. It is
+                // wrapped in a marker that the chat renderer detects, so it is
+                // shown in its correct position (before the response text)
+                // instead of being discarded after streaming.
+                if let Some(thinking) = self.current_thinking.take() {
+                    if !thinking.trim().is_empty() {
+                        final_content =
+                            format!("[thinking]\n{}\n[/thinking]\n{}", thinking, final_content);
+                    }
+                }
                 if let Some(idx) = self.stream_committed_index.take() {
                     // The partial stream was already committed; replace exactly
                     // that message with the full content to avoid duplication.
@@ -609,5 +619,62 @@ mod tests {
         // Queue untouched, nothing sent.
         assert_eq!(app.prompt_queue, vec!["first".to_string()]);
         assert!(cmd_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn agent_output_persists_thinking_before_response() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        app.show_thinking = true;
+
+        // Accumulate thinking and stream during generation.
+        app.handle_event(EngineEvent::AgentThinkingChunk {
+            agent_id: AgentId::new(),
+            agent_name: "root".to_string(),
+            content: "reasoning step".to_string(),
+        });
+        app.handle_event(EngineEvent::AgentStreamChunk {
+            agent_id: AgentId::new(),
+            agent_name: "root".to_string(),
+            content: "hello world".to_string(),
+        });
+
+        // On completion the thinking must not be discarded; it is folded into
+        // the committed message before the response text.
+        app.handle_event(EngineEvent::AgentOutput {
+            agent_id: AgentId::new(),
+            agent_name: "root".to_string(),
+            content: String::new(),
+        });
+
+        assert_eq!(
+            app.messages,
+            vec!["[thinking]\nreasoning step\n[/thinking]\nhello world".to_string()]
+        );
+        assert!(app.current_thinking.is_none());
+        assert!(app.current_stream.is_none());
+    }
+
+    #[test]
+    fn agent_output_skips_empty_thinking() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        app.show_thinking = true;
+
+        // Whitespace-only thinking should not add a marker to the message.
+        app.handle_event(EngineEvent::AgentThinkingChunk {
+            agent_id: AgentId::new(),
+            agent_name: "root".to_string(),
+            content: " \n ".to_string(),
+        });
+        app.handle_event(EngineEvent::AgentOutput {
+            agent_id: AgentId::new(),
+            agent_name: "root".to_string(),
+            content: "answer".to_string(),
+        });
+
+        assert_eq!(app.messages, vec!["answer".to_string()]);
     }
 }
