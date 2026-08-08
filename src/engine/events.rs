@@ -387,6 +387,8 @@ pub enum EngineCommand {
     Commit { name: Option<String> },
     /// Reload configuration from disk (triggered by SIGHUP).
     ReloadConfig,
+    /// Reload the active agent: respawn with fresh config, skills, plugins, and system prompt.
+    ReloadAgent,
     /// Emergency stop: cancel all in-flight agent activity.
     StopAgent,
     /// Shutdown the engine.

@@ -257,6 +257,10 @@ impl App {
                     self.push_msg("Usage: /models <model-name>");
                 }
             },
+            "/reload" | "/rl" => {
+                self.push_msg("> /reload");
+                let _ = self.cmd_tx.try_send(EngineCommand::ReloadAgent);
+            }
             "/exit" | "/quit" => {
                 self.push_msg("> /exit");
                 self.should_exit = true;
@@ -265,7 +269,8 @@ impl App {
                 self.push_msg("> /help");
                 self.push_msg(
                     "Commands: /sessions, /new <name>, /resume <id>, /delete <id>, \
-                     /rename <id> <name>, /agents, /subagents, /debug, /copy, /compact, /models, /exit, /help",
+                     /rename <id> <name>, /reload, /agents, /subagents, /debug, /copy, \
+                     /compact, /models, /exit, /help",
                 );
             }
             // ── OpenCode-style slash commands ────────────────────────

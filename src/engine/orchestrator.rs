@@ -621,6 +621,23 @@ impl Engine {
                             EngineCommand::Commit { name } => {
                                 self.handle_commit(name.as_deref()).await?;
                             }
+                            EngineCommand::ReloadAgent => {
+                                // First stop any in-flight work
+                                if let Some(flag) = self.cancel_flags.get(&self.active_agent) {
+                                    flag.store(true, Ordering::Relaxed);
+                                }
+                                let _ = self.send_to_active(AgentMessage::Cancel).await;
+                                // Then respawn the agent (reuses existing method, picks up fresh config)
+                                self.respawn_active_agent().await?;
+                                self.event_tx
+                                    .send(EngineEvent::AgentStatusChanged {
+                                        agent_id: AgentId::new(),
+                                        agent_name: self.active_agent.clone(),
+                                        status: AgentStatus::Idle,
+                                    })
+                                    .await
+                                    .ok();
+                            }
                             EngineCommand::StopAgent => {
                                 // Set the cancel flag directly (bypasses mpsc channel, immediate effect)
                                 if let Some(flag) = self.cancel_flags.get(&self.active_agent) {
