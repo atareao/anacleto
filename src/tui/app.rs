@@ -105,6 +105,8 @@ pub struct App {
     pub current_model: String,
     /// Current working directory for display.
     pub working_dir: String,
+    /// Current git branch name (None if not a git repo or on detached HEAD).
+    pub git_branch: Option<String>,
     /// Whether to show the welcome banner (true until first message arrives).
     pub show_welcome: bool,
     /// Whether the terminal supports the Kitty keyboard enhancement protocol.
@@ -217,6 +219,22 @@ impl App {
         let working_dir = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| String::from("(unknown)"));
+        let git_branch = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if s.is_empty() || s == "HEAD" {
+                        None // detached HEAD or no commits
+                    } else {
+                        Some(s)
+                    }
+                } else {
+                    None
+                }
+            });
         let lang = std::env::var("LANG").unwrap_or_default();
 
         let mut keymap = Keymap::default();
@@ -269,6 +287,7 @@ impl App {
             context_window: 0,
             current_model: String::new(),
             working_dir,
+            git_branch,
             show_welcome: true,
             kb_supported,
             lang,
