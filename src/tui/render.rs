@@ -1093,9 +1093,39 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
             // Top border extension — ▐ without content
             lines.push(Line::from(Span::styled("▐", border_style)));
 
-            for (i, line_text) in m.split('\n').enumerate() {
-                let prefix = if i == 0 { ts.as_str() } else { "" };
+            // Styles for committed thinking lines rendered in-message.
+            let thinking_border_style = Style::default().fg(app.theme.thinking_dim());
+            let thinking_style = Style::default()
+                .fg(app.theme.thinking())
+                .add_modifier(Modifier::DIM);
+
+            let mut in_thinking = false;
+            // The per-line timestamp prefix belongs to the first rendered line
+            // of the message; if that line is a [thinking]/[/thinking] marker
+            // it is deferred to the next rendered line so messages stay
+            // timestamped.
+            let mut awaiting_ts = true;
+
+            for line_text in m.split('\n') {
+                let marker = line_text.trim();
+                if marker == "[thinking]" || marker == "[/thinking]" {
+                    in_thinking = marker == "[thinking]";
+                    continue;
+                }
+
+                let prefix = if awaiting_ts { ts.as_str() } else { "" };
+                awaiting_ts = false;
                 let full_line = format!("{}{}", prefix, line_text);
+
+                // Committed thinking — show it in its in-message position with
+                // the dimmed reasoning style, before the response text.
+                if in_thinking {
+                    lines.push(Line::from(vec![
+                        Span::styled("▐ ", thinking_border_style),
+                        Span::styled(full_line, thinking_style),
+                    ]));
+                    continue;
+                }
 
                 // Detect tool markers within AI response text
                 let trimmed = line_text.trim_start();
