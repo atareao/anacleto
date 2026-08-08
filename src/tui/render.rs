@@ -565,7 +565,7 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(" (2) MCPs "),
+            .title(format!(" [2] MCPs ({}) ", unique_mcps.len())),
     );
 
     f.render_widget(list, area);
@@ -617,7 +617,7 @@ fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(" (2) Skills "),
+            .title(format!(" [2] Skills ({}) ", unique_skills.len())),
     );
 
     f.render_widget(list, area);
@@ -734,7 +734,7 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(" (3) Agents "),
+            .title(format!(" [3] Agents ({}) ", display_agents.len())),
     );
 
     f.render_widget(list, area);
@@ -780,7 +780,7 @@ fn render_queue_panel(f: &mut Frame, area: Rect, app: &App) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(" (4) Queue "),
+            .title(format!(" [4] Queue ({}) ", app.prompt_queue.len())),
     );
 
     f.render_widget(list, area);

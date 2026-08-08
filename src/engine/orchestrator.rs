@@ -286,7 +286,9 @@ impl Engine {
                 .collect();
             if !all_skill_paths.is_empty() {
                 let mut reg = self.skill_registry.write().await;
-                reg.load_from_paths(&all_skill_paths)?;
+                if let Err(e) = reg.load_from_paths(&all_skill_paths) {
+                    eprintln!("Warning: Failed to load some skills: {e}");
+                }
             }
         }
 
