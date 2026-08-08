@@ -113,6 +113,10 @@ pub enum Action {
     ListTop,
     /// Jump to the bottom of a list panel.
     ListBottom,
+    /// Cycle focus to the next panel (Tab).
+    FocusNext,
+    /// Cycle focus to the previous panel (Shift+Tab).
+    FocusPrev,
 }
 
 /// Central mapping of actions to the key events that trigger them.
@@ -252,6 +256,19 @@ impl Default for Keymap {
         // parseable for config compatibility.
         km.bind(Action::FocusMcps, vec![]);
         km.bind(Action::FocusSkills, vec![]);
+
+        // ── Panel focus cycling ────────────────────────────────────
+        km.bind(
+            Action::FocusNext,
+            vec![KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+        );
+        // Shift+Tab is delivered by crossterm as KeyCode::BackTab (with the
+        // SHIFT modifier), not as KeyCode::Tab + SHIFT.
+        km.bind(
+            Action::FocusPrev,
+            vec![KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)],
+        );
+
         km.bind(Action::ClearInput, vec![key_event('c', true)]);
         km.bind(Action::OpenPromptQueue, vec![key_event('q', true)]);
         km.bind(Action::QuickSlot1, vec![key_event('1', true)]);

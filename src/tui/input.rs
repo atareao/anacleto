@@ -174,6 +174,11 @@ impl App {
                         self.input_history.push(input.clone());
                     }
                     self.history_index = None;
+                    // Auto-scroll al final al enviar: cuando el usuario escribe
+                    // y envía un mensaje (incluso si había hecho scroll arriba),
+                    // el chat debe saltar al final para mostrar el mensaje
+                    // y seguir el streaming de la respuesta.
+                    self.chat_scroll = 0;
                     self.process_input(input);
                 }
             }

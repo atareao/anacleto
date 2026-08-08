@@ -73,6 +73,8 @@ pub(crate) fn format_keymap_table() -> String {
         (Action::ListDown, "Lista abajo"),
         (Action::ListTop, "Ir al inicio de la lista"),
         (Action::ListBottom, "Ir al final de la lista"),
+        (Action::FocusNext, "Siguiente panel"),
+        (Action::FocusPrev, "Panel anterior"),
     ];
 
     let mut out = String::new();
@@ -178,6 +180,8 @@ pub(crate) fn parse_action(name: &str) -> Option<Action> {
         Action::ListDown,
         Action::ListTop,
         Action::ListBottom,
+        Action::FocusNext,
+        Action::FocusPrev,
     ] {
         if to_snake_case(&format!("{action:?}")) == lower {
             return Some(action);
