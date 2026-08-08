@@ -192,9 +192,9 @@ Skills are configured **per agent** and are **not inherited** by subagents. Each
 
 | File | Description |
 |---|---|
-| `.anacleto/skills/shell/skill.md` | Execute shell commands |
-| `.anacleto/skills/web-research/skill.md` | Fetch and analyze web content |
-| `.anacleto/skills/code-review/skill.md` | Review code for quality and correctness |
+| `.anacleto/skills/shell/SKILL.md` | Execute shell commands |
+| `.anacleto/skills/web-research/SKILL.md` | Fetch and analyze web content |
+| `.anacleto/skills/code-review/SKILL.md` | Review code for quality and correctness |
 
 ---
 

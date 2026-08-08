@@ -85,7 +85,7 @@ pub fn load_skills_from_dir(dir: &Path) -> Result<Vec<Skill>> {
         let entry = entry.map_err(|e| Error::Skill(format!("Failed to read entry: {e}")))?;
         let path = entry.path();
 
-        if path.extension().is_some_and(|ext| ext == "md") {
+        if path.file_name().is_some_and(|name| name == "SKILL.md") {
             match load_skill(&path) {
                 Ok(skill) => skills.push(skill),
                 Err(e) => {
