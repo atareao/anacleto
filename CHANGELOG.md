@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-08-08
+
+### Added
+
+- **SkillRegistry centralizado** — Nuevo `SkillRegistry` con caché, hot-reload y lookup O(1) por nombre. Los skills se cargan una vez al inicio del engine en lugar de re-parsificar del disco por cada agente.
+- **DefaultSkillExecutor** — Implementación concreta del trait `SkillExecutor` que despacha a handlers built-in (shell, web, filesystem) según el nombre del skill.
+- **Límite de concurrencia configurable** — Nueva opción `max_concurrency` en `SessionConfig` (default: 4). Los subagentes paralelos se limitan mediante un `tokio::sync::Semaphore`.
+- **Integración del registry en el engine** — `Engine` ahora tiene un campo `skill_registry: SharedSkillRegistry` inicializado en startup. `SpawnAgentConfig` usa `skill_names: Vec<String>` + referencia al registry en lugar de `Vec<Skill>`.
+
+### Changed
+
+- `src/skill/registry.rs` (nuevo): `SkillRegistry` con `load_from_paths()`, `get()`, `list()`, `reload()`, `contains()`.
+- `src/skill/executor.rs` (nuevo): `DefaultSkillExecutor` con dispatch a shell, web y filesystem.
+- `src/agent/lifecycle.rs`: `SpawnAgentConfig` reemplaza `skills: Vec<Skill>` por `skill_registry + skill_names`; añade `concurrency_semaphore`.
+- `src/agent/tools.rs`: sistema de subagentes migrado al registry.
+- `src/config/types.rs`: nuevo campo `max_concurrency` en `SessionConfig`.
+- `src/engine/orchestrator.rs`: `Engine` con `skill_registry` cargado una vez al inicio.
+- `src/engine/commands.rs`: comando `/skills` usando el registry.
+
+[0.11.0]: https://github.com/atareao/anacleto/releases/tag/v0.11.0
+
 ## [0.10.0] - 2026-08-07
 
 ### Added
