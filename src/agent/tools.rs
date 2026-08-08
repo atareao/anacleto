@@ -14,6 +14,7 @@ use crate::db::session::Database;
 use crate::engine::jobs::JobRegistry;
 use crate::engine::orchestrator::{EngineEvent, UsageEvent};
 use crate::error::{Error, Result};
+use crate::hook::{HookContext, HookPoint, HookRegistry};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry};
 use crate::llm::types::{
     LlmMessage, LlmRequest, LlmResponse, LlmStreamChunk, LlmUsage, MessageRole, ToolCall,
@@ -616,6 +617,7 @@ pub(crate) async fn execute_skill_tool(
     tool_call: &ToolCall,
     event_tx: &mpsc::Sender<EngineEvent>,
     agent_id: &crate::agent::types::AgentId,
+    hook_registry: Option<&HookRegistry>,
 ) -> std::result::Result<String, String> {
     // Find the skill by name
     let skill = registry.get(&tool_call.function.name).ok_or_else(|| {
@@ -630,6 +632,12 @@ pub(crate) async fn execute_skill_tool(
         .map_err(|e| format!("Failed to parse tool call arguments: {e}"))?;
     let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
 
+    // Extract hook registry for use in child calls, defaulting to empty
+    let hook_registry = match hook_registry {
+        Some(reg) => reg,
+        None => &HookRegistry::default(),
+    };
+
     // Emit tool execution tracing event
     let _ = event_tx
         .send(EngineEvent::ToolExecution {
@@ -643,13 +651,13 @@ pub(crate) async fn execute_skill_tool(
     // Execute the tool and capture result
     let skill_name_lower = skill.name.to_lowercase();
     let result = if skill_name_lower == "shell" {
-        let result = execute_shell_command(task).await;
+        let result = execute_shell_command(task, hook_registry, agent_name, event_tx).await;
         let prompt = crate::shell::inventory().to_prompt();
         result.map(|r| format!("{prompt}\n\n{r}"))
     } else if skill_name_lower.contains("web") || skill_name_lower.contains("research") {
         execute_web_fetch(task).await
     } else if skill_name_lower == "filesystem" {
-        execute_filesystem_operation(task).await
+        execute_filesystem_operation(task, hook_registry, agent_name, event_tx).await
     } else {
         Ok(format!(
             r#"Executed skill "{}". Here are the skill instructions:
@@ -685,12 +693,40 @@ The task requested was: {}"#,
 /// "Run the tests: cargo test"). We extract the actual command(s) from it so
 /// that prose containing apostrophes (e.g. "we're") is never passed verbatim
 /// to `sh -c`, which would otherwise fail with an "unexpected EOF" error.
-async fn execute_shell_command(task: &str) -> std::result::Result<String, String> {
+async fn execute_shell_command(
+    task: &str,
+    hook_registry: &HookRegistry,
+    agent_name: &str,
+    event_tx: &mpsc::Sender<EngineEvent>,
+) -> std::result::Result<String, String> {
     let command = extract_shell_command(task);
     if command.is_empty() {
         return Err(
             "No shell command found in the task. Please provide a shell command to run.".into(),
         );
+    }
+
+    // Fire BeforeShell hook
+    {
+        let mut ctx = HookContext::default();
+        ctx.tool_name = Some("shell".into());
+        ctx.shell_command = Some(command.clone());
+        ctx.agent_name = Some(agent_name.to_string());
+        let hook_results = hook_registry.run(HookPoint::BeforeShell, &ctx).await;
+        for r in &hook_results {
+            let _ = event_tx
+                .send(EngineEvent::HookExecuted {
+                    point: format!("{:?}", HookPoint::BeforeShell),
+                    command: r.command.clone(),
+                    success: r.exit_code == Some(0),
+                    output: if r.stdout.is_empty() {
+                        r.stderr.clone()
+                    } else {
+                        r.stdout.clone()
+                    },
+                })
+                .await;
+        }
     }
 
     // Execute with a POSIX shell (`/bin/sh`) rather than the user's interactive
@@ -717,11 +753,10 @@ async fn execute_shell_command(task: &str) -> std::result::Result<String, String
     // That is a legitimate "no results" outcome, not a failure.
     let is_search =
         command.contains("grep") || command.contains("rg ") || command.contains("find ");
-    if output.status.code() == Some(1) && is_search {
-        return Ok("No results found.".to_string());
-    }
 
-    if output.status.success() {
+    let result = if output.status.code() == Some(1) && is_search {
+        Ok("No results found.".to_string())
+    } else if output.status.success() {
         let mut result = String::new();
         if !stdout.is_empty() {
             result.push_str(&stdout);
@@ -749,7 +784,34 @@ async fn execute_shell_command(task: &str) -> std::result::Result<String, String
             format!("Command failed with exit code: {:?}", output.status.code())
         };
         Err(msg)
+    };
+
+    // Fire AfterShell hook (only on success)
+    if result.is_ok() {
+        let ctx = HookContext {
+            tool_name: Some("shell".into()),
+            shell_command: Some(command),
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        };
+        let hook_results = hook_registry.run(HookPoint::AfterShell, &ctx).await;
+        for r in &hook_results {
+            let _ = event_tx
+                .send(EngineEvent::HookExecuted {
+                    point: format!("{:?}", HookPoint::AfterShell),
+                    command: r.command.clone(),
+                    success: r.exit_code == Some(0),
+                    output: if r.stdout.is_empty() {
+                        r.stderr.clone()
+                    } else {
+                        r.stdout.clone()
+                    },
+                })
+                .await;
+        }
     }
+
+    result
 }
 
 /// Extract the actual shell command(s) from a natural-language task string.
@@ -941,9 +1003,68 @@ async fn execute_web_fetch(task: &str) -> std::result::Result<String, String> {
 }
 
 /// Execute a filesystem operation by parsing the JSON task and running it.
-async fn execute_filesystem_operation(task: &str) -> std::result::Result<String, String> {
+async fn execute_filesystem_operation(
+    task: &str,
+    hook_registry: &HookRegistry,
+    agent_name: &str,
+    event_tx: &mpsc::Sender<EngineEvent>,
+) -> std::result::Result<String, String> {
     let req = crate::filesystem::parse_request(task)?;
-    crate::filesystem::execute(req).await
+
+    // Fire BeforeFsWrite hook for write operations (Write, Edit, Delete)
+    let is_write = crate::filesystem::is_write_op(&req.op);
+    if is_write {
+        let ctx = HookContext {
+            tool_name: Some("filesystem".into()),
+            file_path: Some(req.path.to_string_lossy().to_string()),
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        };
+        let hook_results = hook_registry.run(HookPoint::BeforeFsWrite, &ctx).await;
+        for r in &hook_results {
+            let _ = event_tx
+                .send(EngineEvent::HookExecuted {
+                    point: format!("{:?}", HookPoint::BeforeFsWrite),
+                    command: r.command.clone(),
+                    success: r.exit_code == Some(0),
+                    output: if r.stdout.is_empty() {
+                        r.stderr.clone()
+                    } else {
+                        r.stdout.clone()
+                    },
+                })
+                .await;
+        }
+    }
+
+    let result = crate::filesystem::execute(req).await;
+
+    // Fire AfterFsWrite hook on success for write operations
+    if is_write && result.is_ok() {
+        let ctx = HookContext {
+            tool_name: Some("filesystem".into()),
+            file_path: Some(String::new()),
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        };
+        let hook_results = hook_registry.run(HookPoint::AfterFsWrite, &ctx).await;
+        for r in &hook_results {
+            let _ = event_tx
+                .send(EngineEvent::HookExecuted {
+                    point: format!("{:?}", HookPoint::AfterFsWrite),
+                    command: r.command.clone(),
+                    success: r.exit_code == Some(0),
+                    output: if r.stdout.is_empty() {
+                        r.stderr.clone()
+                    } else {
+                        r.stdout.clone()
+                    },
+                })
+                .await;
+        }
+    }
+
+    result
 }
 
 /// Convert an `AgentConfig` to a `ToolDefinition` so the LLM can invoke a subagent.
@@ -1675,6 +1796,7 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
                             tc,
                             &event_tx,
                             &agent_id,
+                            None,
                         )
                         .await
                         .unwrap_or_else(|e| e);
@@ -1724,6 +1846,7 @@ mod tests {
             description: "Reviews code for quality".into(),
             instructions: "Check for correctness, performance, style.".into(),
             metadata: Default::default(),
+            hooks: Default::default(),
         };
         let tool = skill_to_tool_definition(&skill);
         assert_eq!(tool.name, "code-review");
@@ -1745,6 +1868,7 @@ mod tests {
             description: "A test skill".into(),
             instructions: "Do the thing.".into(),
             metadata: Default::default(),
+            hooks: Default::default(),
         });
         let tool_call = ToolCall {
             id: "call_1".into(),
@@ -1756,7 +1880,7 @@ mod tests {
         };
         let (tx, _) = mpsc::channel(64);
         let id = crate::agent::types::AgentId::new();
-        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id).await;
+        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id, None).await;
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("test-skill"));
@@ -1772,6 +1896,7 @@ mod tests {
             description: "Run shell commands".into(),
             instructions: "Execute commands via sh -c".into(),
             metadata: Default::default(),
+            hooks: Default::default(),
         });
         let tool_call = ToolCall {
             id: "call_shell".into(),
@@ -1783,7 +1908,7 @@ mod tests {
         };
         let (tx, _) = mpsc::channel(64);
         let id = crate::agent::types::AgentId::new();
-        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id).await;
+        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id, None).await;
         assert!(result.is_ok(), "Expected Ok, got Err: {:?}", result);
         let output = result.unwrap();
         assert!(
@@ -1800,6 +1925,7 @@ mod tests {
             description: "Run shell commands".into(),
             instructions: "Execute commands via sh -c".into(),
             metadata: Default::default(),
+            hooks: Default::default(),
         });
         let tool_call = ToolCall {
             id: "call_shell_err".into(),
@@ -1811,7 +1937,7 @@ mod tests {
         };
         let (tx, _) = mpsc::channel(64);
         let id = crate::agent::types::AgentId::new();
-        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id).await;
+        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id, None).await;
         assert!(result.is_err(), "Expected Err for exit 1, got Ok");
     }
 
@@ -1867,8 +1993,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_shell_command_prose_returns_helpful_error() {
+        let (tx, _) = tokio::sync::mpsc::channel(64);
         let result = execute_shell_command(
             "Find the project structure to understand what we're working with",
+            &HookRegistry::default(),
+            "test",
+            &tx,
         )
         .await;
         assert!(result.is_err());
@@ -1881,9 +2011,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_shell_command_grep_no_results_is_ok() {
+        let (tx, _) = tokio::sync::mpsc::channel(64);
         // grep on an empty file exits 1 (no matches); should be reported as
         // "no results", not an error.
-        let result = execute_shell_command("grep nonexistent_zzz /dev/null").await;
+        let result = execute_shell_command(
+            "grep nonexistent_zzz /dev/null",
+            &HookRegistry::default(),
+            "test",
+            &tx,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "Expected Ok for grep no-results, got Err: {:?}",
@@ -1903,7 +2040,7 @@ mod tests {
         };
         let (tx, _) = mpsc::channel(64);
         let id = crate::agent::types::AgentId::new();
-        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id).await;
+        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("nonexistent"));
     }

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::hook::HookActionConfig;
+
 /// A skill definition loaded from a Markdown file with YAML frontmatter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
@@ -16,6 +18,11 @@ pub struct Skill {
     /// Optional metadata.
     #[serde(default)]
     pub metadata: HashMap<String, String>,
+
+    /// Hooks declared in the skill's frontmatter.
+    /// Key is the hook point string (e.g. "after_apply"), value is a list of actions.
+    #[serde(default)]
+    pub hooks: HashMap<String, Vec<HookActionConfig>>,
 }
 
 /// Result of executing a skill.

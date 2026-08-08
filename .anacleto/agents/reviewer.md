@@ -2,7 +2,7 @@
 name: reviewer
 description: Code review specialist
 role: subagent
-model: deepseek/deepseek-v4-flash-0731
+model: deepseek/deepseek-v4-flash
 skills:
   - .anacleto/skills/code-review/
 mcps: []

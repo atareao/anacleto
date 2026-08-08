@@ -2,7 +2,7 @@
 name: article-writer
 description: Redacta artículos en Markdown siguiendo el brief de investigación y la voz editorial de atareao.es
 role: subagent
-model: deepseek/deepseek-v4-flash-0731
+model: deepseek/deepseek-v4-flash
 skills:
   - .anacleto/skills/web-research/
 mcps: []

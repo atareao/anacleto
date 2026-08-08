@@ -211,8 +211,13 @@ impl App {
             EngineEvent::ToolExecution {
                 tool_name, task, ..
             } => {
-                self.messages
-                    .push(format!("\u{1f527} {}: {}", tool_name, task));
+                let msg = format!("\u{1f527} {}: {}", tool_name, one_line(&task, 60));
+                if let Some(stream) = &mut self.current_stream {
+                    stream.push_str(&format!("\n{}", msg));
+                } else {
+                    self.messages.push(msg);
+                }
+
                 self.chat_scroll = 0;
             }
             EngineEvent::ToolResult {
@@ -227,7 +232,13 @@ impl App {
                 } else {
                     format!("{} {} failed: {}", icon, tool_name, summary)
                 };
-                self.push_msg(msg);
+
+                if let Some(stream) = &mut self.current_stream {
+                    stream.push_str(&format!("\n{}", msg));
+                } else {
+                    self.push_msg(msg);
+                }
+
                 self.chat_scroll = 0;
             }
             EngineEvent::LlmRequestDebug {
@@ -454,8 +465,43 @@ impl App {
                 }
                 self.chat_scroll = 0;
             }
+            EngineEvent::HookExecuted {
+                point,
+                command,
+                success,
+                output,
+            } => {
+                let icon = if success {
+                    "\u{2705}"
+                } else {
+                    "\u{26a0}\u{fe0f}"
+                };
+                let msg = format!("{} Hook {}: {}", icon, point, command);
+                self.push_msg(msg);
+                if !output.is_empty() {
+                    self.push_msg(format!(
+                        "  \u{2514}\u{2500} {}",
+                        output.lines().next().unwrap_or("")
+                    ));
+                }
+                self.chat_scroll = 0;
+            }
             _ => {}
         }
+    }
+}
+
+/// Collapse a string to a single line (newlines become spaces) and truncate
+/// it to at most `max_chars` characters, appending an ellipsis when cut.
+///
+/// Used to keep tool execution/result markers compact in the chat.
+fn one_line(s: &str, max_chars: usize) -> String {
+    let collapsed: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= max_chars {
+        collapsed
+    } else {
+        let cut: String = collapsed.chars().take(max_chars).collect();
+        format!("{}…", cut.trim_end())
     }
 }
 

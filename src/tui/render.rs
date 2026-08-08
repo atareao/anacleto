@@ -330,7 +330,7 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render the main content area: left (chat/overlays) and right (status panels).
-fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
+fn render_main_content(f: &mut Frame, area: Rect, app: &mut App) {
     if app.show_sidebar {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -346,7 +346,7 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render the left panel: session list, agent list, subagent tree, or chat.
-fn render_left_panel(f: &mut Frame, area: Rect, app: &App) {
+fn render_left_panel(f: &mut Frame, area: Rect, app: &mut App) {
     if app.show_timeline {
         render_timeline_panel(f, area, app);
     } else if app.show_mcps {
@@ -431,7 +431,7 @@ fn render_mcp_list_panel(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render the right panel: 4 stacked info panels (Status, Info-tabs, Agents, Queue).
-fn render_right_panels(f: &mut Frame, area: Rect, app: &App) {
+fn render_right_panels(f: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
@@ -497,7 +497,7 @@ fn format_tokens(n: u64) -> String {
 }
 
 /// Panel 2: Info — unified Skills/MCPs panel with two tabs ([Skills|MCPs]).
-fn render_info_panel(f: &mut Frame, area: Rect, app: &App) {
+fn render_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)].as_ref())
@@ -520,7 +520,7 @@ fn render_info_panel(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Panel 2a: MCPs — connected MCP server names (active when `info_tab = 1`).
-fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
+fn render_mcp_panel(f: &mut Frame, area: Rect, app: &mut App) {
     let unique_mcps: Vec<&str> = {
         let set: std::collections::BTreeSet<&str> = app
             .agents
@@ -537,17 +537,38 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
         Color::Magenta
     };
 
+    // Compute visible items with scroll offset
+    let visible_items = (area.height as usize).saturating_sub(2); // minus borders
+    let total = unique_mcps.len();
+
+    // Auto-scroll to keep selection visible
+    if total > visible_items {
+        if app.mcp_panel_index >= app.mcp_scroll + visible_items {
+            app.mcp_scroll = app.mcp_panel_index.saturating_sub(visible_items) + 1;
+        }
+        if app.mcp_panel_index < app.mcp_scroll {
+            app.mcp_scroll = app.mcp_panel_index;
+        }
+    } else {
+        app.mcp_scroll = 0;
+    }
+
+    let scroll = app.mcp_scroll.min(total.saturating_sub(1));
+    let end = (scroll + visible_items).min(total);
+    let displayed = &unique_mcps[scroll..end];
+
     let items: Vec<ListItem> = if unique_mcps.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             "(none)",
             Style::default().fg(Color::DarkGray),
         )))]
     } else {
-        unique_mcps
+        displayed
             .iter()
             .enumerate()
             .map(|(i, mcp)| {
-                let style = if focused && i == app.mcp_panel_index {
+                let actual_index = scroll + i;
+                let style = if focused && actual_index == app.mcp_panel_index {
                     Style::default()
                         .fg(Color::Black)
                         .bg(app.theme.accent())
@@ -572,7 +593,7 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Panel 2b: Skills — loaded skill names (active when `info_tab = 0`).
-fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
+fn render_skill_panel(f: &mut Frame, area: Rect, app: &mut App) {
     let unique_skills: Vec<&str> = {
         let set: std::collections::BTreeSet<&str> = app
             .agents
@@ -589,17 +610,38 @@ fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
         Color::Green
     };
 
+    // Compute visible items with scroll offset
+    let visible_items = (area.height as usize).saturating_sub(2); // minus borders
+    let total = unique_skills.len();
+
+    // Auto-scroll to keep selection visible
+    if total > visible_items {
+        if app.skill_panel_index >= app.skill_scroll + visible_items {
+            app.skill_scroll = app.skill_panel_index.saturating_sub(visible_items) + 1;
+        }
+        if app.skill_panel_index < app.skill_scroll {
+            app.skill_scroll = app.skill_panel_index;
+        }
+    } else {
+        app.skill_scroll = 0;
+    }
+
+    let scroll = app.skill_scroll.min(total.saturating_sub(1));
+    let end = (scroll + visible_items).min(total);
+    let displayed = &unique_skills[scroll..end];
+
     let items: Vec<ListItem> = if unique_skills.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             "(none)",
             Style::default().fg(Color::DarkGray),
         )))]
     } else {
-        unique_skills
+        displayed
             .iter()
             .enumerate()
             .map(|(i, skill)| {
-                let style = if focused && i == app.skill_panel_index {
+                let actual_index = scroll + i;
+                let style = if focused && actual_index == app.skill_panel_index {
                     Style::default()
                         .fg(Color::Black)
                         .bg(app.theme.accent())
@@ -829,7 +871,7 @@ fn render_working_dir(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(line), area);
 }
 
-fn render_chat(f: &mut Frame, area: Rect, app: &App) {
+fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
     if app.show_welcome {
         render_welcome_banner(f, area, app);
         return;
@@ -1027,7 +1069,11 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
 
     // Select visible portion: walk backwards from the end accumulating visual rows
     // (accounting for wrapping) until we fill the visible rows.
-    let start_idx = select_visible_start(&lines, visible, content_width, app.chat_scroll);
+    let (start_idx, max_scroll) =
+        select_visible_start(&lines, visible, content_width, app.chat_scroll);
+    // Clamp chat_scroll to prevent k/j asymmetry: pressing k beyond the top
+    // should not require extra j presses to start scrolling down again.
+    app.chat_scroll = app.chat_scroll.min(max_scroll);
     let display_lines: Vec<Line> = lines.into_iter().skip(start_idx as usize).collect();
 
     let paragraph = Paragraph::new(display_lines)

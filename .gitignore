@@ -14,3 +14,9 @@ anacleto.log
 
 # Backup files
 *.bak
+
+# Session junk
+/temporal.txt
+
+# Vendored third-party reference repo (has its own .git)
+/awesome-claude-skills/
