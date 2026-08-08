@@ -126,6 +126,8 @@ pub struct SpawnAgentConfig {
     pub concurrency_semaphore: Option<Arc<tokio::sync::Semaphore>>,
     /// Hook registry for pre/post execution hooks.
     pub hook_registry: HookRegistry,
+    /// Optional external cancel flag. If provided, used instead of creating one internally.
+    pub cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 /// Spawn a new agent task and return a handle to it.
@@ -161,6 +163,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         plugins,
         concurrency_semaphore,
         hook_registry,
+        cancel_flag,
     } = config;
     let (tx, mut rx) = mpsc::channel::<AgentMessage>(256);
     let handle = AgentHandle::new(tx);
@@ -232,7 +235,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     // Clone what the task needs
     let agent_mcp_names = agent.mcps.clone();
     let debug_mode = debug;
-    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_flag = cancel_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
     tokio::spawn(async move {
         let mut conversation: Vec<LlmMessage> = Vec::new();
