@@ -1,11 +1,12 @@
 ---
 name: find-skills
 description: |
-  Busca y descubre skills instaladas localmente en el ecosistema Anacleto.
+  Busca y descubre skills instaladas localmente en el ecosistema Anacleto y
+  en el registro público de skills.sh (mattpocock/skills).
   Úsala cuando el usuario pregunte "cómo hago X", "busca una skill para X",
   "hay una skill que pueda...", o quiera extender las capacidades del agente.
 metadata:
-  version: "1.0"
+  version: "1.1"
   category: system
   risk: low
 ---
@@ -13,7 +14,8 @@ metadata:
 # Find Skills (Anacleto)
 
 Esta skill te ayuda a **descubrir skills ya instaladas** en el ecosistema Anacleto
-y a **encontrar nuevas skills** disponibles en registros públicos.
+y a **encontrar nuevas skills** disponibles en registros públicos como
+[skills.sh](https://www.skills.sh/mattpocock/skills).
 
 A diferencia del ecosistema `vercel-labs/skills` (que usa `npx skills`), Anacleto
 gestiona las skills como ficheros Markdown con frontmatter YAML en directorios
@@ -25,15 +27,20 @@ locales. Esta skill adapta el concepto de `find-skills` al modelo de Anacleto.
 
 Anacleto busca skills en estas rutas, por orden de prioridad:
 
-| Ruta | Ámbito | Descripción |
+| Ruta / Fuente | Ámbito | Descripción |
 |---|---|---|
 | `.agents/skills/<name>/SKILL.md` | Proyecto | Skills del proyecto actual |
 | `~/.config/anacleto/skills/<name>/SKILL.md` | Global (usuario) | Skills globales del usuario |
 | `~/.config/anacleto/agents/<name>.md` | Global (agentes) | Definiciones de agentes (también tienen frontmatter) |
+| `https://github.com/mattpocock/skills` | Remoto (skills.sh) | Registro público de Matt Pocock (~51 skills) |
+
+> [!NOTE]
+> skills.sh NO tiene API JSON pública. Para acceder a sus skills usamos
+> directamente la GitHub API del repo [mattpocock/skills](https://github.com/mattpocock/skills).
 
 ---
 
-## Cómo buscar skills instaladas
+## Cómo buscar skills instaladas (local)
 
 ### 1. Listar todas las skills disponibles
 
@@ -74,7 +81,143 @@ done
 
 ---
 
-## Flujo recomendado
+## Cómo buscar skills en skills.sh (registro público de mattpocock)
+
+El repo [mattpocock/skills](https://github.com/mattpocock/skills) contiene ~51 skills
+organizadas en 5 categorías:
+
+| Categoría | Contenido |
+|---|---|
+| `engineering` | Skills técnicas: code-review, tdd, implement, research, grill-with-docs, etc. |
+| `in-progress` | Skills en desarrollo: handoff, loop-me, writing-beats, etc. |
+| `misc` | Skills varios: git-guardrails, migrate-to-shoehorn, scaffold-exercises, setup-pre-commit |
+| `productivity` | Skills de productividad: grill-me, grilling, teach, wait-what, writing-for-agents |
+| `deprecated` | Skills obsoletas (solo README) |
+
+### 1. Listar todas las skills disponibles (por categoría)
+
+Usa la GitHub API (sin auth para repos públicos):
+
+```bash
+# Listar skills de engineering
+curl -sL "https://api.github.com/repos/mattpocock/skills/contents/skills/engineering" \
+  | jq -r '.[] | select(.type == "dir") | .name'
+
+# Listar skills de todas las categorías a la vez
+for cat in engineering in-progress misc productivity; do
+  echo "=== $cat ==="
+  curl -sL "https://api.github.com/repos/mattpocock/skills/contents/skills/$cat" \
+    | jq -r '.[] | select(.type == "dir") | .name'
+done
+```
+
+### 2. Buscar por palabra clave en los SKILL.md remotos
+
+```bash
+# Buscar una palabra clave en los nombres y descripciones de todas las skills remotas
+for cat in engineering in-progress misc productivity; do
+  for skill in $(curl -sL "https://api.github.com/repos/mattpocock/skills/contents/skills/$cat" \
+    | jq -r '.[] | select(.type == "dir") | .name'); do
+    
+    frontmatter=$(curl -sL "https://raw.githubusercontent.com/mattpocock/skills/main/skills/$cat/$skill/SKILL.md" \
+      | head -5)
+    
+    if echo "$frontmatter" | rg -qi "palabra-clave"; then
+      echo "→ $skill ($cat): $(echo "$frontmatter" | rg -o '(?<=description: ).*')"
+    fi
+  done
+done
+```
+
+> [!TIP]
+> Para búsquedas rápidas, usa el comando resumen que lista nombre + descripción de todas las skills
+> de mattpocock en un solo paso (ver sección "Resumen rápido de skills.sh").
+
+### 3. Ver el detalle de una skill específica
+
+```bash
+# Ver el SKILL.md completo de una skill remota
+curl -sL "https://raw.githubusercontent.com/mattpocock/skills/main/skills/<categoria>/<skill>/SKILL.md"
+```
+
+Ejemplo para `grill-with-docs`:
+
+```bash
+curl -sL "https://raw.githubusercontent.com/mattpocock/skills/main/skills/engineering/grill-with-docs/SKILL.md"
+```
+
+### 4. Ver los agentes asociados a una skill (si tiene)
+
+Algunas skills en el repo de mattpocock incluyen una carpeta `agents/` con
+configuraciones de agente de ejemplo:
+
+```bash
+# Ver si una skill tiene agentes asociados
+curl -sL "https://api.github.com/repos/mattpocock/skills/contents/skills/<categoria>/<skill>/agents" \
+  | jq -r '.[].name'
+```
+
+---
+
+## Resumen rápido de skills.sh
+
+Para obtener una vista rápida de todas las skills de mattpocock con su nombre
+y descripción, ejecuta:
+
+```bash
+for cat in engineering in-progress misc productivity; do
+  for skill in $(curl -sL "https://api.github.com/repos/mattpocock/skills/contents/skills/$cat" \
+    | jq -r '.[] | select(.type == "dir") | .name'); do
+    desc=$(curl -sL "https://raw.githubusercontent.com/mattpocock/skills/main/skills/$cat/$skill/SKILL.md" \
+      | head -5 | rg -o '(?<=description: ).*')
+    echo "📦 $skill  ($cat): $desc"
+  done
+done
+```
+
+---
+
+## Cómo instalar/adaptar una skill de skills.sh a Anacleto
+
+Las skills del repo de mattpocock usan el mismo formato que Anacleto
+(SKILL.md con frontmatter YAML), por lo que la adaptación es directa:
+
+### Opción A: Copiar la skill al proyecto
+
+```bash
+# 1. Crear el directorio para la skill
+mkdir -p .agents/skills/<nombre>
+
+# 2. Descargar el SKILL.md remoto
+curl -sL "https://raw.githubusercontent.com/mattpocock/skills/main/skills/<categoria>/<nombre>/SKILL.md" \
+  > .agents/skills/<nombre>/SKILL.md
+
+# 3. (Opcional) Si tiene agentes asociados, descargarlos también
+curl -sL "https://api.github.com/repos/mattpocock/skills/contents/skills/<categoria>/<nombre>/agents" \
+  | jq -r '.[].name' | while read agent_file; do
+    curl -sL "https://raw.githubusercontent.com/mattpocock/skills/main/skills/<categoria>/<nombre>/agents/$agent_file" \
+      > .agents/skills/<nombre>/$agent_file
+  done
+```
+
+### Opción B: Copiar la skill a global (~/.agents/skills/)
+
+```bash
+mkdir -p ~/.agents/skills/<nombre>
+curl -sL "https://raw.githubusercontent.com/mattpocock/skills/main/skills/<categoria>/<nombre>/SKILL.md" \
+  > ~/.agents/skills/<nombre>/SKILL.md
+```
+
+> [!IMPORTANT]
+> Algunas skills de mattpocock usan `disable-model-invocation: true` en su frontmatter.
+> Esto significa que la skill no invoca el modelo directamente, sino que ejecuta
+> otra skill (por ejemplo, `grill-with-docs` ejecuta `/grilling` y `/domain-modeling`).
+> En Anacleto esto se traduce como: la skill delega a otras skills, asegúrate de
+> que las skills referenciadas también estén instaladas.
+
+---
+
+## Flujo recomendado (ampliado)
 
 ### Paso 1: Entender qué necesita el usuario
 
@@ -96,122 +239,57 @@ rg -il "testing|test" .agents/skills/*/SKILL.md
 ```bash
 # Si existe el directorio global
 rg -il "testing|test" ~/.config/anacleto/skills/*/SKILL.md 2>/dev/null
+
+# También buscar en ~/.agents/skills/ (ruta alternativa donde tengas skills instaladas)
+rg -il "testing|test" ~/.agents/skills/*/SKILL.md 2>/dev/null
 ```
 
-### Paso 4: Mostrar resultados al usuario
+### Paso 4: Buscar en skills.sh (registro público)
 
-Para cada skill encontrada, muestra:
+```bash
+# Búsqueda rápida por palabra clave en todas las categorías a la vez
+for cat in engineering in-progress misc productivity; do
+  for skill in $(curl -sL "https://api.github.com/repos/mattpocock/skills/contents/skills/$cat" \
+    | jq -r '.[] | select(.type == "dir") | .name' 2>/dev/null); do
+    desc=$(curl -sL "https://raw.githubusercontent.com/mattpocock/skills/main/skills/$cat/$skill/SKILL.md" \
+      | head -5 | rg -o '(?<=description: ).*' 2>/dev/null)
+    if echo "$skill $desc" | rg -qi "testing|test|palabra-clave"; then
+      echo "📦 $skill ($cat): $desc"
+    fi
+  done
+done
+```
+
+### Paso 5: Mostrar resultados al usuario
+
+Para cada skill encontrada (local o remota), muestra:
 
 ```
 📦 <nombre>
    📝 <descripción>
-   📍 <ruta>
+   📍 <ruta o fuente>
    🏷️  <categoría> (del metadata)
 ```
 
----
-
-## Instalar una nueva skill
-
-Anacleto no tiene un CLI tipo `npx skills add`. Para instalar una skill nueva:
-
-### Opción A: Desde vercel-labs/skills (fuente externa)
-
-1. Encuentra la skill en https://github.com/vercel-labs/skills/tree/main/skills
-2. Examina su `SKILL.md` (o `SKILL.md`) para entender qué hace
-3. Crea el directorio local y copia/adapta el contenido:
-
-```bash
-# Crear directorio para la skill en el proyecto
-mkdir -p .agents/skills/<nombre>
-
-# Crear el fichero SKILL.md con el frontmatter adaptado
-cat > .agents/skills/<nombre>/SKILL.md << 'EOF'
----
-name: <nombre>
-description: <descripción adaptada>
-metadata:
-  version: "1.0"
-  category: <categoría>
-  risk: <bajo|medio|alto>
----
-
-# <Nombre>
-
-Contenido adaptado de la skill original...
-EOF
-```
-
-4. Añadir la skill al agente correspondiente en `.agents/agents/<nombre>.md`:
-
-```yaml
-skills:
-  - .agents/skills/<nombre>/
-```
-
-### Opción B: Crear una skill desde cero
-
-Usa la plantilla estándar de Anacleto:
-
-```markdown
----
-name: mi-skill
-description: Describe brevemente qué hace
-metadata:
-  version: "1.0"
-  category: development  # system | development | research | productivity
-  risk: medium           # low | medium | high
----
-
-# Mi Skill
-
-Instrucciones detalladas...
-
-## Uso
-
-Describe cómo debe usarse esta skill...
-
-## Ejemplos
-
-Incluye ejemplos prácticos...
-```
+Si la skill es remota y el usuario quiere instalarla, ofrece hacerlo con
+el comando de instalación.
 
 ---
 
-## Categorías comunes de búsqueda
+## Notas importantes
 
-| Categoría | Palabras clave sugeridas |
-|---|---|
-| **Desarrollo web** | react, nextjs, typescript, css, tailwind |
-| **Testing** | testing, test, jest, playwright, e2e |
-| **DevOps** | deploy, docker, kubernetes, ci-cd |
-| **Documentación** | docs, readme, changelog, api-docs |
-| **Calidad de código** | review, lint, refactor, best-practices |
-| **Diseño** | ui, ux, design-system, accesibilidad |
-| **Productividad** | workflow, automation, git |
-| **Sistema** | shell, filesystem, permissions, config |
+1. **Límites de GitHub API**: Para repos públicos sin autenticación, el límite es
+   60 requests/hora. Para búsquedas intensivas, considera añadir `?client_id=...`
+   o usar un token personal.
 
----
+2. **skills.sh vs GitHub**: El sitio skills.sh es una interfaz Next.js sobre el
+   repo de GitHub. Siempre prefiere GitHub raw content para los SKILL.md, es
+   más rápido y no tiene restricciones de CORS.
 
-## Cuándo no se encuentra una skill
+3. **Formato compatible**: Las skills de mattpocock usan el mismo formato que
+   Anacleto (Markdown + frontmatter YAML), por lo que son directamente
+   compatibles. Solo necesitas copiarlas a la ruta local.
 
-Si no existe una skill para lo que el usuario necesita:
-
-1. **Reconoce** que no se encontró ninguna skill existente
-2. **Ofrece** ayudar directamente con las capacidades generales del agente
-3. **Sugiere** crear una skill nueva siguiendo la plantilla de Anacleto
-
-```
-No encontré ninguna skill para "X" en las skills instaladas.
-Puedo ayudarte directamente con esta tarea. Si es algo que haces a menudo,
-podemos crear una skill personalizada para Anacleto.
-```
-
----
-
-## Consejos para búsquedas efectivas
-
-1. **Usa palabras clave específicas**: "react testing" es mejor que solo "testing"
-2. **Prueba términos alternativos**: si "desplegar" no funciona, prueba "deploy" o "ci-cd"
-3. **Revisa el frontmatter**: la descripción y metadata suelen tener las pistas clave
-4. **Busca también en agentes**: los agentes (`agents/*.md`) también tienen frontmatter y pueden contener skills embebidas
+4. **Dependencias entre skills**: Algunas skills de mattpocock referencian a otras
+   (ej: `grill-with-docs` ejecuta `grilling` y `domain-modeling`). Asegúrate de
+   instalar también las skills dependientes.
