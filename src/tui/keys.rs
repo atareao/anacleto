@@ -442,6 +442,18 @@ impl App {
                 }
                 return;
             }
+            if self.keymap.matches(key_event, Action::EmergencyStop) {
+                // Send stop command to engine
+                let _ = self.cmd_tx.try_send(EngineCommand::StopAgent);
+                // Push a visual confirmation message
+                self.push_msg("⏹ Stopped");
+                // Clear any in-progress streaming response
+                self.current_stream = None;
+                self.stream_committed_index = None;
+                // Show a toast notification
+                self.toasts.push("⏹ Stopped", ToastKind::Info);
+                return;
+            }
             // Quick slots 1..9 resume the pinned session at that index.
             let quick_slots = [
                 Action::QuickSlot1,
