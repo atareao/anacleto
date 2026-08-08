@@ -330,7 +330,7 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render the main content area: left (chat/overlays) and right (status panels).
-fn render_main_content(f: &mut Frame, area: Rect, app: &mut App) {
+fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
     if app.show_sidebar {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -346,7 +346,7 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// Render the left panel: session list, agent list, subagent tree, or chat.
-fn render_left_panel(f: &mut Frame, area: Rect, app: &mut App) {
+fn render_left_panel(f: &mut Frame, area: Rect, app: &App) {
     if app.show_timeline {
         render_timeline_panel(f, area, app);
     } else if app.show_mcps {
@@ -431,7 +431,7 @@ fn render_mcp_list_panel(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render the right panel: 4 stacked info panels (Status, Info-tabs, Agents, Queue).
-fn render_right_panels(f: &mut Frame, area: Rect, app: &mut App) {
+fn render_right_panels(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
@@ -497,7 +497,7 @@ fn format_tokens(n: u64) -> String {
 }
 
 /// Panel 2: Info — unified Skills/MCPs panel with two tabs ([Skills|MCPs]).
-fn render_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
+fn render_info_panel(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)].as_ref())
@@ -520,7 +520,7 @@ fn render_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// Panel 2a: MCPs — connected MCP server names (active when `info_tab = 1`).
-fn render_mcp_panel(f: &mut Frame, area: Rect, app: &mut App) {
+fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
     let unique_mcps: Vec<&str> = {
         let set: std::collections::BTreeSet<&str> = app
             .agents
@@ -537,38 +537,17 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &mut App) {
         Color::Magenta
     };
 
-    // Compute visible items with scroll offset
-    let visible_items = (area.height as usize).saturating_sub(2); // minus borders
-    let total = unique_mcps.len();
-
-    // Auto-scroll to keep selection visible
-    if total > visible_items {
-        if app.mcp_panel_index >= app.mcp_scroll + visible_items {
-            app.mcp_scroll = app.mcp_panel_index.saturating_sub(visible_items) + 1;
-        }
-        if app.mcp_panel_index < app.mcp_scroll {
-            app.mcp_scroll = app.mcp_panel_index;
-        }
-    } else {
-        app.mcp_scroll = 0;
-    }
-
-    let scroll = app.mcp_scroll.min(total.saturating_sub(1));
-    let end = (scroll + visible_items).min(total);
-    let displayed = &unique_mcps[scroll..end];
-
     let items: Vec<ListItem> = if unique_mcps.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             "(none)",
             Style::default().fg(Color::DarkGray),
         )))]
     } else {
-        displayed
+        unique_mcps
             .iter()
             .enumerate()
             .map(|(i, mcp)| {
-                let actual_index = scroll + i;
-                let style = if focused && actual_index == app.mcp_panel_index {
+                let style = if focused && i == app.mcp_panel_index {
                     Style::default()
                         .fg(Color::Black)
                         .bg(app.theme.accent())
@@ -593,7 +572,7 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// Panel 2b: Skills — loaded skill names (active when `info_tab = 0`).
-fn render_skill_panel(f: &mut Frame, area: Rect, app: &mut App) {
+fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
     let unique_skills: Vec<&str> = {
         let set: std::collections::BTreeSet<&str> = app
             .agents
@@ -610,38 +589,17 @@ fn render_skill_panel(f: &mut Frame, area: Rect, app: &mut App) {
         Color::Green
     };
 
-    // Compute visible items with scroll offset
-    let visible_items = (area.height as usize).saturating_sub(2); // minus borders
-    let total = unique_skills.len();
-
-    // Auto-scroll to keep selection visible
-    if total > visible_items {
-        if app.skill_panel_index >= app.skill_scroll + visible_items {
-            app.skill_scroll = app.skill_panel_index.saturating_sub(visible_items) + 1;
-        }
-        if app.skill_panel_index < app.skill_scroll {
-            app.skill_scroll = app.skill_panel_index;
-        }
-    } else {
-        app.skill_scroll = 0;
-    }
-
-    let scroll = app.skill_scroll.min(total.saturating_sub(1));
-    let end = (scroll + visible_items).min(total);
-    let displayed = &unique_skills[scroll..end];
-
     let items: Vec<ListItem> = if unique_skills.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             "(none)",
             Style::default().fg(Color::DarkGray),
         )))]
     } else {
-        displayed
+        unique_skills
             .iter()
             .enumerate()
             .map(|(i, skill)| {
-                let actual_index = scroll + i;
-                let style = if focused && actual_index == app.skill_panel_index {
+                let style = if focused && i == app.skill_panel_index {
                     Style::default()
                         .fg(Color::Black)
                         .bg(app.theme.accent())
@@ -871,7 +829,7 @@ fn render_working_dir(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(line), area);
 }
 
-fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
+fn render_chat(f: &mut Frame, area: Rect, app: &App) {
     if app.show_welcome {
         render_welcome_banner(f, area, app);
         return;
@@ -985,24 +943,28 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                     .add_modifier(Modifier::DIM),
             )));
         } else if m.starts_with("\u{1f527}") {
-            // Tool execution tracing — cyan
-            lines.push(Line::from(Span::styled(
-                m.clone(),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-            )));
-        } else if m.starts_with("\u{2705}") {
-            // Tool result success — green dim
+            // Tool execution tracing — dimmed theme color (finalized)
             lines.push(Line::from(Span::styled(
                 m.clone(),
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(app.theme.tool_exec_dim())
+                    .add_modifier(Modifier::DIM),
+            )));
+        } else if m.starts_with("\u{2705}") {
+            // Tool result success — dimmed theme color (finalized)
+            lines.push(Line::from(Span::styled(
+                m.clone(),
+                Style::default()
+                    .fg(app.theme.tool_ok_dim())
                     .add_modifier(Modifier::DIM),
             )));
         } else if m.starts_with("\u{274c}") {
-            // Tool result failure — red dim
+            // Tool result failure — dimmed theme color (finalized)
             lines.push(Line::from(Span::styled(
                 m.clone(),
-                Style::default().fg(Color::Red).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(app.theme.tool_err_dim())
+                    .add_modifier(Modifier::DIM),
             )));
         } else if m.starts_with("\u{1f50d}") {
             // Debug header — purple bold
@@ -1017,19 +979,55 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::DIM);
             lines.push(Line::from(Span::styled(m.clone(), style)));
         } else {
-            // AI responses — split by newline, render markdown per line
+            // AI responses — split by newline, render markdown per line,
+            // but detect tool execution/result markers and render those
+            // with dimmed styling instead.
             let base = Style::default().fg(Color::Rgb(200, 220, 255));
-            let border_style = Style::default().fg(Color::Rgb(230, 190, 60));
+            let border_style = Style::default().fg(app.theme.ai_border());
+            let tool_border_style = Style::default().fg(app.theme.tool_border());
+            let tool_style = Style::default()
+                .fg(app.theme.tool_exec_dim())
+                .add_modifier(Modifier::DIM);
+            let tool_ok_style = Style::default()
+                .fg(app.theme.tool_ok_dim())
+                .add_modifier(Modifier::DIM);
+            let tool_err_style = Style::default()
+                .fg(app.theme.tool_err_dim())
+                .add_modifier(Modifier::DIM);
 
             // Top border extension — ▐ without content
             lines.push(Line::from(Span::styled("▐", border_style)));
 
             for (i, line_text) in m.split('\n').enumerate() {
                 let prefix = if i == 0 { ts.as_str() } else { "" };
-                let mut rendered = render_markdown_line(&format!("{}{}", prefix, line_text), base);
-                // Prepend "▐ " to the rendered line
-                rendered.spans.insert(0, Span::styled("▐ ", border_style));
-                lines.push(rendered);
+                let full_line = format!("{}{}", prefix, line_text);
+
+                // Detect tool markers within AI response text
+                let trimmed = line_text.trim_start();
+                let tool_style_override = if trimmed.starts_with("\u{1f527}") {
+                    Some(tool_style)
+                } else if trimmed.starts_with("\u{2705}") {
+                    Some(tool_ok_style)
+                } else if trimmed.starts_with("\u{274c}") {
+                    Some(tool_err_style)
+                } else {
+                    None
+                };
+
+                if let Some(override_style) = tool_style_override {
+                    // Render as tool line (dimmed, no markdown) with
+                    // a distinct border color to visually separate
+                    // tool output from AI text.
+                    let mut spans = vec![Span::styled("▐ ", tool_border_style)];
+                    spans.push(Span::styled(full_line, override_style));
+                    lines.push(Line::from(spans));
+                } else {
+                    // Normal AI response line — render markdown
+                    let mut rendered = render_markdown_line(&full_line, base);
+                    // Prepend "▐ " to the rendered line
+                    rendered.spans.insert(0, Span::styled("▐ ", border_style));
+                    lines.push(rendered);
+                }
             }
 
             // Bottom border extension — ▐ without content
@@ -1042,14 +1040,33 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
     // Without this split, a long streaming response wraps to many visual lines but
     // counts as a single logical line, making bottom content invisible & unscrollable.
     if let Some(stream) = &app.current_stream {
-        let style = Style::default()
+        let stream_style = Style::default()
             .fg(Color::Rgb(100, 200, 255))
+            .add_modifier(Modifier::DIM);
+        let stream_tool_style = Style::default()
+            .fg(app.theme.tool_exec())
+            .add_modifier(Modifier::DIM);
+        let stream_tool_ok_style = Style::default()
+            .fg(app.theme.tool_ok())
+            .add_modifier(Modifier::DIM);
+        let stream_tool_err_style = Style::default()
+            .fg(app.theme.tool_err())
             .add_modifier(Modifier::DIM);
         for (idx, line_text) in stream.split('\n').enumerate() {
             let prefix = if idx == 0 { "\u{258c}" } else { " " };
+            let trimmed = line_text.trim_start();
+            let line_style = if trimmed.starts_with("\u{1f527}") {
+                stream_tool_style
+            } else if trimmed.starts_with("\u{2705}") {
+                stream_tool_ok_style
+            } else if trimmed.starts_with("\u{274c}") {
+                stream_tool_err_style
+            } else {
+                stream_style
+            };
             lines.push(Line::from(Span::styled(
                 format!("{}{}", prefix, line_text),
-                style,
+                line_style,
             )));
         }
     }
@@ -1069,11 +1086,7 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Select visible portion: walk backwards from the end accumulating visual rows
     // (accounting for wrapping) until we fill the visible rows.
-    let (start_idx, max_scroll) =
-        select_visible_start(&lines, visible, content_width, app.chat_scroll);
-    // Clamp chat_scroll to prevent k/j asymmetry: pressing k beyond the top
-    // should not require extra j presses to start scrolling down again.
-    app.chat_scroll = app.chat_scroll.min(max_scroll);
+    let start_idx = select_visible_start(&lines, visible, content_width, app.chat_scroll);
     let display_lines: Vec<Line> = lines.into_iter().skip(start_idx as usize).collect();
 
     let paragraph = Paragraph::new(display_lines)

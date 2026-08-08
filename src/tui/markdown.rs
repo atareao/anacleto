@@ -183,18 +183,14 @@ pub(crate) fn visual_line_count(line: &Line, content_width: usize) -> usize {
 ///
 /// When `chat_scroll > 0` the user has manually scrolled up that many logical
 /// lines from the auto-scroll position.
-///
-/// Returns `(start_index, max_scroll)` where `max_scroll` is the maximum useful
-/// scroll value (the auto-scroll bottom position), used to clamp `chat_scroll`
-/// and prevent k/j asymmetry.
 pub(crate) fn select_visible_start(
     lines: &[Line],
     visible_rows: usize,
     content_width: usize,
     chat_scroll: u16,
-) -> (u16, u16) {
+) -> u16 {
     if lines.is_empty() {
-        return (0, 0);
+        return 0;
     }
 
     // Walk backwards, accumulating visual rows until we fill the visible area
@@ -220,13 +216,9 @@ pub(crate) fn select_visible_start(
     }
     // If loop completes without break: all lines fit (bottom stays 0)
 
-    // Clamp chat_scroll to the maximum useful value (bottom) to prevent
-    // asymmetry between k (scroll up) and j (scroll down).
-    let clamped_scroll = (chat_scroll as usize).min(bottom);
-
     // Apply manual scroll offset (if any)
-    let scroll = bottom.saturating_sub(clamped_scroll);
-    (scroll as u16, bottom as u16)
+    let scroll = bottom.saturating_sub(chat_scroll as usize);
+    scroll as u16
 }
 
 #[cfg(test)]
@@ -259,7 +251,7 @@ mod tests {
     /// number of rows actually occupied by non-empty content (excluding the
     /// border rows).
     fn actual_used_rows(lines: &[Line], content_width: usize, visible: usize) -> usize {
-        let (start_idx, _max_scroll) = select_visible_start(lines, visible, content_width, 0);
+        let start_idx = select_visible_start(lines, visible, content_width, 0);
         let display: Vec<Line> = lines.iter().skip(start_idx as usize).cloned().collect();
         let paragraph = Paragraph::new(display)
             .block(Block::default().borders(Borders::ALL))
