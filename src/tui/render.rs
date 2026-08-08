@@ -786,46 +786,72 @@ fn render_queue_panel(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(list, area);
 }
 
-/// Render the current working directory (left) and active model (right).
-/// When the directory path is too long, it is truncated with an ellipsis (...)
-/// to ensure the model name always fits on the right side.
+/// Render the current working directory (left), git branch (center),
+/// and active model (right). The branch is only shown when inside a git
+/// repo with a valid named branch.
 fn render_working_dir(f: &mut Frame, area: Rect, app: &App) {
     let dir_text = format!(" 📁 {}", app.working_dir);
     let model_text = format!("🤖 {}", app.current_model);
+
+    let branch_span = app.git_branch.as_ref().map(|b| {
+        Span::styled(
+            format!(" ⎇ {} ", b),
+            Style::default().fg(Color::Rgb(188, 143, 254)), // lavender
+        )
+    });
+
     let width = area.width as usize;
 
-    // Use display width (emoji count as 2 columns) so the model ends exactly
-    // at the right edge of the terminal.
+    // Calculate display widths
     let dir_width = dir_text.width();
     let model_width = model_text.width();
-    // Leave at least 1 space between dir and model
-    let max_dir_width = width.saturating_sub(model_width + 1);
+    let branch_width = branch_span.as_ref().map(|s| s.width()).unwrap_or(0);
 
-    let truncated_dir = if dir_width > max_dir_width && max_dir_width > 3 {
-        // Truncate with ellipsis at the end
-        let keep = max_dir_width.saturating_sub(1);
-        let mut s: String = String::new();
-        let mut w = 0;
-        for ch in dir_text.chars() {
-            let cw = ch.to_string().width();
-            if w + cw > keep {
-                break;
-            }
-            s.push(ch);
-            w += cw;
-        }
-        s.push('…');
-        s
+    // Remaining space after reserving dir + branch + model (with 1-space gaps)
+    let total_fixed = dir_width + branch_width + model_width;
+    let gap_count = if branch_span.is_some() { 2 } else { 1 };
+    let padding = width.saturating_sub(total_fixed + gap_count);
+
+    let line = if let Some(branch) = branch_span {
+        // Distribute padding: put branch roughly centered.
+        // 1/3 of padding before branch, 2/3 after (between branch and model).
+        let left_pad = padding / 3;
+        let right_pad = padding - left_pad;
+        Line::from(vec![
+            Span::styled(dir_text, Style::default().fg(Color::DarkGray)),
+            Span::raw(" ".repeat(left_pad)),
+            branch,
+            Span::raw(" ".repeat(right_pad)),
+            Span::styled(model_text, Style::default().fg(Color::Cyan)),
+        ])
     } else {
-        dir_text
+        // Original layout: dir left, model right (no branch)
+        let max_dir_width = width.saturating_sub(model_width + 1);
+        let truncated_dir = if dir_width > max_dir_width && max_dir_width > 3 {
+            let keep = max_dir_width.saturating_sub(1);
+            let mut s = String::new();
+            let mut w = 0;
+            for ch in dir_text.chars() {
+                let cw = ch.to_string().width();
+                if w + cw > keep {
+                    break;
+                }
+                s.push(ch);
+                w += cw;
+            }
+            s.push('…');
+            s
+        } else {
+            dir_text
+        };
+        let p = width.saturating_sub(truncated_dir.width() + model_width);
+        Line::from(vec![
+            Span::styled(truncated_dir, Style::default().fg(Color::DarkGray)),
+            Span::raw(" ".repeat(p)),
+            Span::styled(model_text, Style::default().fg(Color::Cyan)),
+        ])
     };
 
-    let padding = width.saturating_sub(truncated_dir.width() + model_width);
-    let line = Line::from(vec![
-        Span::styled(truncated_dir, Style::default().fg(Color::DarkGray)),
-        Span::raw(" ".repeat(padding)),
-        Span::styled(model_text, Style::default().fg(Color::Cyan)),
-    ]);
     f.render_widget(Paragraph::new(line), area);
 }
 

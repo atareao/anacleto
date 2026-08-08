@@ -126,6 +126,8 @@ pub struct SpawnAgentConfig {
     pub concurrency_semaphore: Option<Arc<tokio::sync::Semaphore>>,
     /// Hook registry for pre/post execution hooks.
     pub hook_registry: HookRegistry,
+    /// Optional external cancel flag. If provided, used instead of creating one internally.
+    pub cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 /// Spawn a new agent task and return a handle to it.
@@ -161,6 +163,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         plugins,
         concurrency_semaphore,
         hook_registry,
+        cancel_flag,
     } = config;
     let (tx, mut rx) = mpsc::channel::<AgentMessage>(256);
     let handle = AgentHandle::new(tx);
@@ -232,6 +235,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     // Clone what the task needs
     let agent_mcp_names = agent.mcps.clone();
     let debug_mode = debug;
+    let cancel_flag = cancel_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
     tokio::spawn(async move {
         let mut conversation: Vec<LlmMessage> = Vec::new();
@@ -339,6 +343,17 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                     let mut step_count: u32 = 0;
                     'tool_loop: loop {
                         step_count += 1;
+                        if cancel_flag.load(Ordering::Relaxed) {
+                            cancel_flag.store(false, Ordering::Relaxed);
+                            let _ = event_tx
+                                .send(EngineEvent::AgentStatusChanged {
+                                    agent_id: agent_id.clone(),
+                                    agent_name: agent_name.clone(),
+                                    status: AgentStatus::Idle,
+                                })
+                                .await;
+                            break 'tool_loop;
+                        }
                         if step_count > max_steps {
                             // Mark the task as incomplete: emit a clear output and go idle.
                             let _ = event_tx
@@ -578,6 +593,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                 let db = &db;
                                 let retry_config = &retry_config;
                                 let debug_mode = &debug_mode;
+                                let cancel_flag = &cancel_flag;
                                 let agent_name = &agent_name;
                                 let agent_id = &agent_id;
                                 let model = &model;
@@ -594,6 +610,12 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                 let hook_registry = &hook_registry;
 
                                 let execute_one = |tc: ToolCall| async move {
+                                    if cancel_flag.load(Ordering::Relaxed) {
+                                        return (
+                                            tc.id.clone(),
+                                            "[Cancelled] Operation stopped by user".to_string(),
+                                        );
+                                    }
                                     // Fire BeforeTool hook
                                     {
                                         let ctx = HookContext {
@@ -1013,6 +1035,17 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                             }
                         }
                     }
+                }
+                AgentMessage::Cancel => {
+                    cancel_flag.store(true, Ordering::Relaxed);
+                    // Emit status: Idle so the TUI knows we stopped
+                    let _ = event_tx
+                        .send(EngineEvent::AgentStatusChanged {
+                            agent_id: agent_id.clone(),
+                            agent_name: agent_name.clone(),
+                            status: AgentStatus::Idle,
+                        })
+                        .await;
                 }
                 AgentMessage::Shutdown => break,
                 AgentMessage::LoadHistory(history) => {

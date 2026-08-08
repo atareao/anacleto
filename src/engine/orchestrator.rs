@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::agent::lifecycle::{AgentHandle, SpawnAgentConfig, spawn_agent};
-use crate::agent::types::{Agent, AgentId, AgentMessage, AgentMode, AgentRole};
+use crate::agent::types::{Agent, AgentId, AgentMessage, AgentMode, AgentRole, AgentStatus};
 use crate::config::Config;
 use crate::config::types::{CacheMode, OllamaConfig, ProviderConfig};
 use crate::db::models::{Snapshot, StoredMessage};
@@ -88,6 +88,8 @@ pub struct Engine {
     pub(crate) skill_registry: SharedSkillRegistry,
     /// Hook system registry (from config).
     pub(crate) hook_registry: HookRegistry,
+    /// Cancel flags for active agents (agent_name -> flag). Set directly to stop agents.
+    pub(crate) cancel_flags: HashMap<String, Arc<AtomicBool>>,
 }
 impl Engine {
     pub fn new(
@@ -134,6 +136,7 @@ impl Engine {
             plugins: Arc::new(PluginRegistry::new()),
             skill_registry: Arc::new(tokio::sync::RwLock::new(SkillRegistry::new())),
             hook_registry: HookRegistry::from(&config),
+            cancel_flags: HashMap::new(),
         }
     }
 
@@ -374,6 +377,10 @@ impl Engine {
                 .filter_map(|name| config_by_name.get(name).map(|c| (*c).clone()))
                 .collect();
 
+            // Create an external cancel flag for this agent
+            let cancel_flag = Arc::new(AtomicBool::new(false));
+            self.cancel_flags.insert(name.clone(), cancel_flag.clone());
+
             // Spawn the agent as a real tokio task
             let history_limit = self.config.session.history_limit_percent;
             let retry_cfg = self.config.session.retry.clone();
@@ -403,6 +410,7 @@ impl Engine {
                 plugins: Some(self.plugins.clone()),
                 concurrency_semaphore: concurrency_semaphore.clone(),
                 hook_registry: self.hook_registry.clone(),
+                cancel_flag: Some(cancel_flag),
             })
             .await;
 
@@ -613,6 +621,40 @@ impl Engine {
                             EngineCommand::Commit { name } => {
                                 self.handle_commit(name.as_deref()).await?;
                             }
+                            EngineCommand::ReloadAgent => {
+                                // First stop any in-flight work
+                                if let Some(flag) = self.cancel_flags.get(&self.active_agent) {
+                                    flag.store(true, Ordering::Relaxed);
+                                }
+                                let _ = self.send_to_active(AgentMessage::Cancel).await;
+                                // Then respawn the agent (reuses existing method, picks up fresh config)
+                                self.respawn_active_agent().await?;
+                                self.event_tx
+                                    .send(EngineEvent::AgentStatusChanged {
+                                        agent_id: AgentId::new(),
+                                        agent_name: self.active_agent.clone(),
+                                        status: AgentStatus::Idle,
+                                    })
+                                    .await
+                                    .ok();
+                            }
+                            EngineCommand::StopAgent => {
+                                // Set the cancel flag directly (bypasses mpsc channel, immediate effect)
+                                if let Some(flag) = self.cancel_flags.get(&self.active_agent) {
+                                    flag.store(true, Ordering::Relaxed);
+                                }
+                                // Also send through channel for when agent IS in the message loop
+                                let _ = self.send_to_active(AgentMessage::Cancel).await;
+                                // Emit Idle status so TUI knows immediately
+                                let _ = self
+                                    .event_tx
+                                    .send(EngineEvent::AgentStatusChanged {
+                                        agent_id: AgentId::new(),
+                                        agent_name: self.active_agent.clone(),
+                                        status: AgentStatus::Idle,
+                                    })
+                                    .await;
+                            }
                             EngineCommand::Shutdown => unreachable!(),
                             EngineCommand::ReloadConfig => {
                                 match crate::config::loader::load_config(None) {
@@ -806,6 +848,10 @@ impl Engine {
             self.agents.remove(&name);
         }
 
+        // Create an external cancel flag for this agent
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        self.cancel_flags.insert(name.clone(), cancel_flag.clone());
+
         // Spawn new agent
         let history_limit = self.config.session.history_limit_percent;
         let retry_cfg = self.config.session.retry.clone();
@@ -842,6 +888,7 @@ impl Engine {
             plugins: Some(self.plugins.clone()),
             concurrency_semaphore: concurrency_semaphore.clone(),
             hook_registry: self.hook_registry.clone(),
+            cancel_flag: Some(cancel_flag),
         })
         .await;
 

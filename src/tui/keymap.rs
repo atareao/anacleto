@@ -54,6 +54,8 @@ pub enum Action {
     FocusAgents,
     /// Clear the current input buffer.
     ClearInput,
+    /// Emergency stop: cancel all in-flight agent activity (Ctrl+C).
+    EmergencyStop,
     /// Open the prompt queue popup.
     OpenPromptQueue,
     /// Resume the pinned session in quick slot 1..9.
@@ -269,7 +271,8 @@ impl Default for Keymap {
             vec![KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)],
         );
 
-        km.bind(Action::ClearInput, vec![key_event('c', true)]);
+        km.bind(Action::ClearInput, vec![key_event('z', true)]);
+        km.bind(Action::EmergencyStop, vec![key_event('c', true)]);
         km.bind(Action::OpenPromptQueue, vec![key_event('q', true)]);
         km.bind(Action::QuickSlot1, vec![key_event('1', true)]);
         km.bind(Action::QuickSlot2, vec![key_event('2', true)]);
