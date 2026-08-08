@@ -78,7 +78,7 @@ When to use this skill...
 Example scenarios...
 ```
 
-Place the skill at `.anacleto/skills/<name>/SKILL.md`.
+Place the skill at `.agents/skills/<name>/SKILL.md`.
 
 ### 3. Create Test Prompts
 
@@ -89,7 +89,7 @@ Write 3-5 test prompts that represent real use cases for the skill. These should
 - **Boundary**: something that should NOT trigger the skill
 - **Complex**: multi-step request requiring reasoning
 
-Create these as a separate test file at `.anacleto/skills/<name>/tests.md`.
+Create these as a separate test file at `.agents/skills/<name>/tests.md`.
 
 ### 4. Evaluate
 
@@ -151,7 +151,7 @@ Edit the skill file with targeted improvements. After each change:
 Anacleto skills follow this directory convention:
 
 ```
-.anacleto/skills/<name>/
+.agents/skills/<name>/
   SKILL.md          # Main skill file (required)
   tests.md          # Test prompts (optional)
   scripts/          # Supporting scripts (optional)

@@ -4,7 +4,7 @@ description: Investiga un tema con fuentes primarias y produce un brief de inves
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
-  - .anacleto/skills/web-research/
+  - .agents/skills/web-research/
 mcps: []
 permissions:
   allow: []

@@ -4,7 +4,7 @@ description: Redacta artículos en Markdown siguiendo el brief de investigación
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
-  - .anacleto/skills/web-research/
+  - .agents/skills/web-research/
 mcps: []
 permissions:
   allow: []

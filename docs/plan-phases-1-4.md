@@ -722,7 +722,7 @@
   Anacleto uses YAML configuration merged from two locations:
 
   1. **Global:** `~/.config/anacleto/config.yaml` — shared across all projects
-  2. **Project:** `.anacleto/config.yaml` — per-project overrides
+  2. **Project:** `.agents/config.yaml` — per-project overrides
 
   Project config takes precedence over global config (deep merge).
 
@@ -773,13 +773,13 @@
   ### Project Config Example
 
   ```yaml
-  # .anacleto/config.yaml
+  # .agents/config.yaml
   agents:
     - name: root
-      description: .anacleto/agents/root.md
+      description: .agents/agents/root.md
       model: llama3.2
       skills:
-        - .anacleto/skills/shell/
+        - .agents/skills/shell/
       mcps: [filesystem]
       permissions:
         deny: []
@@ -923,12 +923,12 @@
   Create the project config directory:
 
   ```bash
-  mkdir -p .anacleto/agents .anacleto/skills
+  mkdir -p .agents/agents .agents/skills
   ```
 
   ## Step 2: Create Agent Descriptions
 
-  Create `.anacleto/agents/root.md`:
+  Create `.agents/agents/root.md`:
 
   ```markdown
   You are a senior software engineer. You help users with coding tasks,
@@ -936,7 +936,7 @@
   tasks to your subagent reviewers.
   ```
 
-  Create `.anacleto/agents/reviewer.md`:
+  Create `.agents/agents/reviewer.md`:
 
   ```markdown
   You are a meticulous code reviewer. Focus on:
@@ -951,7 +951,7 @@
 
   ## Step 3: Create a Skill
 
-  Create `.anacleto/skills/shell/SKILL.md`:
+  Create `.agents/skills/shell/SKILL.md`:
 
   ```markdown
   ---
@@ -975,7 +975,7 @@
 
   ## Step 4: Create Project Config
 
-  Create `.anacleto/config.yaml`:
+  Create `.agents/config.yaml`:
 
   ```yaml
   llm:
@@ -985,16 +985,16 @@
 
   agents:
     - name: root
-      description: .anacleto/agents/root.md
+      description: .agents/agents/root.md
       model: llama3.2
       skills:
-        - .anacleto/skills/shell/
+        - .agents/skills/shell/
       permissions:
         deny: []
       subagents: [reviewer]
 
     - name: reviewer
-      description: .anacleto/agents/reviewer.md
+      description: .agents/agents/reviewer.md
       model: llama3.2
       permissions:
         deny: [command.run, net.http]
@@ -1131,7 +1131,7 @@
 - [ ] **Step 3: Add rustdoc to `src/config/types.rs`**
 
   Read the file first to see existing types, then add `///` doc comments to:
-  - `Config` — "Top-level configuration, merged from global (`~/.config/anacleto/`) and project (`.anacleto/`) sources."
+  - `Config` — "Top-level configuration, merged from global (`~/.config/anacleto/`) and project (`.agents/`) sources."
   - `AgentConfig` — "Configuration for a single agent or subagent, as defined in YAML."
 
 - [ ] **Step 4: Add rustdoc to `src/engine/orchestrator.rs`**

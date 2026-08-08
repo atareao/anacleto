@@ -27,7 +27,7 @@ Anacleto busca skills en estas rutas, por orden de prioridad:
 
 | Ruta | Ámbito | Descripción |
 |---|---|---|
-| `.anacleto/skills/<name>/SKILL.md` | Proyecto | Skills del proyecto actual |
+| `.agents/skills/<name>/SKILL.md` | Proyecto | Skills del proyecto actual |
 | `~/.config/anacleto/skills/<name>/SKILL.md` | Global (usuario) | Skills globales del usuario |
 | `~/.config/anacleto/agents/<name>.md` | Global (agentes) | Definiciones de agentes (también tienen frontmatter) |
 
@@ -39,7 +39,7 @@ Anacleto busca skills en estas rutas, por orden de prioridad:
 
 ```bash
 # Skills del proyecto
-fd SKILL.md .anacleto/skills/ --full-path
+fd SKILL.md .agents/skills/ --full-path
 
 # Skills globales
 fd SKILL.md ~/.config/anacleto/skills/ --full-path
@@ -51,21 +51,21 @@ fd .md ~/.config/anacleto/agents/ --full-path
 ### 2. Buscar por palabra clave (nombre, descripción, dominio)
 
 ```bash
-rg -l "nombre-del-skill|palabra-clave|dominio" .anacleto/skills/ ~/.config/anacleto/skills/
+rg -l "nombre-del-skill|palabra-clave|dominio" .agents/skills/ ~/.config/anacleto/skills/
 ```
 
 ### 3. Inspeccionar el frontmatter de una skill
 
 ```bash
 # Ver solo el frontmatter YAML de una skill
-head -20 .anacleto/skills/<nombre>/SKILL.md
+head -20 .agents/skills/<nombre>/SKILL.md
 ```
 
 O mejor, parsear el frontmatter con herramientas estructuradas:
 
 ```bash
 # Extraer nombre y descripción de todas las skills del proyecto
-for f in .anacleto/skills/*/SKILL.md; do
+for f in .agents/skills/*/SKILL.md; do
   name=$(head -1 "$f" | rg -o '(?<=name: ).*')
   desc=$(head -2 "$f" | rg -o '(?<=description: ).*')
   echo "$name: $desc"
@@ -88,7 +88,7 @@ Identifica:
 
 ```bash
 # Buscar por dominio en descripciones y contenido
-rg -il "testing|test" .anacleto/skills/*/SKILL.md
+rg -il "testing|test" .agents/skills/*/SKILL.md
 ```
 
 ### Paso 3: Buscar en las skills globales
@@ -123,10 +123,10 @@ Anacleto no tiene un CLI tipo `npx skills add`. Para instalar una skill nueva:
 
 ```bash
 # Crear directorio para la skill en el proyecto
-mkdir -p .anacleto/skills/<nombre>
+mkdir -p .agents/skills/<nombre>
 
 # Crear el fichero SKILL.md con el frontmatter adaptado
-cat > .anacleto/skills/<nombre>/SKILL.md << 'EOF'
+cat > .agents/skills/<nombre>/SKILL.md << 'EOF'
 ---
 name: <nombre>
 description: <descripción adaptada>
@@ -142,11 +142,11 @@ Contenido adaptado de la skill original...
 EOF
 ```
 
-4. Añadir la skill al agente correspondiente en `.anacleto/agents/<nombre>.md`:
+4. Añadir la skill al agente correspondiente en `.agents/agents/<nombre>.md`:
 
 ```yaml
 skills:
-  - .anacleto/skills/<nombre>/
+  - .agents/skills/<nombre>/
 ```
 
 ### Opción B: Crear una skill desde cero

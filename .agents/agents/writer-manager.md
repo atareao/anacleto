@@ -5,8 +5,8 @@ role: root
 model: deepseek/deepseek-v4-flash
 max_steps: 90
 skills:
-  - .anacleto/skills/web-research/
-  - .anacleto/skills/shell/
+  - .agents/skills/web-research/
+  - .agents/skills/shell/
 mcps: []
 permissions:
   deny:

@@ -6,18 +6,18 @@ This example walks through setting up a new project with Anacleto, adding skills
 
 ## 1. Setup
 
-Create a project directory with a `.anacleto/config.yaml`:
+Create a project directory with a `.agents/config.yaml`:
 
 ```bash
-mkdir -p my-project/.anacleto/agents
-mkdir -p my-project/.anacleto/skills
+mkdir -p my-project/.agents/agents
+mkdir -p my-project/.agents/skills
 cd my-project
 ```
 
-Create `.anacleto/config.yaml`:
+Create `.agents/config.yaml`:
 
 ```yaml
-# .anacleto/config.yaml — Project-level configuration
+# .agents/config.yaml — Project-level configuration
 # Merges on top of ~/.config/anacleto/config.yaml
 
 models:
@@ -44,11 +44,11 @@ session:
 
 agents:
   - name: root
-    description: ".anacleto/agents/root.md"
+    description: ".agents/agents/root.md"
     model: "claude-sonnet-4"
     skills:
-      - ".anacleto/skills/shell/"
-      - ".anacleto/skills/web-research/"
+      - ".agents/skills/shell/"
+      - ".agents/skills/web-research/"
     mcps:
       - filesystem
       - fetch
@@ -60,10 +60,10 @@ agents:
       - writer
 
   - name: reviewer
-    description: ".anacleto/agents/reviewer.md"
+    description: ".agents/agents/reviewer.md"
     model: "claude-sonnet-4"
     skills:
-      - ".anacleto/skills/code-review/"
+      - ".agents/skills/code-review/"
     mcps:
       - filesystem
     permissions:
@@ -73,10 +73,10 @@ agents:
     subagents: []
 
   - name: writer
-    description: ".anacleto/agents/writer.md"
+    description: ".agents/agents/writer.md"
     model: "claude-sonnet-4"
     skills:
-      - ".anacleto/skills/web-research/"
+      - ".agents/skills/web-research/"
     mcps: []
     permissions:
       deny:
@@ -85,7 +85,7 @@ agents:
     subagents: []
 ```
 
-Create the root agent description at `.anacleto/agents/root.md`:
+Create the root agent description at `.agents/agents/root.md`:
 
 ```markdown
 You are **Anacleto**, a senior engineering agent specialized in software
@@ -116,7 +116,7 @@ You can delegate tasks to your subagents:
 
 ## 2. Add a skill
 
-Create `.anacleto/skills/web-research/search.md`:
+Create `.agents/skills/web-research/search.md`:
 
 ```markdown
 ---
@@ -386,7 +386,7 @@ volumes:
   ollama_data:
 ```
 
-With an `.anacleto/config.yaml` pointing to Ollama:
+With an `.agents/config.yaml` pointing to Ollama:
 
 ```yaml
 models:
@@ -411,7 +411,7 @@ docker compose up
 
 This example showed:
 
-1. **Setup** — Created a project with `.anacleto/config.yaml` and agent descriptions.
+1. **Setup** — Created a project with `.agents/config.yaml` and agent descriptions.
 2. **Skills** — Added a custom `web-search` skill in the Anthropic Markdown format.
 3. **Running** — Started the TUI, saw agent initialization and status indicators.
 4. **Interacting** — Sent a message, watched the agent use skills and MCP tools with live streaming output.

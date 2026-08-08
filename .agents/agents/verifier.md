@@ -4,7 +4,7 @@ description: Comprueba que el artículo es correcto y completo según la investi
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
-  - .anacleto/skills/web-research/
+  - .agents/skills/web-research/
 mcps: []
 permissions:
   allow: []

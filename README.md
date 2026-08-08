@@ -173,7 +173,7 @@ export OPENAI_API_KEY="sk-..."
 > API keys are sensitive credentials. Use environment variables or a secrets
 > manager — never commit keys to your repository or config files.
 
-Optionally add a **project-level config** at `.anacleto/config.yaml` that merges
+Optionally add a **project-level config** at `.agents/config.yaml` that merges
 on top of the global config.
 
 ### 3. Run
@@ -284,7 +284,7 @@ are summarized here.
 | [ADR-0002](docs/adr/ADR-0002-skill-system.md) | Skills are Markdown + YAML frontmatter (Anthropic format), loaded dynamically. |
 | [ADR-0003](docs/adr/ADR-0003-mcp-integration.md) | MCP is consumed via JSON-RPC 2.0 over stdio or TCP; consumer-only. |
 | [ADR-0004](docs/adr/ADR-0004-tui-architecture.md) | ratatui + crossterm in the same process as the engine (separate Tokio tasks). |
-| [ADR-0005](docs/adr/ADR-0005-configuration-system.md) | YAML. Global (`~/.config/anacleto/`) + project (`.anacleto/`) merged. |
+| [ADR-0005](docs/adr/ADR-0005-configuration-system.md) | YAML. Global (`~/.config/anacleto/`) + project (`.agents/`) merged. |
 | [ADR-0006](docs/adr/ADR-0006-persistence.md) | SQLite via sqlx. Sessions resumable; context limit 50% of model window. |
 | [ADR-0007](docs/adr/ADR-0007-permissions-model.md) | Allow by default, deny explicitly; human approval for sensitive ops. |
 | [ADR-0008](docs/adr/ADR-0008-technology-stack.md) | Rust edition 2024, Tokio, ratatui, sqlx, reqwest, serde. |
@@ -297,7 +297,7 @@ Two layers of YAML configuration are merged at startup:
 
 - **Global** — `~/.config/anacleto/config.yaml`, machine-wide defaults for all
   projects.
-- **Project** — `.anacleto/config.yaml` in the project root, merged on top of
+- **Project** — `.agents/config.yaml` in the project root, merged on top of
   the global config.
 
 ### Models
@@ -370,13 +370,13 @@ in the `models` section and referenced by their model name.
 > self-contained Markdown file with YAML frontmatter, located in the
 > `agents/` directory:
 > - global: `~/.config/anacleto/agents/*.md`
-> - project: `.anacleto/agents/*.md`
+> - project: `.agents/agents/*.md`
 >
 > The frontmatter holds the structural config and the Markdown body is the
 > system prompt. Project agents override global agents with the same name.
 > Exactly one agent must declare `role: root`.
 
-Example (`.anacleto/agents/root.md`):
+Example (`.agents/agents/root.md`):
 
 ```markdown
 ---
@@ -385,7 +385,7 @@ description: Senior engineering agent
 role: root
 model: "claude-sonnet-4"
 skills:
-  - .anacleto/skills/shell/
+  - .agents/skills/shell/
 mcps: []
 permissions:
   deny:

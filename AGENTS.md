@@ -53,7 +53,7 @@ src/
 | **Skills** | Markdown + YAML frontmatter (Anthropic format). Per-agent, no inheritance. |
 | **MCPs** | Consumer only (no lifecycle management). Per-agent, no inheritance. |
 | **TUI** | ratatui + crossterm, same process as engine (separate Tokio tasks). |
-| **Config** | YAML. Global (`~/.config/anacleto/`) + project (`.anacleto/`) merged. |
+| **Config** | YAML. Global (`~/.config/anacleto/`) + project (`.agents/`) merged. |
 | **Persistence** | SQLite via sqlx. Sessions are resumable. Context limit: 50% of model window. |
 | **Permissions** | Allow by default, deny explicitly. Human approval for sensitive ops. |
 | **Streaming** | Always on by default. Intermediate steps (skill/MCP execution) visible in TUI. |

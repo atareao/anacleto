@@ -25,7 +25,7 @@ Anacleto uses a two-layer YAML configuration system: a **global** config for mac
 | Level | Path |
 |---|---|
 | Global | `~/.config/anacleto/config.yaml` |
-| Project | `.anacleto/config.yaml` (project root) |
+| Project | `.agents/config.yaml` (project root) |
 
 ### YAML schema
 
@@ -79,10 +79,10 @@ session:
 # ── Agent definitions ──────────────────────────────────────────────
 agents:
   - name: root
-    description: ".anacleto/agents/root.md"
+    description: ".agents/agents/root.md"
     model: "claude-sonnet-4"
     skills:
-      - ".anacleto/skills/shell/"
+      - ".agents/skills/shell/"
     mcps:
       - filesystem
     permissions:
@@ -118,7 +118,7 @@ models:
 ### Config merge rules
 
 1. Load global config from `~/.config/anacleto/config.yaml`.
-2. Load project config from `.anacleto/config.yaml` (if it exists).
+2. Load project config from `.agents/config.yaml` (if it exists).
 3. Merge project config on top of global config (project values override globals).
 4. Resolve `${VAR}` environment variable references.
 5. CLI flags (`--config`, `--database`) override both levels.
@@ -192,9 +192,9 @@ Skills are configured **per agent** and are **not inherited** by subagents. Each
 
 | File | Description |
 |---|---|
-| `.anacleto/skills/shell/SKILL.md` | Execute shell commands |
-| `.anacleto/skills/web-research/SKILL.md` | Fetch and analyze web content |
-| `.anacleto/skills/code-review/SKILL.md` | Review code for quality and correctness |
+| `.agents/skills/shell/SKILL.md` | Execute shell commands |
+| `.agents/skills/web-research/SKILL.md` | Fetch and analyze web content |
+| `.agents/skills/code-review/SKILL.md` | Review code for quality and correctness |
 
 ---
 

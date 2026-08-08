@@ -44,7 +44,7 @@ pub struct Config {
     ///
     /// Agents are no longer defined in `config.yaml`. They are loaded from
     /// Markdown files with YAML frontmatter by `crate::agent::loader`
-    /// (global `~/.config/anacleto/agents/` + project `.anacleto/agents/`).
+    /// (global `~/.config/anacleto/agents/` + project `.agents/agents/`).
     /// This field is skipped during (de)serialization and populated by
     /// `load_config()` after the YAML merge.
     #[serde(skip)]

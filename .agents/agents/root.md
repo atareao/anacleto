@@ -5,16 +5,16 @@ role: root
 model: deepseek/deepseek-v4-flash
 max_steps: 90
 skills:
-  - .anacleto/skills/shell/
-  - .anacleto/skills/filesystem/
-  - .anacleto/skills/web-research/
-  - .anacleto/skills/code-review/
-  - .anacleto/skills/rust-dev/
-  - .anacleto/skills/find-skills/
-  - .anacleto/skills/skill-creator/
-  - .anacleto/skills/agent-creator/
-  - .anacleto/skills/planning/
-  - .anacleto/skills/version-control/
+  - .agents/skills/shell/
+  - .agents/skills/filesystem/
+  - .agents/skills/web-research/
+  - .agents/skills/code-review/
+  - .agents/skills/rust-dev/
+  - .agents/skills/find-skills/
+  - .agents/skills/skill-creator/
+  - .agents/skills/agent-creator/
+  - .agents/skills/planning/
+  - .agents/skills/version-control/
 mcps: [codegraph]
 permissions:
   deny:
