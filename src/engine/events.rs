@@ -393,6 +393,14 @@ pub enum EngineCommand {
     Commit { name: Option<String> },
     /// Reload configuration from disk (triggered by SIGHUP).
     ReloadConfig,
+    /// Update the configuration of an agent/subagent (skills, mcps, subagents).
+    UpdateAgentConfig {
+        name: String,
+        skills: Vec<String>,
+        mcps: Vec<String>,
+        /// Only for root agents: the list of configured subagents.
+        subagents: Option<Vec<String>>,
+    },
     /// Reload the active agent: respawn with fresh config, skills, plugins, and system prompt.
     ReloadAgent,
     /// Emergency stop: cancel all in-flight agent activity.

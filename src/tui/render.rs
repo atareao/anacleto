@@ -83,6 +83,11 @@ pub(crate) fn render(f: &mut Frame, app: &mut App) {
         render_search_overlay(f, f.area(), app);
     }
 
+    // Render the edit-agent/subagent dialog if visible.
+    if app.edit_dialog.visible {
+        render_edit_dialog(f, f.area(), app);
+    }
+
     // Render transient toasts in the bottom-right corner.
     app.toasts.render(f, f.area());
 }
@@ -725,29 +730,31 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                     AgentStatus::Completed => "done",
                     AgentStatus::Error(_) => "error",
                 };
-                let item_style = if selected {
-                    Style::default()
-                        .fg(app.theme.accent())
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
+                // Selected rows get the accent background (matching the Skills
+                // panel), applied to every span so the whole row is highlighted.
+                let sel = |s: Style| -> Style {
+                    if selected {
+                        s.bg(app.theme.accent()).fg(Color::Black)
+                    } else {
+                        s
+                    }
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         if active { "▶ " } else { "  " },
-                        Style::default()
+                        sel(Style::default()
                             .fg(Color::Magenta)
-                            .add_modifier(Modifier::BOLD),
+                            .add_modifier(Modifier::BOLD)),
                     ),
                     Span::styled(
                         format!(" {} ", dot),
-                        Style::default().fg(dot_color).add_modifier(Modifier::BOLD),
+                        sel(Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
                     ),
                     Span::styled(
                         &a.name,
-                        Style::default()
+                        sel(Style::default()
                             .fg(if active { Color::Magenta } else { Color::White })
-                            .add_modifier(Modifier::BOLD),
+                            .add_modifier(Modifier::BOLD)),
                     ),
                     if a.status == AgentStatus::Working {
                         Span::styled(
@@ -755,30 +762,38 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                                 " {}",
                                 SPINNER_FRAMES[(app.frame_count as usize) % SPINNER_FRAMES.len()]
                             ),
-                            Style::default()
+                            sel(Style::default()
                                 .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD),
+                                .add_modifier(Modifier::BOLD)),
                         )
                     } else {
                         Span::raw("")
                     },
-                    Span::styled(format!(" [{}]", role), Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!(" [{}]", role),
+                        sel(Style::default().fg(Color::DarkGray)),
+                    ),
                     Span::styled(
                         format!(" [{}]", a.agent_type.as_deref().unwrap_or("generic")),
-                        Style::default().fg(Color::Cyan),
+                        sel(Style::default().fg(Color::Cyan)),
                     ),
                     if let Some(mode) = &a.mode {
                         let label = match mode {
                             TaskMode::Foreground => "fg",
                             TaskMode::Background => "bg",
                         };
-                        Span::styled(format!(" ({label})"), Style::default().fg(Color::DarkGray))
+                        Span::styled(
+                            format!(" ({label})"),
+                            sel(Style::default().fg(Color::DarkGray)),
+                        )
                     } else {
                         Span::raw("")
                     },
-                    Span::styled(format!(" ({})", status_str), Style::default().fg(dot_color)),
+                    Span::styled(
+                        format!(" ({})", status_str),
+                        sel(Style::default().fg(dot_color)),
+                    ),
                 ]))
-                .style(item_style)
             })
             .collect()
     };
@@ -1123,7 +1138,7 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
         let thinking_color = app.theme.thinking();
         for line_text in thinking.split('\n') {
             let span = Span::styled(
-                format!("{}", line_text),
+                line_text.to_string(),
                 Style::default()
                     .fg(thinking_color)
                     .add_modifier(Modifier::DIM),
@@ -1872,6 +1887,118 @@ fn render_question_dialog(f: &mut Frame, area: Rect, app: &App) {
                 .style(Style::default().bg(Color::Rgb(0, 30, 40))),
         )
         .alignment(ratatui::layout::Alignment::Left);
+
+    f.render_widget(dialog, dialog_area);
+}
+
+/// Render the Ctrl+E edit-agent/subagent dialog.
+fn render_edit_dialog(f: &mut Frame, area: Rect, app: &App) {
+    if !app.edit_dialog.visible {
+        return;
+    }
+
+    let ed = &app.edit_dialog;
+
+    // Dialog dimensions
+    let dialog_width = area.width.min(70);
+    let dialog_height = if ed.is_root { 20 } else { 17 };
+    let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+    // Clear area behind dialog
+    let overlay = ratatui::widgets::Clear;
+    f.render_widget(overlay, dialog_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Title
+    let role_label = if ed.is_root { "Agente" } else { "Subagente" };
+    lines.push(Line::from(Span::styled(
+        format!(" ✏️  Editando {}: {} ", role_label, ed.target_name),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::raw("")));
+
+    // Section tabs header
+    let section_labels: Vec<&str> = if ed.is_root {
+        vec![" Skills ", " MCPs ", " SubAgentes "]
+    } else {
+        vec![" Skills ", " MCPs "]
+    };
+    let mut tab_spans: Vec<Span> = Vec::new();
+    for (i, label) in section_labels.iter().enumerate() {
+        let style = if i == ed.section {
+            Style::default()
+                .fg(Color::Black)
+                .bg(app.theme.accent())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        tab_spans.push(Span::styled(*label, style));
+        tab_spans.push(Span::raw(" │ "));
+    }
+    if !tab_spans.is_empty() {
+        tab_spans.pop(); // remove trailing separator
+    }
+    lines.push(Line::from(tab_spans));
+    lines.push(Line::from(Span::raw("")));
+
+    // Current section items
+    let items: &[String] = match ed.section {
+        0 => &ed.all_skills,
+        1 => &ed.all_mcps,
+        _ => &ed.all_subagents,
+    };
+    let enabled: &[bool] = match ed.section {
+        0 => &ed.skills_enabled,
+        1 => &ed.mcps_enabled,
+        _ => &ed.subagents_enabled,
+    };
+
+    if items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no hay elementos)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        let start = ed.index.saturating_sub(8);
+        let end = std::cmp::min(start + 10, items.len());
+        for i in start..end {
+            let checkbox = if enabled[i] { "[\u{2713}]" } else { "[ ]" };
+            let marker = if i == ed.index { "\u{25b8}" } else { " " };
+            let style = if i == ed.index {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(app.theme.accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(Span::styled(
+                format!(" {} {} {} ", marker, checkbox, items[i]),
+                style,
+            )));
+        }
+    }
+
+    // Footer
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        "  ←/→: sección  |  ↑/↓: navegar  |  Espacio: toggle  |  Enter: confirmar  |  Esc: cancelar ",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+    )));
+
+    let dialog = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Cyan))
+            .style(Style::default().bg(Color::Rgb(0, 30, 40))),
+    );
 
     f.render_widget(dialog, dialog_area);
 }

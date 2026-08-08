@@ -658,6 +658,15 @@ impl Engine {
                                     .await;
                             }
                             EngineCommand::Shutdown => unreachable!(),
+                            EngineCommand::UpdateAgentConfig {
+                                name,
+                                skills,
+                                mcps,
+                                subagents,
+                            } => {
+                                self.handle_update_agent_config(name, skills, mcps, subagents)
+                                    .await?;
+                            }
                             EngineCommand::ReloadConfig => {
                                 match crate::config::loader::load_config(None) {
                                     Ok(new_config) => {
@@ -953,6 +962,136 @@ impl Engine {
         if let Some(db) = self.database.take() {
             db.close().await?;
         }
+        Ok(())
+    }
+
+    /// Handle an `UpdateAgentConfig` command from the TUI.
+    ///
+    /// Updates the in-memory agent configuration (skills, MCPs, subagents)
+    /// and, if the agent is currently running, respawns it so the changes
+    /// take effect immediately.
+    async fn handle_update_agent_config(
+        &mut self,
+        name: String,
+        skills: Vec<String>,
+        mcps: Vec<String>,
+        subagents: Option<Vec<String>>,
+    ) -> Result<()> {
+        // Update the in-memory AgentConfig
+        if let Some(agent_config) = self.config.agents.iter_mut().find(|a| a.name == name) {
+            // Resolve skill names to paths using the skill registry
+            let reg = self.skill_registry.read().await;
+            let skill_paths: Vec<PathBuf> = skills
+                .iter()
+                .filter_map(|s| reg.get_source_path(s).cloned())
+                .collect();
+            drop(reg);
+
+            agent_config.skills = skill_paths;
+            agent_config.mcps = mcps;
+            if let Some(subagents) = subagents {
+                agent_config.subagents = subagents;
+            }
+        }
+
+        // If the agent is currently running, respawn it to pick up changes
+        if self.agents.contains_key(&name) {
+            // Check if it's the active agent (use the existing respawn path)
+            let was_active = self.active_agent == name;
+            if was_active {
+                self.respawn_active_agent().await?;
+            } else {
+                // For non-active running agents, kill and respawn them
+                if let Some(old_id) = self.agents.remove(&name) {
+                    if let Some(old_handle) = self.handles.remove(&old_id) {
+                        let _ = old_handle.sender.send(AgentMessage::Shutdown).await;
+                    }
+                }
+                // Re-spawn from updated config
+                if let Some(agent_config) = self.config.agents.iter().find(|a| a.name == name) {
+                    let agent = Agent::from_config(agent_config, AgentRole::Root);
+                    let new_name = agent.name.clone();
+                    let new_id = agent.id.clone();
+
+                    let provider = self.resolve_agent_provider(&agent)?;
+
+                    let skill_names: Vec<String> = agent
+                        .skills
+                        .iter()
+                        .filter_map(|p| {
+                            p.file_stem()
+                                .and_then(|f| f.to_str().map(|s| s.to_string()))
+                        })
+                        .collect();
+
+                    let config_by_name: std::collections::HashMap<
+                        String,
+                        &crate::config::AgentConfig,
+                    > = self
+                        .config
+                        .agents
+                        .iter()
+                        .map(|a| (a.name.clone(), a))
+                        .collect();
+                    let my_subagent_configs: Vec<crate::config::AgentConfig> = agent_config
+                        .subagents
+                        .iter()
+                        .filter_map(|sub| config_by_name.get(sub).map(|c| (*c).clone()))
+                        .collect();
+
+                    let cancel_flag = Arc::new(AtomicBool::new(false));
+                    self.cancel_flags
+                        .insert(new_name.clone(), cancel_flag.clone());
+
+                    let history_limit = self.config.session.history_limit_percent;
+                    let retry_cfg = self.config.session.retry.clone();
+                    let concurrency_semaphore = if self.config.session.max_concurrency > 0 {
+                        Some(Arc::new(tokio::sync::Semaphore::new(
+                            self.config.session.max_concurrency as usize,
+                        )))
+                    } else {
+                        None
+                    };
+
+                    let handle = spawn_agent(SpawnAgentConfig {
+                        agent,
+                        provider,
+                        skill_registry: self.skill_registry.clone(),
+                        skill_names,
+                        subagent_configs: my_subagent_configs,
+                        llm_registry: self.llm_registry.clone(),
+                        mcp_registry: Some(self.mcp_registry.clone()),
+                        mcp_enabled: Some(self.mcp_enabled.clone()),
+                        event_tx: self.event_tx.clone(),
+                        usage_tx: Some(self.usage_tx.clone()),
+                        retry_config: retry_cfg,
+                        db: self.database.clone(),
+                        session_id: self.active_session_id,
+                        pending_approvals: Some(self.pending_approvals.clone()),
+                        pending_questions: Some(self.pending_questions.clone()),
+                        history_limit_percent: history_limit,
+                        debug: self.debug.clone(),
+                        workspace: self.workspace.clone(),
+                        task_id: None,
+                        depth: 0,
+                        mode: AgentMode::Build,
+                        job_registry: Some(self.job_registry.clone()),
+                        plugins: Some(self.plugins.clone()),
+                        concurrency_semaphore: concurrency_semaphore.clone(),
+                        hook_registry: self.hook_registry.clone(),
+                        cancel_flag: Some(cancel_flag),
+                    })
+                    .await;
+
+                    self.agents.insert(new_name, new_id.clone());
+                    self.handles.insert(new_id, handle);
+                }
+            }
+        }
+
+        // Notify the TUI that configuration changed
+        self.event_tx.send(EngineEvent::ConfigReloaded).await.ok();
+
         Ok(())
     }
 }
