@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-08-08
+
+### Added
+
+- **Mouse click-to-select panels** — Click on any panel (Chat, Info, MCPs, Skills, Agents) to focus it directly.
+- **Focus cycling** — Tab/Shift+Tab to cycle focus between panels.
+- **Keymap module** (`src/tui/keymap.rs`) — Centralized key-to-action mapping with `Action::FocusNext` and `Action::FocusPrev`.
+- **Keys module** (`src/tui/keys.rs`) — Mouse event handling (`handle_mouse()`) with ratatui layout hit-testing.
+- **Theme module** (`src/tui/theme.rs`) — Themed border colors for AI, tool, and status messages.
+- **Streaming improvements** — Tool execution markers (🔧) and results (✅/❌) appear inline within the AI's response stream.
+- **Reversed scroll direction** — `j` scrolls forward (down), `k` scrolls backward (up), matching vim conventions.
+- **Auto-scroll on send** — Chat scroll resets to bottom when sending a new message.
+
+### Changed
+
+- `src/tui/app.rs`: Added `Event::Mouse` handling in event loop, removed `mcp_scroll`/`skill_scroll` fields.
+- `src/tui/events.rs`: Streaming tool markers inline, preserved `HookExecuted` handler.
+- `src/tui/navigation.rs`: Reversed scroll direction, Tab→Right/Left for info panel cycling.
+- `src/tui/render.rs`: Theme colors for tools, tool marker detection within AI responses, simplified MCP/Skill panels.
+- `src/tui/markdown.rs`: Simplified `select_visible_start` return type.
+- `src/main.rs`: Added `EnableMouseCapture` / `DisableMouseCapture`.
+
+[0.14.0]: https://github.com/atareao/anacleto/releases/tag/v0.14.0
+
 ## [0.13.0] - 2026-08-08
 
 ### Added
