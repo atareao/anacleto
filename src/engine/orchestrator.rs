@@ -613,6 +613,9 @@ impl Engine {
                             EngineCommand::Commit { name } => {
                                 self.handle_commit(name.as_deref()).await?;
                             }
+                            EngineCommand::StopAgent => {
+                                self.send_to_active(AgentMessage::Cancel).await?;
+                            }
                             EngineCommand::Shutdown => unreachable!(),
                             EngineCommand::ReloadConfig => {
                                 match crate::config::loader::load_config(None) {

@@ -177,6 +177,8 @@ pub enum AgentMessage {
         model: Option<String>,
         tools: Vec<String>,
     },
+    /// Emergency stop signal — cancel current operation and return to idle.
+    Cancel,
     /// Shutdown signal.
     Shutdown,
 }
