@@ -69,7 +69,14 @@ impl App {
                 }
                 stream.push_str(&content);
             }
+            EngineEvent::AgentThinkingChunk { content, .. } => {
+                if self.show_thinking {
+                    let thinking = self.current_thinking.get_or_insert_with(String::new);
+                    thinking.push_str(&content);
+                }
+            }
             EngineEvent::AgentOutput { content, .. } => {
+                self.current_thinking = None;
                 // Capture the accumulated stream (which includes tool markers
                 // appended by ToolExecution/ToolResult handlers) before
                 // clearing it, so tool calls remain visible in the final

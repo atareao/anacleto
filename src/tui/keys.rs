@@ -449,6 +449,7 @@ impl App {
                 self.push_msg("⏹ Stopped");
                 // Clear any in-progress streaming response
                 self.current_stream = None;
+                self.current_thinking = None;
                 self.stream_committed_index = None;
                 // Show a toast notification
                 self.toasts.push("⏹ Stopped", ToastKind::Info);

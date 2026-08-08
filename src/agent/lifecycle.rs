@@ -431,6 +431,15 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                 // Collect all chunks from the stream
                                 while let Some(chunk) = stream_rx.recv().await {
                                     match chunk {
+                                        Ok(LlmStreamChunk::Thinking(text)) => {
+                                            let _ = event_tx
+                                                .send(EngineEvent::AgentThinkingChunk {
+                                                    agent_id: agent_id.clone(),
+                                                    agent_name: agent_name.clone(),
+                                                    content: text,
+                                                })
+                                                .await;
+                                        }
                                         Ok(LlmStreamChunk::Content(text)) => {
                                             full_response.push_str(&text);
                                             let _ = event_tx
