@@ -1,6 +1,7 @@
 //! Global key handling for the TUI.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::engine::orchestrator::EngineCommand;
 use crate::tui::app::App;
@@ -381,6 +382,28 @@ impl App {
                 return;
             }
 
+            // Tab / Shift+Tab cycle focus through panels.
+            if self.keymap.matches(key_event, Action::FocusNext) {
+                self.focus = match self.focus {
+                    Focus::Chat => Focus::Info,
+                    Focus::Info => Focus::Agents,
+                    Focus::Agents => Focus::Queue,
+                    Focus::Queue => Focus::Input,
+                    Focus::Input => Focus::Chat,
+                };
+                return;
+            }
+            if self.keymap.matches(key_event, Action::FocusPrev) {
+                self.focus = match self.focus {
+                    Focus::Chat => Focus::Input,
+                    Focus::Input => Focus::Queue,
+                    Focus::Queue => Focus::Agents,
+                    Focus::Agents => Focus::Info,
+                    Focus::Info => Focus::Chat,
+                };
+                return;
+            }
+
             if self.keymap.matches(key_event, Action::Quit) {
                 self.should_exit = true;
                 return;
@@ -446,6 +469,93 @@ impl App {
             Focus::Info => self.handle_info_panel_key(key, modifiers, key_event),
             Focus::Queue => self.handle_queue_panel_key(key, modifiers, key_event),
             Focus::Agents => self.handle_agent_panel_key(key, modifiers, key_event),
+        }
+    }
+
+    /// Handle a mouse click — set focus to the panel under the cursor.
+    pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        // Only respond to left-click press events.
+        use crossterm::event::MouseButton;
+        if mouse.kind != crossterm::event::MouseEventKind::Down(MouseButton::Left) {
+            return;
+        }
+
+        let Ok((term_width, term_height)) = crossterm::terminal::size() else {
+            return;
+        };
+        let area = Rect::new(0, 0, term_width, term_height);
+
+        // Replicate the vertical layout from render.rs
+        let vert = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // status bar
+                Constraint::Min(1),    // main content
+                Constraint::Length(4), // input
+                Constraint::Length(1), // working directory
+            ])
+            .split(area);
+
+        let y = mouse.row;
+
+        // ── Status bar (row 0) — no focus change ────────────────
+        if y < vert[0].height {
+            return;
+        }
+
+        // ── Input area (row 3, height 4) ────────────────────────
+        if y >= vert[2].y && y < vert[2].y + vert[2].height {
+            self.focus = Focus::Input;
+            return;
+        }
+
+        // ── Working directory bar (last row) — no focus change ──
+        if y >= vert[3].y {
+            return;
+        }
+
+        // ── Main content area ───────────────────────────────────
+        let main_area = vert[1];
+
+        if self.show_sidebar {
+            let horiz = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+                .split(main_area);
+
+            let x = mouse.column;
+
+            // Left panel (chat / overlays)
+            if x < horiz[0].x + horiz[0].width {
+                self.focus = Focus::Chat;
+                return;
+            }
+
+            // Right panel — determine which sub-panel
+            let right = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(6),   // Status
+                    Constraint::Ratio(1, 3), // Info (Skills/MCPs)
+                    Constraint::Ratio(1, 3), // Agents
+                    Constraint::Ratio(1, 3), // Queue
+                ])
+                .split(horiz[1]);
+
+            for (i, chunk) in right.iter().enumerate() {
+                if y >= chunk.y && y < chunk.y + chunk.height {
+                    match i {
+                        1 => self.focus = Focus::Info,
+                        2 => self.focus = Focus::Agents,
+                        3 => self.focus = Focus::Queue,
+                        _ => {} // Status panel (index 0): no focus
+                    }
+                    return;
+                }
+            }
+        } else {
+            // Sidebar hidden: left panel takes full width.
+            self.focus = Focus::Chat;
         }
     }
 

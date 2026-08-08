@@ -54,20 +54,37 @@ impl App {
                 }
             }
             EngineEvent::AgentStreamChunk { content, .. } => {
-                *self.current_stream.get_or_insert_with(String::new) += &content;
+                let stream = self.current_stream.get_or_insert_with(String::new);
+                // If the stream ends with a tool result line (✅ or ❌) and the
+                // new content doesn't start with a newline, insert one to prevent
+                // the agent's response text from being concatenated to the same
+                // line as the tool result.
+                if !content.starts_with('\n') {
+                    if let Some(last_line) = stream.rsplit('\n').next() {
+                        let trimmed = last_line.trim_start();
+                        if trimmed.starts_with("\u{2705}") || trimmed.starts_with("\u{274c}") {
+                            stream.push('\n');
+                        }
+                    }
+                }
+                stream.push_str(&content);
             }
             EngineEvent::AgentOutput { content, .. } => {
-                self.current_stream = None;
+                // Capture the accumulated stream (which includes tool markers
+                // appended by ToolExecution/ToolResult handlers) before
+                // clearing it, so tool calls remain visible in the final
+                // rendered message instead of disappearing.
+                let final_content = self.current_stream.take().unwrap_or(content);
                 if let Some(idx) = self.stream_committed_index.take() {
                     // The partial stream was already committed; replace exactly
                     // that message with the full content to avoid duplication.
                     if let Some(msg) = self.messages.get_mut(idx) {
-                        *msg = content;
+                        *msg = final_content;
                     } else {
-                        self.push_msg(content);
+                        self.push_msg(final_content);
                     }
                 } else {
-                    self.push_msg(content);
+                    self.push_msg(final_content);
                 }
                 self.chat_scroll = 0;
             }
@@ -217,7 +234,6 @@ impl App {
                 } else {
                     self.messages.push(msg);
                 }
-
                 self.chat_scroll = 0;
             }
             EngineEvent::ToolResult {
@@ -227,18 +243,17 @@ impl App {
                 ..
             } => {
                 let icon = if success { "\u{2705}" } else { "\u{274c}" };
+                let summary = one_line(&summary, 60);
                 let msg = if success {
                     format!("{} {} \u{2014} {}", icon, tool_name, summary)
                 } else {
                     format!("{} {} failed: {}", icon, tool_name, summary)
                 };
-
                 if let Some(stream) = &mut self.current_stream {
                     stream.push_str(&format!("\n{}", msg));
                 } else {
                     self.push_msg(msg);
                 }
-
                 self.chat_scroll = 0;
             }
             EngineEvent::LlmRequestDebug {
@@ -527,6 +542,19 @@ mod tests {
             agent_type: None,
             mode: None,
         }
+    }
+
+    #[test]
+    fn one_line_collapses_and_truncates() {
+        assert_eq!(one_line("a\nb\nc", 100), "a b c");
+        assert_eq!(one_line("  spaced   out  ", 100), "spaced out");
+        // Truncation appends an ellipsis.
+        let long = "x".repeat(200);
+        let out = one_line(&long, 100);
+        assert_eq!(out.chars().count(), 101);
+        assert!(out.ends_with('…'));
+        // Short content is returned unchanged (collapsed).
+        assert_eq!(one_line("ok", 100), "ok");
     }
 
     #[test]
