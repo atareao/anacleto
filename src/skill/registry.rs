@@ -110,14 +110,15 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn create_test_skill_file(dir: &Path, name: &str, skill_name: &str) -> PathBuf {
-        let path = dir.join(format!("{}.md", name));
+    fn create_test_skill_file(base: &Path, dir_name: &str, skill_name: &str) -> PathBuf {
+        let skill_dir = base.join(dir_name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let path = skill_dir.join("SKILL.md");
         let content = format!(
             r#"---
 name: {}
 description: A test skill
 ---
-
 Instructions for {} here.
 "#,
             skill_name, skill_name
@@ -140,7 +141,8 @@ Instructions for {} here.
         create_test_skill_file(dir.path(), "shell", "shell");
 
         let mut reg = SkillRegistry::new();
-        reg.load_from_paths(&[dir.path().to_path_buf()]).unwrap();
+        reg.load_from_paths(&[dir.path().join("review"), dir.path().join("shell")])
+            .unwrap();
 
         assert_eq!(reg.len(), 2);
         assert!(reg.contains("code-review"));
@@ -152,17 +154,28 @@ Instructions for {} here.
     #[test]
     fn test_reload() {
         let dir = tempfile::tempdir().unwrap();
-        create_test_skill_file(dir.path(), "review", "code-review");
+        let review_dir = create_test_skill_file(dir.path(), "review", "code-review");
+        // Remove parent from path so we test the dir, not the file
+        let _ = review_dir;
 
         let mut reg = SkillRegistry::new();
-        reg.load_from_paths(&[dir.path().to_path_buf()]).unwrap();
+        reg.load_from_paths(&[dir.path().join("review")]).unwrap();
         assert_eq!(reg.len(), 1);
 
-        // Add a new skill file
-        create_test_skill_file(dir.path(), "shell", "shell");
+        // Modify the skill file on disk
+        let skill_path = dir.path().join("review").join("SKILL.md");
+        let new_content = r#"---
+name: code-review
+description: Updated description
+---
+Updated instructions.
+"#;
+        std::fs::write(&skill_path, new_content).unwrap();
 
         reg.reload().unwrap();
-        assert_eq!(reg.len(), 2);
+        assert_eq!(reg.len(), 1);
+        let skill = reg.get("code-review").unwrap();
+        assert_eq!(skill.description, "Updated description");
     }
 
     #[test]
@@ -172,7 +185,8 @@ Instructions for {} here.
         create_test_skill_file(dir.path(), "shell", "shell");
 
         let mut reg = SkillRegistry::new();
-        reg.load_from_paths(&[dir.path().to_path_buf()]).unwrap();
+        reg.load_from_paths(&[dir.path().join("review"), dir.path().join("shell")])
+            .unwrap();
 
         let names: Vec<&str> = reg.list().iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"code-review"));
@@ -185,7 +199,7 @@ Instructions for {} here.
         create_test_skill_file(dir.path(), "review", "code-review");
 
         let mut reg = SkillRegistry::new();
-        reg.load_from_paths(&[dir.path().to_path_buf()]).unwrap();
+        reg.load_from_paths(&[dir.path().join("review")]).unwrap();
 
         let names = reg.skill_names();
         assert!(names.contains("code-review"));
