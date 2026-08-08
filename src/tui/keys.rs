@@ -257,6 +257,87 @@ impl App {
             return;
         }
 
+        // ── Edit agent/subagent dialog navigation ──────────────────
+        if self.edit_dialog.visible {
+            match key {
+                KeyCode::Up => {
+                    if self.edit_dialog.index > 0 {
+                        self.edit_dialog.index -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    let len = self.edit_dialog.section_len();
+                    if len > 0 && self.edit_dialog.index + 1 < len {
+                        self.edit_dialog.index += 1;
+                    }
+                }
+                KeyCode::Left => {
+                    if self.edit_dialog.section > 0 {
+                        self.edit_dialog.section -= 1;
+                        self.edit_dialog.index = 0;
+                    }
+                }
+                KeyCode::Right => {
+                    if self.edit_dialog.section + 1 < self.edit_dialog.section_count() {
+                        self.edit_dialog.section += 1;
+                        self.edit_dialog.index = 0;
+                    }
+                }
+                KeyCode::Char(' ') => {
+                    self.edit_dialog.toggle_current();
+                }
+                KeyCode::Enter => {
+                    // Confirm: send changes to engine
+                    let target_name = self.edit_dialog.target_name.clone();
+                    let skills: Vec<String> = self
+                        .edit_dialog
+                        .all_skills
+                        .iter()
+                        .zip(self.edit_dialog.skills_enabled.iter())
+                        .filter(|&(_, &enabled)| enabled)
+                        .map(|(s, _)| s.clone())
+                        .collect();
+                    let mcps: Vec<String> = self
+                        .edit_dialog
+                        .all_mcps
+                        .iter()
+                        .zip(self.edit_dialog.mcps_enabled.iter())
+                        .filter(|&(_, &enabled)| enabled)
+                        .map(|(m, _)| m.clone())
+                        .collect();
+                    let subagents: Option<Vec<String>> = if self.edit_dialog.is_root {
+                        Some(
+                            self.edit_dialog
+                                .all_subagents
+                                .iter()
+                                .zip(self.edit_dialog.subagents_enabled.iter())
+                                .filter(|&(_, &enabled)| enabled)
+                                .map(|(s, _)| s.clone())
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
+                    let _ = self.cmd_tx.try_send(EngineCommand::UpdateAgentConfig {
+                        name: target_name,
+                        skills,
+                        mcps,
+                        subagents,
+                    });
+                    self.edit_dialog.visible = false;
+                    self.toasts.push(
+                        "Configuración actualizada",
+                        crate::tui::toast::ToastKind::Success,
+                    );
+                }
+                KeyCode::Esc => {
+                    self.edit_dialog.visible = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // ── Diff viewer navigation ───────────────────────────────────
         if self.diff_viewer.visible {
             match key {
@@ -346,6 +427,18 @@ impl App {
         // input is empty (so plain characters can still be typed normally).
         // Alt+1..Alt+5 are modified keys, so they always apply; the legacy
         // letter bindings ('c'/'i') only switch focus when the input is empty.
+        //
+        // Ctrl+E is intercepted here, BEFORE the keymap dispatch, so that in
+        // the Agents panel or the SubAgents tab it opens the edit dialog
+        // instead of being swallowed by Action::OpenEditor (which launches the
+        // external text editor).
+        if key == KeyCode::Char('e')
+            && modifiers == KeyModifiers::CONTROL
+            && self.open_edit_dialog_for_focus()
+        {
+            return;
+        }
+
         if self.keymap_applies(key_event) {
             if self.keymap.matches(key_event, Action::FocusChat) {
                 self.focus = Focus::Chat;
@@ -650,5 +743,67 @@ mod tests {
             vec!["second".to_string(), "first".to_string()]
         );
         assert_eq!(app.prompt_queue_index, 1);
+    }
+
+    #[test]
+    fn ctrl_e_in_agents_panel_opens_edit_dialog() {
+        use crate::agent::types::{AgentId, AgentRole, AgentStatus};
+        use crate::tui::types::AgentInfo;
+
+        let mut app = test_app();
+        app.focus = Focus::Agents;
+        app.agents.push(AgentInfo {
+            id: AgentId::new(),
+            name: "root".to_string(),
+            role: AgentRole::Root,
+            status: AgentStatus::Idle,
+            skills: vec!["skill1".to_string()],
+            mcps: vec!["mcp1".to_string()],
+            model: String::new(),
+            parent_id: None,
+            subagent_count: 0,
+            agent_type: None,
+            mode: None,
+        });
+        app.agent_panel_index = 0;
+
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+
+        assert!(app.edit_dialog.visible, "dialog should open on Ctrl+E");
+        assert_eq!(app.edit_dialog.target_name, "root");
+        assert!(app.edit_dialog.is_root);
+    }
+
+    #[test]
+    fn ctrl_e_in_subagent_tab_opens_edit_dialog() {
+        use crate::agent::types::{AgentId, AgentRole, AgentStatus};
+        use crate::tui::types::AgentInfo;
+
+        let mut app = test_app();
+        app.focus = Focus::Info;
+        app.info_tab = 2;
+        app.configured_subagents
+            .insert("root".to_string(), vec!["reviewer".to_string()]);
+        app.subagent_panel_index = 0;
+        // Provide an agent instance of that subagent type so skills/MCPs resolve.
+        app.agents.push(AgentInfo {
+            id: AgentId::new(),
+            name: "reviewer".to_string(),
+            role: AgentRole::SubAgent,
+            status: AgentStatus::Idle,
+            skills: vec!["code-review".to_string()],
+            mcps: vec!["filesystem".to_string()],
+            model: String::new(),
+            parent_id: None,
+            subagent_count: 0,
+            agent_type: Some("reviewer".to_string()),
+            mode: None,
+        });
+
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+
+        assert!(app.edit_dialog.visible, "dialog should open on Ctrl+E");
+        assert_eq!(app.edit_dialog.target_name, "reviewer");
+        assert!(!app.edit_dialog.is_root);
     }
 }

@@ -109,6 +109,102 @@ pub(crate) struct QuestionState {
     pub(crate) answer_input: String,
 }
 
+/// State for the Ctrl+E edit-agent/subagent dialog.
+pub(crate) struct EditDialogState {
+    /// Whether the dialog is visible.
+    pub visible: bool,
+    /// Name of the agent or subagent being edited.
+    pub target_name: String,
+    /// Whether this is a root agent (shows subagents section).
+    pub is_root: bool,
+    /// All available skill names (union across agents).
+    pub all_skills: Vec<String>,
+    /// Which skills are currently enabled for the target.
+    pub skills_enabled: Vec<bool>,
+    /// All available MCP names (union across agents).
+    pub all_mcps: Vec<String>,
+    /// Which MCPs are currently enabled for the target.
+    pub mcps_enabled: Vec<bool>,
+    /// All available subagent names for root agents.
+    pub all_subagents: Vec<String>,
+    /// Which subagents are currently enabled for the target.
+    pub subagents_enabled: Vec<bool>,
+    /// Currently focused section (0 = Skills, 1 = MCPs, 2 = SubAgents — only for root).
+    pub section: usize,
+    /// Currently selected index within the section.
+    pub index: usize,
+}
+
+impl EditDialogState {
+    pub(crate) fn new() -> Self {
+        Self {
+            visible: false,
+            target_name: String::new(),
+            is_root: false,
+            all_skills: Vec::new(),
+            skills_enabled: Vec::new(),
+            all_mcps: Vec::new(),
+            mcps_enabled: Vec::new(),
+            all_subagents: Vec::new(),
+            subagents_enabled: Vec::new(),
+            section: 0,
+            index: 0,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with(
+        target_name: String,
+        is_root: bool,
+        all_skills: Vec<String>,
+        skills_enabled: Vec<bool>,
+        all_mcps: Vec<String>,
+        mcps_enabled: Vec<bool>,
+        all_subagents: Vec<String>,
+        subagents_enabled: Vec<bool>,
+    ) -> Self {
+        Self {
+            visible: true,
+            target_name,
+            is_root,
+            all_skills,
+            skills_enabled,
+            all_mcps,
+            mcps_enabled,
+            all_subagents,
+            subagents_enabled,
+            section: 0,
+            index: 0,
+        }
+    }
+
+    /// The number of sections in this dialog (2 for subagents, 3 for root agents).
+    pub(crate) fn section_count(&self) -> usize {
+        if self.is_root { 3 } else { 2 }
+    }
+
+    /// The number of items in the current section.
+    pub(crate) fn section_len(&self) -> usize {
+        match self.section {
+            0 => self.all_skills.len(),
+            1 => self.all_mcps.len(),
+            _ => self.all_subagents.len(),
+        }
+    }
+
+    /// Toggle the currently selected item.
+    pub(crate) fn toggle_current(&mut self) {
+        let toggled = match self.section {
+            0 => self.skills_enabled.get_mut(self.index),
+            1 => self.mcps_enabled.get_mut(self.index),
+            _ => self.subagents_enabled.get_mut(self.index),
+        };
+        if let Some(val) = toggled {
+            *val = !*val;
+        }
+    }
+}
+
 /// State for the interactive `/init` flow (sequential prompts).
 pub(crate) struct InitFlow {
     /// Current prompt step: 0 = name, 1 = description, 2 = stack.

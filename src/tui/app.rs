@@ -20,7 +20,8 @@ use crate::tui::render::render;
 use crate::tui::theme::Theme;
 use crate::tui::toast::ToastQueue;
 use crate::tui::types::{
-    AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, Focus, InitFlow, QuestionState, SearchState,
+    AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, EditDialogState, Focus, InitFlow, QuestionState,
+    SearchState,
 };
 use crate::tui::which_key::WhichKeyPopup;
 
@@ -211,6 +212,8 @@ pub struct App {
     pub sent_message: bool,
     /// Search overlay state (Ctrl+R).
     pub(crate) search: SearchState,
+    /// Ctrl+E edit-agent/subagent dialog state.
+    pub(crate) edit_dialog: EditDialogState,
 }
 
 impl App {
@@ -351,6 +354,7 @@ impl App {
             prompt_queue_index: 0,
             sent_message: false,
             search: SearchState::default(),
+            edit_dialog: EditDialogState::new(),
         }
     }
 
@@ -448,6 +452,145 @@ impl App {
         // The exact value depends on terminal width, but we use the index
         // as a rough scroll offset so Enter jumps to the right area.
         msg_index as u16 * 3
+    }
+
+    /// Open the edit dialog for a given agent/subagent.
+    pub(crate) fn open_edit_dialog(
+        &mut self,
+        target_name: String,
+        is_root: bool,
+        skills: &[String],
+        mcps: &[String],
+        subagents: Option<&[String]>,
+    ) {
+        // Collect all unique skills across all agents
+        let all_skills: Vec<String> = {
+            let mut set: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            for agent in &self.agents {
+                for s in &agent.skills {
+                    set.insert(s.as_str());
+                }
+            }
+            set.into_iter().map(String::from).collect()
+        };
+
+        let skills_enabled: Vec<bool> = all_skills.iter().map(|s| skills.contains(s)).collect();
+
+        // Collect all unique MCPs across all agents
+        let all_mcps: Vec<String> = {
+            let mut set: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            for agent in &self.agents {
+                for m in &agent.mcps {
+                    set.insert(m.as_str());
+                }
+            }
+            set.into_iter().map(String::from).collect()
+        };
+
+        let mcps_enabled: Vec<bool> = all_mcps.iter().map(|m| mcps.contains(m)).collect();
+
+        // Collect all unique subagent names from configured_subagents
+        let all_subagents: Vec<String> = {
+            let mut set: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            for v in self.configured_subagents.values() {
+                for s in v {
+                    set.insert(s.as_str());
+                }
+            }
+            set.into_iter().map(String::from).collect()
+        };
+
+        let subagents_enabled: Vec<bool> = if let Some(sa) = subagents {
+            all_subagents.iter().map(|s| sa.contains(s)).collect()
+        } else {
+            vec![false; all_subagents.len()]
+        };
+
+        self.edit_dialog = EditDialogState::new_with(
+            target_name,
+            is_root,
+            all_skills,
+            skills_enabled,
+            all_mcps,
+            mcps_enabled,
+            all_subagents,
+            subagents_enabled,
+        );
+    }
+
+    /// Open the edit dialog for the currently focused panel's selection.
+    ///
+    /// Returns `true` if a dialog was opened. Used by the Ctrl+E handler in
+    /// `handle_key`, which runs before the keymap dispatch so that Ctrl+E is
+    /// not swallowed by `Action::OpenEditor`.
+    pub(crate) fn open_edit_dialog_for_focus(&mut self) -> bool {
+        match self.focus {
+            Focus::Agents => {
+                let selected = {
+                    let display_agents: Vec<&AgentInfo> = self
+                        .agents
+                        .iter()
+                        .filter(|a| a.status != AgentStatus::Completed)
+                        .collect();
+                    display_agents
+                        .get(self.agent_panel_index)
+                        .cloned()
+                        .map(|a| {
+                            let subagents = if a.role == AgentRole::Root {
+                                self.configured_subagents
+                                    .get(&a.name)
+                                    .cloned()
+                                    .unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
+                            (
+                                a.name.clone(),
+                                a.role == AgentRole::Root,
+                                a.skills.clone(),
+                                a.mcps.clone(),
+                                subagents,
+                            )
+                        })
+                };
+                if let Some((name, is_root, skills, mcps, subagents)) = selected {
+                    self.open_edit_dialog(
+                        name,
+                        is_root,
+                        &skills,
+                        &mcps,
+                        if is_root { Some(&subagents) } else { None },
+                    );
+                    true
+                } else {
+                    false
+                }
+            }
+            Focus::Info if self.info_tab == 2 => {
+                let unique_subagents: Vec<&str> = {
+                    let set: std::collections::BTreeSet<&str> = self
+                        .configured_subagents
+                        .values()
+                        .flat_map(|v| v.iter().map(|s| s.as_str()))
+                        .collect();
+                    set.into_iter().collect()
+                };
+                if let Some(&name) = unique_subagents.get(self.subagent_panel_index) {
+                    // Find the first agent that has this subagent type to get its skills/MCPs.
+                    let (skills, mcps) = self
+                        .agents
+                        .iter()
+                        .find(|a| a.agent_type.as_deref() == Some(name))
+                        .map(|a| (a.skills.clone(), a.mcps.clone()))
+                        .unwrap_or_default();
+                    self.open_edit_dialog(name.to_string(), false, &skills, &mcps, None);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 }
 

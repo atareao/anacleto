@@ -57,6 +57,11 @@ impl SkillRegistry {
         self.skills.get(&name.to_lowercase())
     }
 
+    /// Get the source path for a skill by name (case-insensitive).
+    pub fn get_source_path(&self, name: &str) -> Option<&PathBuf> {
+        self.sources.get(&name.to_lowercase())
+    }
+
     /// Insert a skill into the registry, keyed by lowercase name.
     pub fn insert(&mut self, skill: Skill) {
         let key = skill.name.to_lowercase();
