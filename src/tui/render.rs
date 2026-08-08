@@ -147,10 +147,7 @@ fn render_search_overlay(f: &mut Frame, area: Rect, app: &App) {
     let match_text = if app.search.query.is_empty() {
         "Type to search conversation history...".to_string()
     } else {
-        format!(
-            "{} match(es) found",
-            app.search.matches.len()
-        )
+        format!("{} match(es) found", app.search.matches.len())
     };
     lines.push(Line::from(Span::styled(
         match_text,
@@ -182,7 +179,9 @@ fn render_search_overlay(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(Span::raw("")));
     lines.push(Line::from(Span::styled(
         " ↑↓ navigate  ↵ jump  Esc close ",
-        Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM),
     )));
 
     let dialog = Paragraph::new(lines)
