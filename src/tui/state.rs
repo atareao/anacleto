@@ -29,6 +29,15 @@ impl App {
             .filter(|a| a.status != AgentStatus::Completed)
             .count()
     }
+
+    /// Number of unique subagent names configured across all root agents.
+    pub(crate) fn unique_subagent_count(&self) -> usize {
+        self.configured_subagents
+            .values()
+            .flat_map(|v| v.iter())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
 }
 
 /// Fuzzy-match `query` against `candidate` (case-insensitive subsequence).
