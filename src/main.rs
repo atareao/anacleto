@@ -8,7 +8,8 @@ use anacleto::tui::app::{App, run_tui};
 
 use clap::Parser;
 use crossterm::event::{
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
@@ -170,6 +171,7 @@ async fn main() -> anyhow::Result<()> {
         let backend = CrosstermBackend::new(&mut stdout);
         let mut terminal = Terminal::new(backend)?;
         crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+        crossterm::execute!(io::stdout(), EnableMouseCapture)?;
         // Push the protocol flags AFTER the alternate screen is entered, so the
         // escape sequence is not consumed during terminal initialization.
         if kb_supported {
@@ -193,6 +195,7 @@ async fn main() -> anyhow::Result<()> {
         let tui_result = run_tui(&mut terminal, &mut app).await;
 
         // Cleanup
+        crossterm::execute!(io::stdout(), DisableMouseCapture)?;
         crossterm::execute!(io::stdout(), PopKeyboardEnhancementFlags)?;
         crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
         crossterm::terminal::disable_raw_mode()?;

@@ -41,4 +41,85 @@ impl Theme {
             Theme::Solarized => Color::Rgb(38, 139, 210),
         }
     }
+
+    /// Border color (▐) for AI response blocks.
+    pub(crate) fn ai_border(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(230, 190, 60),
+            Theme::Nord => Color::Rgb(235, 203, 139),
+            Theme::Dracula => Color::Rgb(241, 250, 140),
+            Theme::Solarized => Color::Rgb(181, 137, 0),
+        }
+    }
+
+    /// Border color (▐) for tool lines within AI responses.
+    /// Distinct from `ai_border` so tool output is visually distinguishable.
+    pub(crate) fn tool_border(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(80, 140, 180),
+            Theme::Nord => Color::Rgb(94, 129, 172),
+            Theme::Dracula => Color::Rgb(98, 114, 164),
+            Theme::Solarized => Color::Rgb(88, 110, 117),
+        }
+    }
+
+    /// Color for tool execution markers (🔧).
+    pub(crate) fn tool_exec(&self) -> Color {
+        match self {
+            Theme::Default => Color::Gray,
+            Theme::Nord => Color::Rgb(136, 192, 208),
+            Theme::Dracula => Color::Rgb(139, 233, 253),
+            Theme::Solarized => Color::Rgb(42, 161, 152),
+        }
+    }
+
+    /// Dimmed variant of `tool_exec` for finalized (non-streaming) messages.
+    pub(crate) fn tool_exec_dim(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(100, 100, 100),
+            Theme::Nord => Color::Rgb(80, 140, 155),
+            Theme::Dracula => Color::Rgb(80, 180, 200),
+            Theme::Solarized => Color::Rgb(30, 110, 105),
+        }
+    }
+
+    /// Color for tool success markers (✅).
+    pub(crate) fn tool_ok(&self) -> Color {
+        match self {
+            Theme::Default => Color::LightGreen,
+            Theme::Nord => Color::Rgb(163, 190, 140),
+            Theme::Dracula => Color::Rgb(80, 250, 123),
+            Theme::Solarized => Color::Rgb(133, 153, 0),
+        }
+    }
+
+    /// Dimmed variant of `tool_ok` for finalized (non-streaming) messages.
+    pub(crate) fn tool_ok_dim(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(90, 160, 90),
+            Theme::Nord => Color::Rgb(110, 140, 90),
+            Theme::Dracula => Color::Rgb(50, 180, 80),
+            Theme::Solarized => Color::Rgb(90, 105, 0),
+        }
+    }
+
+    /// Color for tool failure markers (❌).
+    pub(crate) fn tool_err(&self) -> Color {
+        match self {
+            Theme::Default => Color::LightRed,
+            Theme::Nord => Color::Rgb(191, 97, 106),
+            Theme::Dracula => Color::Rgb(255, 85, 85),
+            Theme::Solarized => Color::Rgb(220, 50, 47),
+        }
+    }
+
+    /// Dimmed variant of `tool_err` for finalized (non-streaming) messages.
+    pub(crate) fn tool_err_dim(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(180, 90, 90),
+            Theme::Nord => Color::Rgb(140, 60, 70),
+            Theme::Dracula => Color::Rgb(180, 50, 50),
+            Theme::Solarized => Color::Rgb(155, 30, 30),
+        }
+    }
 }

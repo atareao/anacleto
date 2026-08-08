@@ -113,6 +113,10 @@ pub enum Action {
     ListTop,
     /// Jump to the bottom of a list panel.
     ListBottom,
+    /// Cycle focus to the next panel (Tab).
+    FocusNext,
+    /// Cycle focus to the previous panel (Shift+Tab).
+    FocusPrev,
 }
 
 /// Central mapping of actions to the key events that trigger them.
@@ -394,6 +398,18 @@ impl Default for Keymap {
                 key_event('G', false),
             ],
         );
+
+        // ── Panel focus cycling ────────────────────────────────────
+        km.bind(
+            Action::FocusNext,
+            vec![KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+        );
+        // Shift+Tab is delivered by crossterm as KeyCode::BackTab (with the
+        // SHIFT modifier), not as KeyCode::Tab + SHIFT.
+        km.bind(
+            Action::FocusPrev,
+            vec![KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)],
+        );
         km
     }
 }
@@ -460,6 +476,20 @@ mod tests {
         assert!(km.matches(
             KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT),
             Action::FocusInput
+        ));
+    }
+
+    #[test]
+    fn focus_prev_bound_to_backtab() {
+        let km = Keymap::default();
+        // Shift+Tab arrives as KeyCode::BackTab in crossterm, not Tab+SHIFT.
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            Action::FocusPrev
+        ));
+        assert!(!km.matches(
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+            Action::FocusPrev
         ));
     }
 

@@ -943,24 +943,28 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::DIM),
             )));
         } else if m.starts_with("\u{1f527}") {
-            // Tool execution tracing — cyan
-            lines.push(Line::from(Span::styled(
-                m.clone(),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-            )));
-        } else if m.starts_with("\u{2705}") {
-            // Tool result success — green dim
+            // Tool execution tracing — dimmed theme color (finalized)
             lines.push(Line::from(Span::styled(
                 m.clone(),
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(app.theme.tool_exec_dim())
+                    .add_modifier(Modifier::DIM),
+            )));
+        } else if m.starts_with("\u{2705}") {
+            // Tool result success — dimmed theme color (finalized)
+            lines.push(Line::from(Span::styled(
+                m.clone(),
+                Style::default()
+                    .fg(app.theme.tool_ok_dim())
                     .add_modifier(Modifier::DIM),
             )));
         } else if m.starts_with("\u{274c}") {
-            // Tool result failure — red dim
+            // Tool result failure — dimmed theme color (finalized)
             lines.push(Line::from(Span::styled(
                 m.clone(),
-                Style::default().fg(Color::Red).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(app.theme.tool_err_dim())
+                    .add_modifier(Modifier::DIM),
             )));
         } else if m.starts_with("\u{1f50d}") {
             // Debug header — purple bold
@@ -975,19 +979,55 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::DIM);
             lines.push(Line::from(Span::styled(m.clone(), style)));
         } else {
-            // AI responses — split by newline, render markdown per line
+            // AI responses — split by newline, render markdown per line,
+            // but detect tool execution/result markers and render those
+            // with dimmed styling instead.
             let base = Style::default().fg(Color::Rgb(200, 220, 255));
-            let border_style = Style::default().fg(Color::Rgb(230, 190, 60));
+            let border_style = Style::default().fg(app.theme.ai_border());
+            let tool_border_style = Style::default().fg(app.theme.tool_border());
+            let tool_style = Style::default()
+                .fg(app.theme.tool_exec_dim())
+                .add_modifier(Modifier::DIM);
+            let tool_ok_style = Style::default()
+                .fg(app.theme.tool_ok_dim())
+                .add_modifier(Modifier::DIM);
+            let tool_err_style = Style::default()
+                .fg(app.theme.tool_err_dim())
+                .add_modifier(Modifier::DIM);
 
             // Top border extension — ▐ without content
             lines.push(Line::from(Span::styled("▐", border_style)));
 
             for (i, line_text) in m.split('\n').enumerate() {
                 let prefix = if i == 0 { ts.as_str() } else { "" };
-                let mut rendered = render_markdown_line(&format!("{}{}", prefix, line_text), base);
-                // Prepend "▐ " to the rendered line
-                rendered.spans.insert(0, Span::styled("▐ ", border_style));
-                lines.push(rendered);
+                let full_line = format!("{}{}", prefix, line_text);
+
+                // Detect tool markers within AI response text
+                let trimmed = line_text.trim_start();
+                let tool_style_override = if trimmed.starts_with("\u{1f527}") {
+                    Some(tool_style)
+                } else if trimmed.starts_with("\u{2705}") {
+                    Some(tool_ok_style)
+                } else if trimmed.starts_with("\u{274c}") {
+                    Some(tool_err_style)
+                } else {
+                    None
+                };
+
+                if let Some(override_style) = tool_style_override {
+                    // Render as tool line (dimmed, no markdown) with
+                    // a distinct border color to visually separate
+                    // tool output from AI text.
+                    let mut spans = vec![Span::styled("▐ ", tool_border_style)];
+                    spans.push(Span::styled(full_line, override_style));
+                    lines.push(Line::from(spans));
+                } else {
+                    // Normal AI response line — render markdown
+                    let mut rendered = render_markdown_line(&full_line, base);
+                    // Prepend "▐ " to the rendered line
+                    rendered.spans.insert(0, Span::styled("▐ ", border_style));
+                    lines.push(rendered);
+                }
             }
 
             // Bottom border extension — ▐ without content
@@ -1000,14 +1040,33 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
     // Without this split, a long streaming response wraps to many visual lines but
     // counts as a single logical line, making bottom content invisible & unscrollable.
     if let Some(stream) = &app.current_stream {
-        let style = Style::default()
+        let stream_style = Style::default()
             .fg(Color::Rgb(100, 200, 255))
+            .add_modifier(Modifier::DIM);
+        let stream_tool_style = Style::default()
+            .fg(app.theme.tool_exec())
+            .add_modifier(Modifier::DIM);
+        let stream_tool_ok_style = Style::default()
+            .fg(app.theme.tool_ok())
+            .add_modifier(Modifier::DIM);
+        let stream_tool_err_style = Style::default()
+            .fg(app.theme.tool_err())
             .add_modifier(Modifier::DIM);
         for (idx, line_text) in stream.split('\n').enumerate() {
             let prefix = if idx == 0 { "\u{258c}" } else { " " };
+            let trimmed = line_text.trim_start();
+            let line_style = if trimmed.starts_with("\u{1f527}") {
+                stream_tool_style
+            } else if trimmed.starts_with("\u{2705}") {
+                stream_tool_ok_style
+            } else if trimmed.starts_with("\u{274c}") {
+                stream_tool_err_style
+            } else {
+                stream_style
+            };
             lines.push(Line::from(Span::styled(
                 format!("{}{}", prefix, line_text),
-                style,
+                line_style,
             )));
         }
     }

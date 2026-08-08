@@ -452,11 +452,16 @@ pub async fn run_tui<B: ratatui::backend::Backend<Error = std::io::Error>>(
         terminal.draw(|f| render(f, app))?;
 
         // Check for keyboard input (with timeout for responsiveness)
-        if event::poll(std::time::Duration::from_millis(50))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            app.handle_key(key.code, key.modifiers);
+        if event::poll(std::time::Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    app.handle_key(key.code, key.modifiers);
+                }
+                Event::Mouse(mouse) => {
+                    app.handle_mouse(mouse);
+                }
+                _ => {}
+            }
         }
 
         if app.should_exit {
@@ -755,8 +760,10 @@ mod tests {
         let mut app = test_app();
         app.focus = Focus::Chat;
         app.chat_scroll = 5;
+        // j scrolls down (shows newer content, decreases scroll).
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.chat_scroll, 6);
+        assert_eq!(app.chat_scroll, 4);
+        // k scrolls up (shows older content, increases scroll).
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
         assert_eq!(app.chat_scroll, 5);
     }

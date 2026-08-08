@@ -325,7 +325,7 @@ impl LlmProvider for OpenRouterProvider {
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key()?))
             // OpenRouter-specific headers for app ranking
-            .header("HTTP-Referer", "https://github.com/anacleto")
+            .header("HTTP-Referer", "https://github.com/atareao/anacleto")
             .header("X-Title", "Anacleto")
             .json(&body)
             .send()
@@ -410,7 +410,7 @@ impl LlmProvider for OpenRouterProvider {
             let resp = match client
                 .post(&url)
                 .header("Authorization", format!("Bearer {api_key}"))
-                .header("HTTP-Referer", "https://github.com/anacleto")
+                .header("HTTP-Referer", "https://github.com/atareao/anacleto")
                 .header("X-Title", "Anacleto")
                 .json(&body)
                 .send()

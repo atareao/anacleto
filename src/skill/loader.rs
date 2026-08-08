@@ -168,4 +168,28 @@ Instructions here
         assert_eq!(skill.metadata.get("version").unwrap(), "1.0");
         assert_eq!(skill.metadata.get("author").unwrap(), "test");
     }
+
+    #[test]
+    fn test_installed_ok_skills_load() {
+        let expected = [
+            "planning-with-files",
+            "find-docs",
+            "karpathy-guidelines",
+            "tdd",
+            "ax",
+            "find-skills",
+            "get-api-docs",
+        ];
+        for name in expected {
+            let dir = Path::new(".anacleto/skills").join(name);
+            let loaded = load_skills_from_dir(&dir).expect("dir should exist");
+            assert!(
+                loaded.iter().any(|s| s.name == name),
+                "skill {} not loaded from {:?}. Loaded: {:?}",
+                name,
+                dir,
+                loaded.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+            );
+        }
+    }
 }

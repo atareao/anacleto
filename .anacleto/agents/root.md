@@ -8,6 +8,15 @@ skills:
   - .anacleto/skills/shell/
   - .anacleto/skills/filesystem/
   - .anacleto/skills/web-research/
+  - .anacleto/skills/skill-creator/
+  - .anacleto/skills/planning-with-files/
+  - .anacleto/skills/find-docs/
+  - .anacleto/skills/karpathy-guidelines/
+  - .anacleto/skills/tdd/
+  - .anacleto/skills/ax/
+  - .anacleto/skills/find-skills/
+  - .anacleto/skills/get-api-docs/
+  - .anacleto/skills/agent-creator/
 mcps: []
 permissions:
   deny:

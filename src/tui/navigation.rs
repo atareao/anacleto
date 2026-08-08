@@ -22,9 +22,9 @@ impl App {
         key_event: KeyEvent,
     ) {
         if self.keymap.matches(key_event, Action::ScrollUp) {
-            self.chat_scroll = self.chat_scroll.saturating_sub(1);
-        } else if self.keymap.matches(key_event, Action::ScrollDown) {
             self.chat_scroll = self.chat_scroll.saturating_add(1);
+        } else if self.keymap.matches(key_event, Action::ScrollDown) {
+            self.chat_scroll = self.chat_scroll.saturating_sub(1);
         } else if self.keymap.matches(key_event, Action::PageUp) {
             self.chat_scroll = self.chat_scroll.saturating_add(10);
         } else if self.keymap.matches(key_event, Action::PageDown) {
@@ -52,11 +52,7 @@ impl App {
     ) {
         // Tab/Shift+Tab or Left/Right cycle through the Skills/MCPs tabs.
         match key {
-            KeyCode::Tab if modifiers.contains(KeyModifiers::SHIFT) => {
-                self.info_tab = self.info_tab.saturating_sub(1);
-                return;
-            }
-            KeyCode::Tab | KeyCode::Right => {
+            KeyCode::Right => {
                 self.info_tab = (self.info_tab + 1) % 2;
                 return;
             }
@@ -274,10 +270,10 @@ mod tests {
     }
 
     #[test]
-    fn info_tab_advances_on_tab() {
+    fn info_tab_advances_on_right() {
         let mut app = test_app();
         assert_eq!(app.info_tab, 0);
-        let (c, ev, m) = key(KeyCode::Tab);
+        let (c, ev, m) = key(KeyCode::Right);
         app.handle_info_panel_key(c, m, ev);
         assert_eq!(app.info_tab, 1);
         app.handle_info_panel_key(c, m, ev);
@@ -288,12 +284,13 @@ mod tests {
     fn info_tab_shift_tab_goes_backward() {
         let mut app = test_app();
         app.info_tab = 1;
-        let ev = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
-        app.handle_info_panel_key(KeyCode::Tab, KeyModifiers::SHIFT, ev);
+        // Shift+Tab is no longer handled in info panel (Tab cycles focus);
+        // use Left for going backward.
+        let ev = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        app.handle_info_panel_key(KeyCode::Left, KeyModifiers::NONE, ev);
         assert_eq!(app.info_tab, 0);
         // Already at the first tab: stays at 0 (saturating, no wrap).
-        let ev = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
-        app.handle_info_panel_key(KeyCode::Tab, KeyModifiers::SHIFT, ev);
+        app.handle_info_panel_key(KeyCode::Left, KeyModifiers::NONE, ev);
         assert_eq!(app.info_tab, 0);
     }
 
@@ -334,11 +331,11 @@ mod tests {
     }
 
     #[test]
-    fn info_tab_tab_switch_does_not_mutate_panel_indices() {
+    fn info_tab_right_switch_does_not_mutate_panel_indices() {
         let mut app = test_app();
         app.agents.push(agent_with_skills(3));
         app.skill_panel_index = 2;
-        let (t, ev, m) = key(KeyCode::Tab);
+        let (t, ev, m) = key(KeyCode::Right);
         app.handle_info_panel_key(t, m, ev);
         assert_eq!(app.info_tab, 1);
         assert_eq!(

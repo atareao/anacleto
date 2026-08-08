@@ -108,32 +108,3 @@ session:
 # ---------------------------------------------------------------------------
 shell:
   tools: []
-
-# ---------------------------------------------------------------------------
-# Agent definitions
-# ---------------------------------------------------------------------------
-# Agents are NO LONGER defined here. Each agent is a self-contained Markdown
-# file with YAML frontmatter, located in the `agents/` directory:
-#
-#   global:  ~/.config/anacleto/agents/*.md
-#   project: .anacleto/agents/*.md
-#
-# The frontmatter holds the structural config (name, role, model, skills,
-# mcps, permissions, subagents) and the Markdown body is the system prompt.
-# Project agents override global agents with the same name. Exactly one agent
-# must declare `role: root`.
-#
-# Example (.anacleto/agents/root.md):
-#   ---
-#   name: root
-#   description: Senior engineering agent
-#   role: root
-#   model: deepseek/deepseek-v4-flash
-#   skills:
-#     - .anacleto/skills/shell/
-#   subagents:
-#     - reviewer
-#   ---
-#
-#   You are **Anacleto**...
-# ---------------------------------------------------------------------------

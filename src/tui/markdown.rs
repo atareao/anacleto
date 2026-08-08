@@ -188,3 +188,128 @@ pub(crate) fn select_visible_start(
     let scroll = bottom.saturating_sub(chat_scroll as usize);
     scroll as u16
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+
+    fn count_used_rows(buf: &ratatui::buffer::Buffer, width: u16, visible: usize) -> usize {
+        // Only inspect the content columns (between the left/right borders).
+        let mut used = 0;
+        for y in 1..=visible {
+            let mut nonempty = false;
+            for x in 1..(width - 1) {
+                let cell = &buf.content()[(y as usize) * (width as usize) + (x as usize)];
+                if cell.symbol() != " " && cell.symbol() != "" {
+                    nonempty = true;
+                    break;
+                }
+            }
+            if nonempty {
+                used += 1;
+            }
+        }
+        used
+    }
+
+    /// Render a set of lines the same way render_chat does and return the
+    /// number of rows actually occupied by non-empty content (excluding the
+    /// border rows).
+    fn actual_used_rows(lines: &[Line], content_width: usize, visible: usize) -> usize {
+        let start_idx = select_visible_start(lines, visible, content_width, 0);
+        let display: Vec<Line> = lines.iter().skip(start_idx as usize).cloned().collect();
+        let paragraph = Paragraph::new(display)
+            .block(Block::default().borders(Borders::ALL))
+            .scroll((0, 0))
+            .wrap(Wrap { trim: false });
+        let w = (content_width + 2) as u16;
+        let h = (visible + 2) as u16;
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                f.render_widget(paragraph, area);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        count_used_rows(&buf, w, visible)
+    }
+
+    fn ai_line(text: &str) -> Line<'static> {
+        let mut rendered = render_markdown_line(text, Style::default());
+        rendered
+            .spans
+            .insert(0, Span::styled("▐ ", Style::default()));
+        rendered
+    }
+
+    #[test]
+    fn visual_line_count_matches_actual_wrap() {
+        let text = "a".repeat(50);
+        let line = ai_line(&text);
+        let est = visual_line_count(&line, 20);
+        let w = 22u16;
+        let h = 10u16;
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        let p = Paragraph::new(vec![line.clone()])
+            .block(Block::default().borders(Borders::ALL))
+            .wrap(Wrap { trim: false });
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                f.render_widget(p, area);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let actual = count_used_rows(&buf, w, 8);
+        eprintln!("=== rendered buffer (width {}) ===", w);
+        for y in 0..h {
+            let mut row = String::new();
+            for x in 0..w {
+                row.push_str(buf.content()[(y as usize) * (w as usize) + (x as usize)].symbol());
+            }
+            eprintln!("{:02}|{}|", y, row);
+        }
+        assert_eq!(
+            est, actual,
+            "estimate {} != actual {} for width-52 line at content_width 20",
+            est, actual
+        );
+    }
+
+    #[test]
+    fn no_blank_gap_when_filling_visible_area() {
+        let content_width = 20;
+        let visible = 10;
+        let mut lines: Vec<Line> = Vec::new();
+        for _ in 0..3 {
+            lines.push(Line::from(Span::styled("▐", Style::default())));
+            for _ in 0..3 {
+                lines.push(ai_line("hello world this is a test line"));
+            }
+            lines.push(Line::from(Span::styled("▐", Style::default())));
+        }
+        for (i, seg) in ["first streaming line", "second streaming line"]
+            .iter()
+            .enumerate()
+        {
+            let prefix = if i == 0 { "\u{258c}" } else { " " };
+            lines.push(Line::from(Span::styled(
+                format!("{}{}", prefix, seg),
+                Style::default(),
+            )));
+        }
+
+        let used = actual_used_rows(&lines, content_width, visible);
+        assert!(
+            used >= visible - 1,
+            "blank gap: only {} of {} visible rows used",
+            used,
+            visible
+        );
+    }
+}

@@ -643,9 +643,11 @@ pub(crate) async fn execute_skill_tool(
     // Execute the tool and capture result
     let skill_name_lower = skill.name.to_lowercase();
     let result = if skill_name_lower == "shell" {
-        let result = execute_shell_command(task).await;
-        let prompt = crate::shell::inventory().to_prompt();
-        result.map(|r| format!("{prompt}\n\n{r}"))
+        // The tool inventory is already exposed to the agent via the tool
+        // description (see `to_tool_definition`), so we must NOT prepend it
+        // here again: doing so makes the LLM echo the whole inventory in its
+        // response, flooding the chat with noise.
+        execute_shell_command(task).await
     } else if skill_name_lower.contains("web") || skill_name_lower.contains("research") {
         execute_web_fetch(task).await
     } else if skill_name_lower == "filesystem" {
