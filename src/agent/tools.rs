@@ -1692,6 +1692,15 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
                                     })
                                     .await;
                             }
+                            Ok(LlmStreamChunk::Thinking(text)) => {
+                                let _ = sub_event_tx
+                                    .send(EngineEvent::AgentThinkingChunk {
+                                        agent_id: sub_agent_id.clone(),
+                                        agent_name: sub_agent_name.clone(),
+                                        content: text,
+                                    })
+                                    .await;
+                            }
                             Ok(LlmStreamChunk::ToolCall(tc)) => {
                                 tool_calls.push(tc);
                             }

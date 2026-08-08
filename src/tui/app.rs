@@ -52,6 +52,8 @@ pub struct App {
     pub messages: Vec<String>,
     /// Current streaming response being accumulated.
     pub current_stream: Option<String>,
+    /// Current streaming thinking/reasoning being accumulated.
+    pub current_thinking: Option<String>,
     /// Index (into `messages`) of the in-progress stream that was already
     /// committed via `commit_stream`, so that `AgentOutput` replaces exactly
     /// that message instead of duplicating the partial content. Using the index
@@ -267,6 +269,7 @@ impl App {
             history_index: None,
             messages: Vec::new(),
             current_stream: None,
+            current_thinking: None,
             stream_committed_index: None,
             should_exit: false,
             error: None,

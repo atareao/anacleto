@@ -122,4 +122,24 @@ impl Theme {
             Theme::Solarized => Color::Rgb(155, 30, 30),
         }
     }
+
+    /// Color for thinking/reasoning text.
+    pub(crate) fn thinking(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(255, 200, 100),
+            Theme::Nord => Color::Rgb(235, 203, 139),
+            Theme::Dracula => Color::Rgb(241, 250, 140),
+            Theme::Solarized => Color::Rgb(181, 137, 0),
+        }
+    }
+
+    /// Dimmed variant of `thinking` for finalized messages.
+    pub(crate) fn thinking_dim(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(160, 120, 50),
+            Theme::Nord => Color::Rgb(140, 120, 70),
+            Theme::Dracula => Color::Rgb(150, 150, 70),
+            Theme::Solarized => Color::Rgb(110, 80, 0),
+        }
+    }
 }

@@ -293,6 +293,10 @@ impl LlmProvider for AnthropicProvider {
         // A full SSE implementation is left as an enhancement.
         let response = self.complete(request).await?;
         let (tx, rx) = tokio::sync::mpsc::channel(64);
+        // Emit thinking first (if present), then content
+        if let Some(thinking) = response.thinking.filter(|t| !t.is_empty()) {
+            let _ = tx.send(Ok(LlmStreamChunk::Thinking(thinking))).await;
+        }
         if !response.content.is_empty() {
             let _ = tx.send(Ok(LlmStreamChunk::Content(response.content))).await;
         }
