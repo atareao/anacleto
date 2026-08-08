@@ -13,6 +13,7 @@ use crate::db::models::{Snapshot, StoredMessage};
 use crate::db::session::Database;
 use crate::engine::jobs::JobRegistry;
 use crate::error::{Error, Result};
+use crate::hook::{HookAction, HookActionConfig, HookContext, HookPoint, HookRegistry};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry, create_provider};
 use crate::llm::types::{CacheControl, LlmProviderConfig, LlmProviderType};
 use crate::mcp::client::McpRegistry;
@@ -85,6 +86,8 @@ pub struct Engine {
     pub(crate) plugins: Arc<PluginRegistry>,
     /// Central skill registry, loaded once at startup.
     pub(crate) skill_registry: SharedSkillRegistry,
+    /// Hook system registry (from config).
+    pub(crate) hook_registry: HookRegistry,
 }
 impl Engine {
     pub fn new(
@@ -130,6 +133,7 @@ impl Engine {
             staged_snapshot: None,
             plugins: Arc::new(PluginRegistry::new()),
             skill_registry: Arc::new(tokio::sync::RwLock::new(SkillRegistry::new())),
+            hook_registry: HookRegistry::from(&config),
         }
     }
 
@@ -283,6 +287,37 @@ impl Engine {
             }
         }
 
+        // Merge auto-detected, plugin, and skill hooks into the hook registry.
+        // Config hooks were already loaded in Engine::new(); now merge lower-priority
+        // sources (auto-detect, plugins, skills) with Config > Plugin > Skill > Auto precedence.
+        {
+            let auto_hooks = crate::hook::autoconfig::detect_auto_hooks();
+
+            let mut skill_hooks: HashMap<HookPoint, Vec<HookActionConfig>> = HashMap::new();
+            {
+                let reg = self.skill_registry.read().await;
+                for skill in reg.list() {
+                    for (key, actions) in &skill.hooks {
+                        if let Some(point) = parse_hook_point(key) {
+                            let entry = skill_hooks.entry(point).or_default();
+                            entry.extend(actions.clone());
+                        }
+                    }
+                }
+            }
+
+            let plugin_hooks: Vec<(HookPoint, HookActionConfig)> = self
+                .plugins
+                .list()
+                .iter()
+                .flat_map(|p| p.register_hooks())
+                .collect();
+
+            let merged =
+                merge_hook_sources(&self.config.hooks, &plugin_hooks, &skill_hooks, &auto_hooks);
+            self.hook_registry = HookRegistry::new(merged);
+        }
+
         // Build a name-to-config map for quick lookup
         let config_by_name: std::collections::HashMap<String, &crate::config::AgentConfig> = self
             .config
@@ -367,11 +402,33 @@ impl Engine {
                 job_registry: Some(self.job_registry.clone()),
                 plugins: Some(self.plugins.clone()),
                 concurrency_semaphore: concurrency_semaphore.clone(),
+                hook_registry: self.hook_registry.clone(),
             })
             .await;
 
             self.agents.insert(name, id.clone());
             self.handles.insert(id, handle);
+        }
+
+        // Fire OnStartup hooks and emit events
+        let hook_results = self
+            .hook_registry
+            .run(HookPoint::OnStartup, &HookContext::default())
+            .await;
+        for r in &hook_results {
+            let _ = self
+                .event_tx
+                .send(EngineEvent::HookExecuted {
+                    point: format!("{:?}", HookPoint::OnStartup),
+                    command: r.command.clone(),
+                    success: r.exit_code == Some(0),
+                    output: if r.stdout.is_empty() {
+                        r.stderr.clone()
+                    } else {
+                        r.stdout.clone()
+                    },
+                })
+                .await;
         }
 
         Ok(())
@@ -784,6 +841,7 @@ impl Engine {
             job_registry: Some(self.job_registry.clone()),
             plugins: Some(self.plugins.clone()),
             concurrency_semaphore: concurrency_semaphore.clone(),
+            hook_registry: self.hook_registry.clone(),
         })
         .await;
 
@@ -817,6 +875,27 @@ impl Engine {
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
+        // Fire OnShutdown hooks and emit events
+        let hook_results = self
+            .hook_registry
+            .run(HookPoint::OnShutdown, &HookContext::default())
+            .await;
+        for r in &hook_results {
+            let _ = self
+                .event_tx
+                .send(EngineEvent::HookExecuted {
+                    point: format!("{:?}", HookPoint::OnShutdown),
+                    command: r.command.clone(),
+                    success: r.exit_code == Some(0),
+                    output: if r.stdout.is_empty() {
+                        r.stderr.clone()
+                    } else {
+                        r.stdout.clone()
+                    },
+                })
+                .await;
+        }
+
         self.event_tx.send(EngineEvent::ShuttingDown).await.ok();
         {
             let mut mcp = self.mcp_registry.lock().await;
@@ -871,6 +950,95 @@ impl From<CacheMode> for CacheControl {
             CacheMode::Auto => CacheControl::Auto,
             CacheMode::Off => CacheControl::Off,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hook source merging helpers
+// ---------------------------------------------------------------------------
+
+/// Merge hooks from 4 sources with precedence:
+/// 1. Config (user explicit) — highest priority
+/// 2. Plugin hooks
+/// 3. Skill hooks
+/// 4. Auto-detect (PATH) — lowest priority
+///
+/// Deduplication: same (command, timeout_secs) at the same HookPoint
+/// is kept only once (from the highest-precedence source).
+fn merge_hook_sources(
+    config: &HashMap<String, Vec<HookActionConfig>>,
+    plugins: &[(HookPoint, HookActionConfig)],
+    skills: &HashMap<HookPoint, Vec<HookActionConfig>>,
+    auto: &HashMap<HookPoint, Vec<HookActionConfig>>,
+) -> HashMap<HookPoint, Vec<HookActionConfig>> {
+    let mut result: HashMap<HookPoint, Vec<HookActionConfig>> = HashMap::new();
+
+    /// Helper to insert an action with deduplication.
+    fn insert_dedup(
+        result: &mut HashMap<HookPoint, Vec<HookActionConfig>>,
+        point: HookPoint,
+        action: HookActionConfig,
+    ) {
+        let entry = result.entry(point).or_default();
+        if !entry.iter().any(|a| {
+            a.timeout_secs == action.timeout_secs
+                && matches!((&a.action, &action.action), (HookAction::Shell { command: c1 }, HookAction::Shell { command: c2 }) if c1 == c2)
+        }) {
+            entry.push(action);
+        }
+    }
+
+    // 1. Auto-detect (lowest priority)
+    for (point, actions) in auto {
+        for action in actions {
+            insert_dedup(&mut result, *point, action.clone());
+        }
+    }
+
+    // 2. Skill hooks
+    for (point, actions) in skills {
+        for action in actions {
+            insert_dedup(&mut result, *point, action.clone());
+        }
+    }
+
+    // 3. Plugin hooks
+    for (point, action) in plugins {
+        insert_dedup(&mut result, *point, action.clone());
+    }
+
+    // 4. Config (highest priority) — inserted last so they win dedup
+    for (key, actions) in config {
+        if let Some(point) = parse_hook_point(key) {
+            for action in actions {
+                // Remove any existing action with same command+timeout
+                let entry = result.entry(point).or_default();
+                entry.retain(|a| {
+                    a.timeout_secs != action.timeout_secs
+                        || !matches!((&a.action, &action.action), (HookAction::Shell { command: c1 }, HookAction::Shell { command: c2 }) if c1 == c2)
+                });
+                entry.push(action.clone());
+            }
+        }
+    }
+
+    result
+}
+
+/// Parse a YAML config key string into a HookPoint.
+fn parse_hook_point(key: &str) -> Option<HookPoint> {
+    match key {
+        "before_tool" => Some(HookPoint::BeforeTool),
+        "after_tool" => Some(HookPoint::AfterTool),
+        "before_apply" => Some(HookPoint::BeforeApply),
+        "after_apply" => Some(HookPoint::AfterApply),
+        "before_shell" => Some(HookPoint::BeforeShell),
+        "after_shell" => Some(HookPoint::AfterShell),
+        "before_fs_write" => Some(HookPoint::BeforeFsWrite),
+        "after_fs_write" => Some(HookPoint::AfterFsWrite),
+        "on_startup" => Some(HookPoint::OnStartup),
+        "on_shutdown" => Some(HookPoint::OnShutdown),
+        _ => None,
     }
 }
 
@@ -1326,5 +1494,132 @@ mod tests {
         assert_eq!(engine.config.agents[0].description, "updated root");
         // The current_model is NOT changed by reload_config (only the config is updated)
         assert_eq!(engine.current_model, original_model);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Hook merge tests
+    // ---------------------------------------------------------------------------
+
+    /// Helper: create an action for testing
+    fn action(cmd: &str, timeout: u64) -> HookActionConfig {
+        HookActionConfig {
+            action: HookAction::Shell {
+                command: cmd.into(),
+            },
+            timeout_secs: timeout,
+        }
+    }
+
+    #[test]
+    fn test_merge_hooks_precedence_config_wins() {
+        // Config hook with same (command, timeout) as auto-detect should override it
+        let config_hooks = {
+            let mut m = HashMap::new();
+            m.insert("after_apply".into(), vec![action("codegraph sync", 60)]);
+            m
+        };
+        let auto_hooks = {
+            let mut m = HashMap::new();
+            m.insert(HookPoint::AfterApply, vec![action("codegraph sync", 60)]);
+            m
+        };
+        let plugin_hooks: Vec<(HookPoint, HookActionConfig)> = vec![];
+        let skill_hooks: HashMap<HookPoint, Vec<HookActionConfig>> = HashMap::new();
+
+        let merged = merge_hook_sources(&config_hooks, &plugin_hooks, &skill_hooks, &auto_hooks);
+        let actions = merged.get(&HookPoint::AfterApply).unwrap();
+        assert_eq!(actions.len(), 1);
+        match &actions[0].action {
+            HookAction::Shell { command } => assert_eq!(command, "codegraph sync"),
+        }
+    }
+
+    #[test]
+    fn test_merge_hooks_dedup_same_command() {
+        // Same command from two sources should deduplicate
+        let config_hooks = HashMap::new();
+        let auto_hooks = {
+            let mut m = HashMap::new();
+            m.insert(HookPoint::AfterApply, vec![action("codegraph sync", 60)]);
+            m
+        };
+        let plugin_hooks = vec![(HookPoint::AfterApply, action("codegraph sync", 60))];
+        let skill_hooks = {
+            let mut m = HashMap::new();
+            m.insert(HookPoint::AfterApply, vec![action("codegraph sync", 60)]);
+            m
+        };
+
+        let merged = merge_hook_sources(&config_hooks, &plugin_hooks, &skill_hooks, &auto_hooks);
+        let actions = merged.get(&HookPoint::AfterApply).unwrap();
+        assert_eq!(
+            actions.len(),
+            1,
+            "same (command, timeout) should deduplicate"
+        );
+    }
+
+    #[test]
+    fn test_merge_hooks_different_commands_all_kept() {
+        let config_hooks = HashMap::new();
+        let auto_hooks = {
+            let mut m = HashMap::new();
+            m.insert(HookPoint::AfterApply, vec![action("hook_a", 30)]);
+            m
+        };
+        let plugin_hooks = vec![(HookPoint::AfterApply, action("hook_b", 30))];
+        let skill_hooks = HashMap::new();
+
+        let merged = merge_hook_sources(&config_hooks, &plugin_hooks, &skill_hooks, &auto_hooks);
+        let actions = merged.get(&HookPoint::AfterApply).unwrap();
+        assert_eq!(actions.len(), 2, "different commands should both be kept");
+    }
+
+    #[test]
+    fn test_merge_hooks_different_timeouts_all_kept() {
+        // Same command but different timeout => different entries
+        let config_hooks = HashMap::new();
+        let auto_hooks = {
+            let mut m = HashMap::new();
+            m.insert(HookPoint::AfterApply, vec![action("my_cmd", 30)]);
+            m
+        };
+        let plugin_hooks = vec![(HookPoint::AfterApply, action("my_cmd", 60))];
+        let skill_hooks = HashMap::new();
+
+        let merged = merge_hook_sources(&config_hooks, &plugin_hooks, &skill_hooks, &auto_hooks);
+        let actions = merged.get(&HookPoint::AfterApply).unwrap();
+        assert_eq!(
+            actions.len(),
+            2,
+            "same command but different timeouts should both be kept"
+        );
+    }
+
+    #[test]
+    fn test_parse_hook_point_all_variants() {
+        assert_eq!(parse_hook_point("before_tool"), Some(HookPoint::BeforeTool));
+        assert_eq!(parse_hook_point("after_tool"), Some(HookPoint::AfterTool));
+        assert_eq!(
+            parse_hook_point("before_apply"),
+            Some(HookPoint::BeforeApply)
+        );
+        assert_eq!(parse_hook_point("after_apply"), Some(HookPoint::AfterApply));
+        assert_eq!(
+            parse_hook_point("before_shell"),
+            Some(HookPoint::BeforeShell)
+        );
+        assert_eq!(parse_hook_point("after_shell"), Some(HookPoint::AfterShell));
+        assert_eq!(
+            parse_hook_point("before_fs_write"),
+            Some(HookPoint::BeforeFsWrite)
+        );
+        assert_eq!(
+            parse_hook_point("after_fs_write"),
+            Some(HookPoint::AfterFsWrite)
+        );
+        assert_eq!(parse_hook_point("on_startup"), Some(HookPoint::OnStartup));
+        assert_eq!(parse_hook_point("on_shutdown"), Some(HookPoint::OnShutdown));
+        assert_eq!(parse_hook_point("unknown"), None);
     }
 }

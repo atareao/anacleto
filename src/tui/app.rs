@@ -40,8 +40,12 @@ pub struct App {
     pub(crate) info_tab: usize,
     /// Selected index in the MCPs sidebar panel.
     pub(crate) mcp_panel_index: usize,
+    /// Vertical scroll offset for the MCPs panel.
+    pub(crate) mcp_scroll: usize,
     /// Selected index in the Skills sidebar panel.
     pub(crate) skill_panel_index: usize,
+    /// Vertical scroll offset for the Skills panel.
+    pub(crate) skill_scroll: usize,
     /// Selected index in the Agents sidebar panel.
     pub(crate) agent_panel_index: usize,
     /// History of previously submitted inputs (for Up/Down arrow navigation).
@@ -243,7 +247,9 @@ impl App {
             focus: Focus::Input,
             info_tab: 0,
             mcp_panel_index: 0,
+            mcp_scroll: 0,
             skill_panel_index: 0,
+            skill_scroll: 0,
             agent_panel_index: 0,
             input_history: Vec::new(),
             history_index: None,

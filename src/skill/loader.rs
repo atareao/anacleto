@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::hook::HookActionConfig;
 
 use super::types::Skill;
 
@@ -54,6 +55,8 @@ pub fn parse_skill(content: &str) -> Result<Skill> {
         description: String,
         #[serde(default)]
         metadata: std::collections::HashMap<String, String>,
+        #[serde(default)]
+        hooks: std::collections::HashMap<String, Vec<HookActionConfig>>,
     }
 
     let frontmatter: Frontmatter = serde_yaml::from_str(frontmatter_str)
@@ -64,6 +67,7 @@ pub fn parse_skill(content: &str) -> Result<Skill> {
         description: frontmatter.description,
         instructions,
         metadata: frontmatter.metadata,
+        hooks: frontmatter.hooks,
     })
 }
 
@@ -123,6 +127,7 @@ pub fn load_agent_skills(paths: &[PathBuf]) -> Vec<Skill> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hook::HookAction;
 
     #[test]
     fn test_parse_skill() {
@@ -167,5 +172,60 @@ Instructions here
         let skill = parse_skill(content).unwrap();
         assert_eq!(skill.metadata.get("version").unwrap(), "1.0");
         assert_eq!(skill.metadata.get("author").unwrap(), "test");
+    }
+
+    #[test]
+    fn test_skill_hooks_default_empty() {
+        let yaml = r#"---
+name: test-skill
+description: A test skill
+---
+Some instructions"#;
+        let skill = parse_skill(yaml).unwrap();
+        assert!(skill.hooks.is_empty());
+    }
+
+    #[test]
+    fn test_skill_hooks_parsed() {
+        let yaml = r#"---
+name: codegraph
+description: Sync codegraph
+hooks:
+  after_apply:
+    - type: shell
+      command: "codegraph sync"
+      timeout_secs: 60
+---
+Sync codegraph"#;
+        let skill = parse_skill(yaml).unwrap();
+        assert_eq!(skill.hooks.len(), 1);
+        let actions = skill.hooks.get("after_apply").unwrap();
+        assert_eq!(actions.len(), 1);
+        match &actions[0].action {
+            HookAction::Shell { command } => assert_eq!(command, "codegraph sync"),
+        }
+    }
+
+    #[test]
+    fn test_installed_ok_skills_load() {
+        let expected = [
+            "agent-creator",
+            "code-review",
+            "filesystem",
+            "rust-dev",
+            "shell",
+            "web-research",
+        ];
+        for name in expected {
+            let dir = Path::new(".anacleto/skills").join(name);
+            let loaded = load_skills_from_dir(&dir).expect("dir should exist");
+            assert!(
+                loaded.iter().any(|s| s.name == name),
+                "skill {} not loaded from {:?}. Loaded: {:?}",
+                name,
+                dir,
+                loaded.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+            );
+        }
     }
 }

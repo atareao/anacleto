@@ -2,7 +2,7 @@
 name: researcher
 description: Investiga un tema con fuentes primarias y produce un brief de investigación verificado
 role: subagent
-model: deepseek/deepseek-v4-flash-0731
+model: deepseek/deepseek-v4-flash
 skills:
   - .anacleto/skills/web-research/
 mcps: []

@@ -1,144 +1,275 @@
-# Lanzamiento de múltiples subagentes del mismo tipo en paralelo + tipo/modo en TUI — Implementation Plan
+# Hook System — Implementation Plan
 
 ## Objetivo
 
-Permitir lanzar varios subagentes del **mismo tipo configurado** en paralelo (p. ej. 3 subagentes `reviewer` a la vez para revisar 3 archivos distintos), añadiendo un parámetro `agent` al tool `task` y ejecutando las múltiples llamadas `task` de un mismo turno de forma concurrente. Además, mostrar en la TUI el **tipo de subagente** (o `generic` si es dinámico) y el **modo de ejecución** (`fg`/`bg`).
+Add a configurable shell-command hook system to Anacleto that fires before/after tool execution, apply_patch batches, shell commands, filesystem writes, and engine lifecycle events.
 
-## Estado actual (verificado)
+## Arquitectura
 
-- Rama: `development`. Cambios sin commitear (gitflow pendiente).
-- `cargo fmt --all` ✅ limpio
-- `cargo clippy` ✅ sin warnings
-- `cargo test` ✅ **385 passed, 0 failed, 1 ignored** (356 lib + 4 + 19 + 5 + 1 doctest)
-- Archivos modificados: `src/agent/tools.rs`, `src/agent/lifecycle.rs`, `src/engine/events.rs`, `src/tui/types.rs`, `src/tui/events.rs`, `src/tui/render.rs`, `src/tui/app.rs`, `src/tui/navigation.rs`, `PLAN.md`.
+```
+src/hook/mod.rs          ← new module: HookPoint, HookAction, HookRegistry, HookConfig
+src/config/types.rs      ← add hooks: HashMap<String, Vec<HookActionConfig>> to Config
+src/engine/orchestrator.rs  ← create HookRegistry at startup, call OnStartup/OnShutdown
+src/agent/lifecycle.rs   ← pass HookRegistry via SpawnAgentConfig, wrap tool execution
+src/agent/tools.rs       ← add hooks in execute_shell_command, execute_apply_patch_tool
+src/filesystem/mod.rs    ← add hooks in execute() for write ops
+src/lib.rs               ← register pub mod hook
+```
 
-## Contexto / Estado actual (código)
+**Data flow:**
 
-- `src/agent/tools.rs`:
-  - `TaskToolArgs` (~línea 986): campos `task_id`, `description`, `mode` (`TaskMode::Foreground/Background`), `model` (`Option<String>`), `tools` (`Vec<String>`), **`agent` (`Option<String>`)**. Método `parse(arguments: &str)`.
-  - `task_tool_definition()` (~línea 1039): esquema JSON del tool `task` (properties: `task_id`, `description`, `mode`, `model`, `tools`, **`agent`**; required: `task_id`, `description`).
-  - `execute_task_tool(...)` (~línea 1126): recibe `subagent_configs: &[AgentConfig]`; resuelve el tipo por nombre cuando `args.agent` está presente.
-  - `spawn_subagent_and_delegate(cfg: SpawnSubagentConfig)` (~línea 1325): crea el subagente desde `AgentConfig`, resuelve provider, carga skills, ejecuta el bucle de tools del subagente y devuelve `String`. `SpawnSubagentConfig` tiene: `config`, `parent_id`, `llm_registry`, `task`, `db`, `session_id`, `event_tx`, `usage_tx`, `history_limit_percent`, `retry_config`, `debug`, `max_steps`, `depth`, `skills_override`, `permissions_override`, **`agent_type` (`Option<String>`)**, **`mode` (`TaskMode`)**.
-  - `subagent_config_to_tool_definition(config: &AgentConfig)` (~línea 953): tool para subagentes configurados, esquema solo con campo `task`.
-  - `resolve_provider_for_model(model, registry)`: `'/'`→openrouter, `'claude'`→anthropic, `'gpt'/'o1'/'o3'`→openai, else ollama.
-  - `child_permissions = parent_permissions.intersection(&Permissions::default())`.
-  - Límite de profundidad: `if depth >= subagent_depth { return Err(...) }`.
-
-- `src/agent/lifecycle.rs`:
-  - Bucle de ejecución de tools (~línea 545): `for tc in &tool_calls { ... }`. Dentro: `check_tool_permission`, `plan_mode_blocked`, dispatch por nombre (`task`, `todo`, `question`, `apply_patch`, `read`, `grep`, `glob`, `webfetch`, `websearch`, `mcp_*`, `skills`, `subagent_configs` por nombre, `plugins`). Al final inserta en `tool_store` y hace push a `conversation` con `LlmMessage` role `Tool`.
-  - **Ejecución paralela** (~línea 832): las llamadas `task` de un mismo batch se ejecutan con `futures::future::join_all`, recogiendo resultados **en orden** (preservando el índice original). 0–1 llamadas `task` → secuencial.
-  - Los subagentes configurados se invocan por nombre (~línea 722): `subagent_configs.iter().find(|c| c.name == tc.function.name)`, extrae `task` de args, llama `spawn_subagent_and_delegate` con `config.clone()`, `agent_type: Some(config.name.clone())`, `mode: TaskMode::Foreground` (~756).
-  - `execute_task_tool` se llama en línea ~624 dentro del bucle, pasando `subagent_configs`.
-  - `subagent_configs: Vec<AgentConfig>` está disponible en el scope del bucle (parte de `SpawnAgentConfig`).
-
-- `TaskMode` enum en `src/agent/types.rs:186` (`Foreground`, `Background`).
-- `AgentConfig` fields: `name`, `description`, `role`, `model`, `skills`, `mcps`, `permissions`, `subagents`, `system_prompt`, `max_steps`, `subagent_depth`.
-
-- `src/engine/events.rs`: `EngineEvent::SubagentCreated` gana `agent_type: Option<String>` y `mode: TaskMode`.
-- `src/tui/types.rs`: `AgentInfo` gana `agent_type: Option<String>` y `mode: Option<TaskMode>`.
-- `src/tui/events.rs`: `handle_event` rellena los nuevos campos de `AgentInfo`; import `TaskMode` eliminado (no se usaba).
-- `src/tui/render.rs`: `render_agent_panel` (~633), `build_agent_list_item` (~1133) y `render_subagent_tree` (~1206) muestran `[tipo]`/`[generic]` en cian y `(fg)`/`(bg)` en gris oscuro.
-
-## Decisiones de diseño (confirmadas)
-
-1. El tool `task` aceptará un nuevo parámetro `agent` (string opcional) que referencia un subagente **configurado** por nombre (ej. `"reviewer"`, `"writer"`). Cuando se especifica, el subagente lanzado se construye a partir de la config de ese tipo (hereda TODAS sus instrucciones: description/system_prompt, skills, mcps, modelo, permisos). Si no se especifica, mantiene el comportamiento dinámico actual.
-2. Las MÚLTIPLES llamadas al tool `task` en un mismo turno deben ejecutarse **en paralelo** (con `futures::future::join_all`), no secuencialmente.
-3. Foreground por defecto: el agente padre ESPERA todos los resultados y los recibe juntos para consolidarlos. Se mantiene `mode: background` como opción (lanzar y no esperar).
-4. La TUI muestra el tipo de subagente (`[nombre]` o `[generic]` para dinámicos) y el modo de ejecución (`(fg)`/`(bg)`).
+1. YAML config declares `hooks.on_tool_call: [{ command: "codegraph sync" }]`
+2. `Engine::initialize()` parses config into `HookRegistry` (one per engine)
+3. `HookRegistry` is cloned into each `SpawnAgentConfig` → passed to agent tasks
+4. At each hook point, the agent calls `registry.run(HookPoint::BeforeTool, ctx)` which spawns the configured shell command
+5. The shell command's stdout/stderr are logged via `EngineEvent` but do not block execution (fire-and-forget with optional timeout)
 
 ## Tareas
 
-### Tarea 1: Añadir el campo `agent` a `TaskToolArgs` y su parseo
+### Tarea 1: Create `src/hook/mod.rs` — core types and registry
 
 **Archivos:**
-- Modificado: `src/agent/tools.rs:986-1038` (struct `TaskToolArgs` y método `parse`)
+- Crear: `src/hook/mod.rs`
 
-- [x] **Paso 1:** Añadir el campo `agent: Option<String>` a la struct `TaskToolArgs`.
-- [x] **Paso 2:** En `parse(arguments: &str)`, parsear el campo `agent` como `Option<String>` (ausente → `None`).
-- [x] **Paso 3:** Añadir un test unitario que verifique el parseo con `agent` presente y con `agent` ausente (líneas ~1926, ~1936).
+- [ ] **Paso 1:** Define `HookPoint` enum with all hook points
+      ```rust
+      #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+      #[serde(rename_all = "snake_case")]
+      pub enum HookPoint {
+          BeforeTool,
+          AfterTool,
+          BeforeApply,
+          AfterApply,
+          BeforeShell,
+          AfterShell,
+          BeforeFsWrite,
+          AfterFsWrite,
+          OnStartup,
+          OnShutdown,
+      }
+      ```
 
-### Tarea 2: Añadir `agent` al esquema JSON del tool `task`
+- [ ] **Paso 2:** Define `HookAction` enum (currently only Shell, extensible to Event)
+      ```rust
+      #[derive(Debug, Clone, Serialize, Deserialize)]
+      #[serde(tag = "type", rename_all = "snake_case")]
+      pub enum HookAction {
+          Shell { command: String },
+      }
+      ```
+
+- [ ] **Paso 3:** Define `HookActionConfig` for YAML deserialization
+      ```rust
+      #[derive(Debug, Clone, Serialize, Deserialize)]
+      pub struct HookActionConfig {
+          #[serde(flatten)]
+          pub action: HookAction,
+          /// Optional timeout in seconds (default: 30).
+          #[serde(default = "default_hook_timeout")]
+          pub timeout_secs: u64,
+      }
+      fn default_hook_timeout() -> u64 { 30 }
+      ```
+
+- [ ] **Paso 4:** Define `HookRegistry` struct
+      ```rust
+      #[derive(Default, Clone)]
+      pub struct HookRegistry {
+          hooks: Arc<HashMap<HookPoint, Vec<HookActionConfig>>>,
+      }
+      impl HookRegistry {
+          pub fn new(config: HashMap<HookPoint, Vec<HookActionConfig>>) -> Self;
+          /// Run all hooks for a given point. Returns Vec of (command, stdout_truncated) results.
+          pub async fn run(&self, point: HookPoint, ctx: &HookContext) -> Vec<HookResult>;
+      }
+      ```
+
+- [ ] **Paso 5:** Define `HookContext` — carries per-hook metadata (tool name, file path, command, etc.)
+      ```rust
+      #[derive(Debug, Default)]
+      pub struct HookContext {
+          pub tool_name: Option<String>,
+          pub file_path: Option<String>,
+          pub shell_command: Option<String>,
+          pub agent_name: Option<String>,
+      }
+      ```
+
+- [ ] **Paso 6:** Define `HookResult` — captures stdout/stderr/exit code
+      ```rust
+      #[derive(Debug)]
+      pub struct HookResult {
+          pub command: String,
+          pub stdout: String,
+          pub stderr: String,
+          pub exit_code: Option<i32>,
+      }
+      ```
+
+- [ ] **Paso 7:** Implement `HookRegistry::run()` — spawn shell command via `tokio::process::Command`, apply timeout, capture output, log via `tracing::info!`
+
+- [ ] **Paso 8:** Implement `From<&Config>` for `HookRegistry` — parse the `hooks` HashMap from config, mapping string keys to `HookPoint` variants
+
+- [ ] **Paso 9:** Add `pub mod hook;` to `src/lib.rs`
+
+### Tarea 2: Add hooks field to Config
 
 **Archivos:**
-- Modificado: `src/agent/tools.rs:1039-1125` (`task_tool_definition`)
+- Modificar: `src/config/types.rs`
 
-- [x] **Paso 1:** Añadir la property `agent` al esquema JSON de `task_tool_definition()` como string opcional (no incluida en `required`).
-- [x] **Paso 2:** Escribir una descripción clara: "Nombre del subagente configurado a lanzar (ej. 'reviewer'). Si se omite, se usa el comportamiento dinámico actual."
+- [ ] **Paso 1:** Add `hooks` field to `Config` struct
+      ```rust
+      /// Hook system configuration: hook_point_name -> list of actions.
+      #[serde(default)]
+      pub hooks: HashMap<String, Vec<HookActionConfig>>,
+      ```
+      (Import `HookActionConfig` from `crate::hook` — or define a local alias to avoid circular deps; prefer a local `HookActionConfig` re-export in config types.)
 
-### Tarea 3: Añadir `subagent_configs` a `execute_task_tool` y resolver el tipo por nombre
+- [ ] **Paso 2:** Add `use crate::hook::HookActionConfig;` import (or define a parallel `HookActionConfig` in config types that maps 1:1)
 
-**Archivos:**
-- Modificado: `src/agent/tools.rs:1126-1324` (`execute_task_tool`)
-
-- [x] **Paso 1:** Añadir el parámetro `subagent_configs: &[AgentConfig]` a la firma de `execute_task_tool`.
-- [x] **Paso 2:** Cuando `args.agent` esté presente:
-      - Buscar el config por nombre: `subagent_configs.iter().find(|c| c.name == agent_name)`.
-      - Si no existe, devolver un error claro: `Err(format!("subagente configurado '{}' no encontrado", agent_name))` (con lista de disponibles).
-      - Si existe, construir el `SpawnSubagentConfig` a partir de ESE config:
-        - `config`: el `AgentConfig` encontrado (clonado).
-        - `description`/`system_prompt`: usar el `system_prompt`/`description` del config.
-        - `skills_override`: `Some(config.skills)` (skills del config).
-        - `permissions_override`: `Some(parent_permissions.intersection(&config.permissions))` (permisos del config ∩ parent).
-        - `model`: el modelo del config (resuelto vía `resolve_provider_for_model`).
-        - `agent_type`: `Some(args.agent.clone())`.
-        - Resto de campos: igual que el flujo dinámico actual (parent_id, llm_registry, task, db, session_id, event_tx, usage_tx, history_limit_percent, retry_config, debug, max_steps, depth).
-- [x] **Paso 3:** Cuando `args.agent` sea `None`, mantener el comportamiento dinámico actual sin cambios (`agent_type: None`).
-- [x] **Paso 4:** Añadir un test unitario para el caso de error cuando el tipo no existe en `subagent_configs`.
-
-### Tarea 4: Ejecución paralela de múltiples llamadas `task` en el bucle de lifecycle
+### Tarea 3: Integrate HookRegistry into Engine lifecycle
 
 **Archivos:**
-- Modificado: `src/agent/lifecycle.rs:545-720` (bucle de ejecución de tools)
+- Modificar: `src/engine/orchestrator.rs`
 
-- [x] **Paso 1:** En el bucle `for tc in &tool_calls`, detectar las llamadas cuyo nombre sea `task` (o que disparen `execute_task_tool`).
-- [x] **Paso 2:** Si hay **más de una** llamada `task` en el mismo batch de `tool_calls`, ejecutarlas **en paralelo** usando `futures::future::join_all` (~línea 832).
-- [x] **Paso 3:** Recoger los resultados **en orden** (preservando el índice original de cada tool call en el batch).
-- [x] **Paso 4:** Mantener el resto de tools (no `task`) ejecutándose secuencialmente como hasta ahora.
-- [x] **Paso 5:** Tras cada tool call (paralela o secuencial), insertar en `tool_store` y hacer push a `conversation` con `LlmMessage` role `Tool`, **preservando el orden** de los mensajes según el orden original de `tool_calls`.
-- [x] **Paso 6:** Pasar `subagent_configs` a `execute_task_tool` en la llamada de la línea ~624.
+- [ ] **Paso 1:** Add `pub(crate) hook_registry: HookRegistry` field to `Engine` struct
 
-### Tarea 5: Mostrar tipo y modo de ejecución en la TUI
+- [ ] **Paso 2:** Initialize in `Engine::new()`:
+      ```rust
+      hook_registry: HookRegistry::from(&config),
+      ```
+
+- [ ] **Paso 3:** Call `OnStartup` hooks at the end of `Engine::initialize()`:
+      ```rust
+      self.hook_registry.run(HookPoint::OnStartup, &HookContext::default()).await;
+      ```
+
+- [ ] **Paso 4:** Call `OnShutdown` hooks at the beginning of `Engine::shutdown()`:
+      ```rust
+      self.hook_registry.run(HookPoint::OnShutdown, &HookContext::default()).await;
+      ```
+
+- [ ] **Paso 5:** Pass `hook_registry` to `SpawnAgentConfig`:
+      ```rust
+      hook_registry: self.hook_registry.clone(),
+      ```
+
+### Tarea 4: Pass HookRegistry through SpawnAgentConfig
 
 **Archivos:**
-- Modificado: `src/engine/events.rs`, `src/tui/types.rs`, `src/tui/events.rs`, `src/tui/render.rs`
+- Modificar: `src/agent/lifecycle.rs`
 
-- [x] **Paso 1:** `EngineEvent::SubagentCreated` gana `agent_type: Option<String>` y `mode: TaskMode`.
-- [x] **Paso 2:** `AgentInfo` gana `agent_type: Option<String>` y `mode: Option<TaskMode>`.
-- [x] **Paso 3:** `handle_event` en `src/tui/events.rs` rellena los nuevos campos de `AgentInfo`.
-- [x] **Paso 4:** `render_agent_panel` (~633): muestra `[tipo]`/`[generic]` en cian y `(fg)`/`(bg)` en gris oscuro.
-- [x] **Paso 5:** `build_agent_list_item` (~1133): muestra tipo y modo (con `agent_type.clone().unwrap_or_else(|| "generic".to_string())` para lifetime `'static`).
-- [x] **Paso 6:** `render_subagent_tree` (~1206): muestra tipo y modo en cada subagente.
-- [x] **Paso 7:** Eliminar el import `TaskMode` sin usar en `src/tui/events.rs`.
+- [ ] **Paso 1:** Add `pub hook_registry: HookRegistry` field to `SpawnAgentConfig`
 
-### Tarea 6: Tests y verificación
+- [ ] **Paso 2:** Destructure the new field in `spawn_agent()` and clone it into the async task
+
+- [ ] **Paso 3:** Before executing each tool call in the `execute_one` closure, call:
+      ```rust
+      let ctx = HookContext { tool_name: Some(tc.function.name.clone()), ..Default::default() };
+      hook_registry.run(HookPoint::BeforeTool, &ctx).await;
+      ```
+      After tool execution:
+      ```rust
+      hook_registry.run(HookPoint::AfterTool, &ctx).await;
+      ```
+
+- [ ] **Paso 4:** Wrap the `apply_patch` branch with `BeforeApply`/`AfterApply` hooks
+
+### Tarea 5: Add hooks in agent/tools.rs for shell and apply_patch
 
 **Archivos:**
-- Modificado: `src/agent/tools.rs` (tests unitarios), `src/agent/lifecycle.rs` (tests si aplica)
+- Modificar: `src/agent/tools.rs`
 
-- [x] **Paso 1:** Unit tests de parseo del campo `agent` (presente/ausente) — ver Tarea 1.
-- [x] **Paso 2:** Unit test del caso de error cuando el tipo no existe — ver Tarea 3.
-- [x] **Paso 3:** Verificar que los tests existentes siguen pasando.
+- [ ] **Paso 1:** Add `hook_registry: &HookRegistry` parameter to `execute_shell_command()`
 
-## Criterios de aceptación / Verificación
+- [ ] **Paso 2:** Wrap the shell execution with `BeforeShell`/`AfterShell` hooks:
+      ```rust
+      let ctx = HookContext { shell_command: Some(command.clone()), ..Default::default() };
+      hook_registry.run(HookPoint::BeforeShell, &ctx).await;
+      // ... existing shell execution ...
+      hook_registry.run(HookPoint::AfterShell, &ctx).await;
+      ```
 
-- [x] `cargo fmt --check` pasa sin cambios.
-- [x] `cargo clippy` pasa sin warnings.
-- [x] `cargo test` pasa (385 passed, 0 failed, 1 ignored) — incluidos los nuevos tests de parseo y error.
-- [x] El tool `task` acepta `agent` opcional en su esquema JSON y lo parsea correctamente.
-- [x] Con `agent` especificado, el subagente se construye desde la config del tipo (skills, mcps, modelo, permisos ∩ parent).
-- [x] Con `agent` ausente, el comportamiento dinámico actual se mantiene intacto.
-- [x] Múltiples llamadas `task` en un mismo turno se ejecutan en paralelo y sus resultados se consolidan en orden.
-- [x] La TUI muestra el tipo de subagente (`[nombre]`/`[generic]`) y el modo (`(fg)`/`(bg)`).
+- [ ] **Paso 3:** Add `hook_registry: &HookRegistry` parameter to `execute_apply_patch_tool()`
 
-## Pendiente
+- [ ] **Paso 4:** Wrap `apply_patch_batch()` call with `BeforeApply`/`AfterApply` hooks
 
-- [ ] Commitear ambas features vía gitflow (feature branch → PR a `development`). Nada está commiteado todavía.
+- [ ] **Paso 5:** Thread `hook_registry` through `execute_skill_tool()` → `execute_shell_command()` and `execute_apply_patch_tool()` calls
 
-## Riesgos y consideraciones
+### Tarea 6: Add hooks in filesystem/mod.rs for write operations
 
-- **Orden de resultados:** Al ejecutar en paralelo, hay que preservar el orden original de `tool_calls` al insertar en `tool_store` y `conversation`, para no romper la coherencia del historial del LLM. ✅ Implementado con `join_all` + índices.
-- **Límite de profundidad:** Cada subagente lanzado respeta `if depth >= subagent_depth { return Err(...) }`. Con varios en paralelo, todos comparten el mismo `depth`; no debe incrementarse por el número de subagentes.
-- **Permisos:** Los subagentes configurados usan `parent_permissions.intersection(&config.permissions)`. Asegurarse de que el `permissions_override` se construye correctamente para el caso `agent`. ✅
-- **Concurrencia y recursos:** Varios subagentes en paralelo consumen más conexiones LLM y memoria. Considerar si hace falta un límite de concurrencia máximo (fuera de alcance de este plan, pero a tener en cuenta).
-- **`mode: background`:** Se mantiene como opción; en paralelo, los `background` no bloquean al padre, mientras que los `foreground` se esperan y consolidan juntos.
-- **Compatibilidad:** El nuevo campo `agent` es opcional y no rompe llamadas existentes al tool `task`.
+**Archivos:**
+- Modificar: `src/filesystem/mod.rs`
+
+- [ ] **Paso 1:** Add `hook_registry: &HookRegistry` parameter to `execute()` function
+
+- [ ] **Paso 2:** Before write ops (Write, Edit, Delete), call `BeforeFsWrite` hook:
+      ```rust
+      if is_write_op(&req.op) {
+          let ctx = HookContext { file_path: Some(req.path.to_string_lossy().to_string()), ..Default::default() };
+          hook_registry.run(HookPoint::BeforeFsWrite, &ctx).await;
+      }
+      ```
+
+- [ ] **Paso 3:** After write ops, call `AfterFsWrite` hook
+
+- [ ] **Paso 4:** Thread `hook_registry` through `execute_filesystem_operation()` in `tools.rs`
+
+## Integration Points
+
+| Hook Point | Where it fires | Context fields |
+|---|---|---|
+| `BeforeTool` | `agent/lifecycle.rs` — before `execute_one` | `tool_name`, `agent_name` |
+| `AfterTool` | `agent/lifecycle.rs` — after `execute_one` | `tool_name`, `agent_name` |
+| `BeforeApply` | `agent/tools.rs` — before `apply_patch_batch` | `tool_name: "apply_patch"`, `agent_name` |
+| `AfterApply` | `agent/tools.rs` — after `apply_patch_batch` | `tool_name: "apply_patch"`, `agent_name` |
+| `BeforeShell` | `agent/tools.rs` — before `tokio::process::Command` | `shell_command`, `agent_name` |
+| `AfterShell` | `agent/tools.rs` — after shell completes | `shell_command`, `agent_name` |
+| `BeforeFsWrite` | `filesystem/mod.rs` — before write/edit/delete | `file_path` |
+| `AfterFsWrite` | `filesystem/mod.rs` — after write/edit/delete | `file_path` |
+| `OnStartup` | `engine/orchestrator.rs` — end of `initialize()` | (empty) |
+| `OnShutdown` | `engine/orchestrator.rs` — start of `shutdown()` | (empty) |
+
+## Config Schema
+
+```yaml
+# ~/.config/anacleto/config.yaml
+hooks:
+  on_startup:
+    - type: shell
+      command: "codegraph sync"
+      timeout_secs: 60
+  on_shutdown:
+    - type: shell
+      command: "echo 'engine stopped' >> /tmp/anacleto.log"
+  before_tool:
+    - type: shell
+      command: "echo 'tool: {{tool_name}}' >> /tmp/hooks.log"
+  after_apply:
+    - type: shell
+      command: "codegraph sync"
+  before_shell:
+    - type: shell
+      command: "echo 'running: {{shell_command}}'"
+```
+
+Template variables `{{tool_name}}`, `{{file_path}}`, `{{shell_command}}`, `{{agent_name}}` are substituted from `HookContext` before execution.
+
+## Testing
+
+- **Unit tests in `src/hook/mod.rs`:**
+  - `HookRegistry::run` with a valid shell command returns `Ok` with captured stdout
+  - `HookRegistry::run` with a failing command returns `Ok` with non-zero exit code (does not propagate error)
+  - `HookRegistry::run` with a timeout returns timeout error gracefully
+  - `HookRegistry::run` with no hooks configured is a no-op
+  - `HookPoint` serialization round-trip via serde
+
+- **Integration test in `tests/hook_integration.rs`:**
+  - Start engine with hook config pointing to `echo "hello"`
+  - Send user input, verify hook fires via event channel
+  - Shutdown engine, verify OnShutdown hook fires
+
+- **Config parsing test in `src/config/types.rs`:**
+  - Parse YAML with `hooks` section, verify `HookActionConfig` deserialization
+
+- **No regression:** existing tests pass without hooks configured (empty `hooks: {}` is the default)

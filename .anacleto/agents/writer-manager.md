@@ -2,7 +2,7 @@
 name: writer-manager
 description: Coordinador de redacción de artículos para atareao.es — orquesta investigación, redacción y verificación
 role: root
-model: deepseek/deepseek-v4-flash-0731
+model: deepseek/deepseek-v4-flash
 max_steps: 90
 skills:
   - .anacleto/skills/web-research/

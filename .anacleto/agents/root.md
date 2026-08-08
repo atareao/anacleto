@@ -2,13 +2,16 @@
 name: root
 description: Senior engineering agent specialized in software architecture, code generation, and system design
 role: root
-model: deepseek/deepseek-v4-flash-0731
+model: deepseek/deepseek-v4-flash
 max_steps: 90
 skills:
   - .anacleto/skills/shell/
   - .anacleto/skills/filesystem/
   - .anacleto/skills/web-research/
-mcps: []
+  - .anacleto/skills/agent-creator/
+  - .anacleto/skills/code-review/
+  - .anacleto/skills/rust-dev/
+mcps: [codegraph]
 permissions:
   deny:
     - command.run.sudo
