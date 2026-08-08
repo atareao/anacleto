@@ -1061,6 +1061,31 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    // Add thinking/reasoning block if active (only if show_thinking is true)
+    if let Some(thinking) = &app.current_thinking
+        && !thinking.is_empty()
+        && app.show_thinking
+    {
+        let thinking_color = app.theme.thinking();
+        for line_text in thinking.split('\n') {
+            let span = Span::styled(
+                format!("{}", line_text),
+                Style::default()
+                    .fg(thinking_color)
+                    .add_modifier(Modifier::DIM),
+            );
+            lines.push(Line::from(vec![
+                Span::styled("▐ ", Style::default().fg(app.theme.thinking_dim())),
+                span,
+            ]));
+        }
+        // Add a blank separator line after thinking block
+        lines.push(Line::from(Span::styled(
+            "▐",
+            Style::default().fg(app.theme.thinking_dim()),
+        )));
+    }
+
     // Add streaming indicator if active
     // IMPORTANT: split by newlines so each logical Line = (roughly) one visual line.
     // Without this split, a long streaming response wraps to many visual lines but

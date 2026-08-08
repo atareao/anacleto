@@ -373,7 +373,7 @@ impl LlmProvider for OpenRouterProvider {
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
             }),
-            thinking: None,
+            thinking: choice.message.reasoning,
         })
     }
 
@@ -462,6 +462,15 @@ impl LlmProvider for OpenRouterProvider {
                                         && !content.is_empty()
                                     {
                                         let _ = tx.send(Ok(LlmStreamChunk::Content(content))).await;
+                                    }
+
+                                    // Emit reasoning tokens if present (OpenRouter)
+                                    if let Some(ref reasoning) = choice.delta.reasoning
+                                        && !reasoning.is_empty()
+                                    {
+                                        let _ = tx
+                                            .send(Ok(LlmStreamChunk::Thinking(reasoning.clone())))
+                                            .await;
                                     }
 
                                     // Merge streaming tool call deltas by index

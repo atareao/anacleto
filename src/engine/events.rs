@@ -45,6 +45,12 @@ pub enum EngineEvent {
         agent_name: String,
         content: String,
     },
+    /// Thinking/reasoning chunk from an agent's LLM response.
+    AgentThinkingChunk {
+        agent_id: AgentId,
+        agent_name: String,
+        content: String,
+    },
     /// Agent status changed.
     AgentStatusChanged {
         agent_id: AgentId,

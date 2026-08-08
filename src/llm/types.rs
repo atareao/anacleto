@@ -100,6 +100,9 @@ pub struct LlmUsage {
 pub enum LlmStreamChunk {
     Content(String),
     ToolCall(ToolCall),
+    /// Intermediate reasoning/thinking text (e.g. Anthropic extended thinking,
+    /// OpenRouter reasoning tokens). Emitted before Content when available.
+    Thinking(String),
     Done(LlmUsage),
     Error(String),
 }

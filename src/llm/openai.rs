@@ -85,6 +85,9 @@ pub(crate) struct OpenAiResponseMessage {
     pub(crate) content: Option<String>,
     #[serde(default)]
     pub(crate) tool_calls: Option<Vec<OpenAiToolCall>>,
+    /// OpenRouter/OpenAI reasoning tokens (non-streaming).
+    #[serde(default)]
+    pub(crate) reasoning: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -114,6 +117,9 @@ pub(crate) struct OpenAiStreamDelta {
     pub(crate) content: Option<String>,
     #[serde(default)]
     pub(crate) tool_calls: Option<Vec<OpenAiStreamToolCall>>,
+    /// OpenRouter/OpenAI reasoning tokens (streaming).
+    #[serde(default)]
+    pub(crate) reasoning: Option<String>,
 }
 
 /// Partial tool call in a streaming delta (fields come in separate SSE events).
@@ -304,7 +310,7 @@ impl LlmProvider for OpenAIProvider {
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
             }),
-            thinking: None,
+            thinking: choice.message.reasoning,
         })
     }
 
@@ -393,6 +399,15 @@ impl LlmProvider for OpenAIProvider {
                                         && !content.is_empty()
                                     {
                                         let _ = tx.send(Ok(LlmStreamChunk::Content(content))).await;
+                                    }
+
+                                    // Emit reasoning tokens if present (OpenAI-compatible)
+                                    if let Some(ref reasoning) = choice.delta.reasoning
+                                        && !reasoning.is_empty()
+                                    {
+                                        let _ = tx
+                                            .send(Ok(LlmStreamChunk::Thinking(reasoning.clone())))
+                                            .await;
                                     }
 
                                     // Merge streaming tool call deltas by index
