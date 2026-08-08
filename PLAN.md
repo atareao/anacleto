@@ -1,275 +1,150 @@
-# Hook System — Implementation Plan
+# Git Branch in TUI Footer — Implementation Plan
 
 ## Objetivo
 
-Add a configurable shell-command hook system to Anacleto that fires before/after tool execution, apply_patch batches, shell commands, filesystem writes, and engine lifecycle events.
+Mostrar la rama actual de git en el centro del footer de la TUI, entre el working directory (izquierda) y el nombre del modelo (derecha).
 
 ## Arquitectura
 
-```
-src/hook/mod.rs          ← new module: HookPoint, HookAction, HookRegistry, HookConfig
-src/config/types.rs      ← add hooks: HashMap<String, Vec<HookActionConfig>> to Config
-src/engine/orchestrator.rs  ← create HookRegistry at startup, call OnStartup/OnShutdown
-src/agent/lifecycle.rs   ← pass HookRegistry via SpawnAgentConfig, wrap tool execution
-src/agent/tools.rs       ← add hooks in execute_shell_command, execute_apply_patch_tool
-src/filesystem/mod.rs    ← add hooks in execute() for write ops
-src/lib.rs               ← register pub mod hook
-```
-
-**Data flow:**
-
-1. YAML config declares `hooks.on_tool_call: [{ command: "codegraph sync" }]`
-2. `Engine::initialize()` parses config into `HookRegistry` (one per engine)
-3. `HookRegistry` is cloned into each `SpawnAgentConfig` → passed to agent tasks
-4. At each hook point, the agent calls `registry.run(HookPoint::BeforeTool, ctx)` which spawns the configured shell command
-5. The shell command's stdout/stderr are logged via `EngineEvent` but do not block execution (fire-and-forget with optional timeout)
+Se añade un campo `git_branch: Option<String>` a `App`, inicializado en `App::new()` ejecutando `git rev-parse --abbrev-ref HEAD` vía `std::process::Command`. La función `render_working_dir` se modifica para renderizar el texto de la rama (`⎇ main`) centrado entre el dir y el modelo. Si no hay repo o hay error, no se muestra nada.
 
 ## Tareas
 
-### Tarea 1: Create `src/hook/mod.rs` — core types and registry
+### Tarea 1: Añadir campo `git_branch` a `App`
 
 **Archivos:**
-- Crear: `src/hook/mod.rs`
+- Modificar: `src/tui/app.rs:107`
 
-- [ ] **Paso 1:** Define `HookPoint` enum with all hook points
-      ```rust
-      #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-      #[serde(rename_all = "snake_case")]
-      pub enum HookPoint {
-          BeforeTool,
-          AfterTool,
-          BeforeApply,
-          AfterApply,
-          BeforeShell,
-          AfterShell,
-          BeforeFsWrite,
-          AfterFsWrite,
-          OnStartup,
-          OnShutdown,
-      }
-      ```
+- [ ] **Paso 1:** Añadir el campo `pub git_branch: Option<String>` después de `working_dir` (línea 107).
 
-- [ ] **Paso 2:** Define `HookAction` enum (currently only Shell, extensible to Event)
-      ```rust
-      #[derive(Debug, Clone, Serialize, Deserialize)]
-      #[serde(tag = "type", rename_all = "snake_case")]
-      pub enum HookAction {
-          Shell { command: String },
-      }
-      ```
+  ```rust
+  /// Current working directory for display.
+  pub working_dir: String,
+  /// Current git branch name (None if not a git repo or on detached HEAD).
+  pub git_branch: Option<String>,
+  ```
 
-- [ ] **Paso 3:** Define `HookActionConfig` for YAML deserialization
-      ```rust
-      #[derive(Debug, Clone, Serialize, Deserialize)]
-      pub struct HookActionConfig {
-          #[serde(flatten)]
-          pub action: HookAction,
-          /// Optional timeout in seconds (default: 30).
-          #[serde(default = "default_hook_timeout")]
-          pub timeout_secs: u64,
-      }
-      fn default_hook_timeout() -> u64 { 30 }
-      ```
-
-- [ ] **Paso 4:** Define `HookRegistry` struct
-      ```rust
-      #[derive(Default, Clone)]
-      pub struct HookRegistry {
-          hooks: Arc<HashMap<HookPoint, Vec<HookActionConfig>>>,
-      }
-      impl HookRegistry {
-          pub fn new(config: HashMap<HookPoint, Vec<HookActionConfig>>) -> Self;
-          /// Run all hooks for a given point. Returns Vec of (command, stdout_truncated) results.
-          pub async fn run(&self, point: HookPoint, ctx: &HookContext) -> Vec<HookResult>;
-      }
-      ```
-
-- [ ] **Paso 5:** Define `HookContext` — carries per-hook metadata (tool name, file path, command, etc.)
-      ```rust
-      #[derive(Debug, Default)]
-      pub struct HookContext {
-          pub tool_name: Option<String>,
-          pub file_path: Option<String>,
-          pub shell_command: Option<String>,
-          pub agent_name: Option<String>,
-      }
-      ```
-
-- [ ] **Paso 6:** Define `HookResult` — captures stdout/stderr/exit code
-      ```rust
-      #[derive(Debug)]
-      pub struct HookResult {
-          pub command: String,
-          pub stdout: String,
-          pub stderr: String,
-          pub exit_code: Option<i32>,
-      }
-      ```
-
-- [ ] **Paso 7:** Implement `HookRegistry::run()` — spawn shell command via `tokio::process::Command`, apply timeout, capture output, log via `tracing::info!`
-
-- [ ] **Paso 8:** Implement `From<&Config>` for `HookRegistry` — parse the `hooks` HashMap from config, mapping string keys to `HookPoint` variants
-
-- [ ] **Paso 9:** Add `pub mod hook;` to `src/lib.rs`
-
-### Tarea 2: Add hooks field to Config
+### Tarea 2: Inicializar `git_branch` en `App::new()`
 
 **Archivos:**
-- Modificar: `src/config/types.rs`
+- Modificar: `src/tui/app.rs:217-219`
 
-- [ ] **Paso 1:** Add `hooks` field to `Config` struct
-      ```rust
-      /// Hook system configuration: hook_point_name -> list of actions.
-      #[serde(default)]
-      pub hooks: HashMap<String, Vec<HookActionConfig>>,
-      ```
-      (Import `HookActionConfig` from `crate::hook` — or define a local alias to avoid circular deps; prefer a local `HookActionConfig` re-export in config types.)
+- [ ] **Paso 1:** Justo después de obtener `working_dir` (tras la línea 219), añadir la detección de rama git.
 
-- [ ] **Paso 2:** Add `use crate::hook::HookActionConfig;` import (or define a parallel `HookActionConfig` in config types that maps 1:1)
+  ```rust
+  let git_branch = std::process::Command::new("git")
+      .args(["rev-parse", "--abbrev-ref", "HEAD"])
+      .output()
+      .ok()
+      .and_then(|o| {
+          if o.status.success() {
+              let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+              if s.is_empty() || s == "HEAD" {
+                  None // detached HEAD or no commits
+              } else {
+                  Some(s)
+              }
+          } else {
+              None
+          }
+      });
+  ```
 
-### Tarea 3: Integrate HookRegistry into Engine lifecycle
+  Notas:
+  - `Command::new("git")` usa el PATH del sistema, no requiere rutas absolutas.
+  - `String::from_utf8_lossy` maneja salida no UTF-8 sin panic (poco común pero seguro).
+  - `s == "HEAD"` cubre el caso detached HEAD (git devuelve "HEAD" literal).
+  - `o.status.success()` es false si `git` no está instalado o si el directorio no es un repo.
 
-**Archivos:**
-- Modificar: `src/engine/orchestrator.rs`
+- [ ] **Paso 2:** Añadir `git_branch` al struct literal `Self { ... }` (después de `working_dir` en línea 271).
 
-- [ ] **Paso 1:** Add `pub(crate) hook_registry: HookRegistry` field to `Engine` struct
+  ```rust
+  working_dir,
+  git_branch,
+  ```
 
-- [ ] **Paso 2:** Initialize in `Engine::new()`:
-      ```rust
-      hook_registry: HookRegistry::from(&config),
-      ```
-
-- [ ] **Paso 3:** Call `OnStartup` hooks at the end of `Engine::initialize()`:
-      ```rust
-      self.hook_registry.run(HookPoint::OnStartup, &HookContext::default()).await;
-      ```
-
-- [ ] **Paso 4:** Call `OnShutdown` hooks at the beginning of `Engine::shutdown()`:
-      ```rust
-      self.hook_registry.run(HookPoint::OnShutdown, &HookContext::default()).await;
-      ```
-
-- [ ] **Paso 5:** Pass `hook_registry` to `SpawnAgentConfig`:
-      ```rust
-      hook_registry: self.hook_registry.clone(),
-      ```
-
-### Tarea 4: Pass HookRegistry through SpawnAgentConfig
+### Tarea 3: Modificar `render_working_dir` para mostrar la rama
 
 **Archivos:**
-- Modificar: `src/agent/lifecycle.rs`
+- Modificar: `src/tui/render.rs:792-830`
 
-- [ ] **Paso 1:** Add `pub hook_registry: HookRegistry` field to `SpawnAgentConfig`
+- [ ] **Paso 1:** Reemplazar la función `render_working_dir` completa con una versión que calcule el texto de la rama y lo intercale entre dir y modelo.
 
-- [ ] **Paso 2:** Destructure the new field in `spawn_agent()` and clone it into the async task
+  ```rust
+  /// Render the current working directory (left), git branch (center),
+  /// and active model (right). The branch is only shown when inside a git
+  /// repo with a valid named branch.
+  fn render_working_dir(f: &mut Frame, area: Rect, app: &App) {
+      let dir_text = format!(" 📁 {}", app.working_dir);
+      let model_text = format!("🤖 {}", app.current_model);
 
-- [ ] **Paso 3:** Before executing each tool call in the `execute_one` closure, call:
-      ```rust
-      let ctx = HookContext { tool_name: Some(tc.function.name.clone()), ..Default::default() };
-      hook_registry.run(HookPoint::BeforeTool, &ctx).await;
-      ```
-      After tool execution:
-      ```rust
-      hook_registry.run(HookPoint::AfterTool, &ctx).await;
-      ```
+      let branch_span = app.git_branch.as_ref().map(|b| {
+          Span::styled(
+              format!(" ⎇ {} ", b),
+              Style::default().fg(Color::Rgb(188, 143, 254)), // lavender
+          )
+      });
 
-- [ ] **Paso 4:** Wrap the `apply_patch` branch with `BeforeApply`/`AfterApply` hooks
+      let width = area.width as usize;
 
-### Tarea 5: Add hooks in agent/tools.rs for shell and apply_patch
+      // Calculate display widths
+      let dir_width = dir_text.width();
+      let model_width = model_text.width();
+      let branch_width = branch_span.as_ref().map(|s| s.width()).unwrap_or(0);
 
-**Archivos:**
-- Modificar: `src/agent/tools.rs`
+      // Remaining space after reserving dir + branch + model (with 1-space gaps)
+      let total_fixed = dir_width + branch_width + model_width;
+      let gap_count = if branch_span.is_some() { 2 } else { 1 };
+      let padding = width.saturating_sub(total_fixed + gap_count);
 
-- [ ] **Paso 1:** Add `hook_registry: &HookRegistry` parameter to `execute_shell_command()`
+      let line = if let Some(branch) = branch_span {
+          // Distribute padding: put branch roughly centered.
+          // 1/3 of padding before branch, 2/3 after (between branch and model).
+          let left_pad = padding / 3;
+          let right_pad = padding - left_pad;
+          Line::from(vec![
+              Span::styled(dir_text, Style::default().fg(Color::DarkGray)),
+              Span::raw(" ".repeat(left_pad)),
+              branch,
+              Span::raw(" ".repeat(right_pad)),
+              Span::styled(model_text, Style::default().fg(Color::Cyan)),
+          ])
+      } else {
+          // Original layout: dir left, model right (no branch)
+          let max_dir_width = width.saturating_sub(model_width + 1);
+          let truncated_dir = if dir_width > max_dir_width && max_dir_width > 3 {
+              let keep = max_dir_width.saturating_sub(1);
+              let mut s = String::new();
+              let mut w = 0;
+              for ch in dir_text.chars() {
+                  let cw = ch.to_string().width();
+                  if w + cw > keep {
+                      break;
+                  }
+                  s.push(ch);
+                  w += cw;
+              }
+              s.push('…');
+              s
+          } else {
+              dir_text
+          };
+          let p = width.saturating_sub(truncated_dir.width() + model_width);
+          Line::from(vec![
+              Span::styled(truncated_dir, Style::default().fg(Color::DarkGray)),
+              Span::raw(" ".repeat(p)),
+              Span::styled(model_text, Style::default().fg(Color::Cyan)),
+          ])
+      };
 
-- [ ] **Paso 2:** Wrap the shell execution with `BeforeShell`/`AfterShell` hooks:
-      ```rust
-      let ctx = HookContext { shell_command: Some(command.clone()), ..Default::default() };
-      hook_registry.run(HookPoint::BeforeShell, &ctx).await;
-      // ... existing shell execution ...
-      hook_registry.run(HookPoint::AfterShell, &ctx).await;
-      ```
+      f.render_widget(Paragraph::new(line), area);
+  }
+  ```
 
-- [ ] **Paso 3:** Add `hook_registry: &HookRegistry` parameter to `execute_apply_patch_tool()`
+## Verificación
 
-- [ ] **Paso 4:** Wrap `apply_patch_batch()` call with `BeforeApply`/`AfterApply` hooks
-
-- [ ] **Paso 5:** Thread `hook_registry` through `execute_skill_tool()` → `execute_shell_command()` and `execute_apply_patch_tool()` calls
-
-### Tarea 6: Add hooks in filesystem/mod.rs for write operations
-
-**Archivos:**
-- Modificar: `src/filesystem/mod.rs`
-
-- [ ] **Paso 1:** Add `hook_registry: &HookRegistry` parameter to `execute()` function
-
-- [ ] **Paso 2:** Before write ops (Write, Edit, Delete), call `BeforeFsWrite` hook:
-      ```rust
-      if is_write_op(&req.op) {
-          let ctx = HookContext { file_path: Some(req.path.to_string_lossy().to_string()), ..Default::default() };
-          hook_registry.run(HookPoint::BeforeFsWrite, &ctx).await;
-      }
-      ```
-
-- [ ] **Paso 3:** After write ops, call `AfterFsWrite` hook
-
-- [ ] **Paso 4:** Thread `hook_registry` through `execute_filesystem_operation()` in `tools.rs`
-
-## Integration Points
-
-| Hook Point | Where it fires | Context fields |
-|---|---|---|
-| `BeforeTool` | `agent/lifecycle.rs` — before `execute_one` | `tool_name`, `agent_name` |
-| `AfterTool` | `agent/lifecycle.rs` — after `execute_one` | `tool_name`, `agent_name` |
-| `BeforeApply` | `agent/tools.rs` — before `apply_patch_batch` | `tool_name: "apply_patch"`, `agent_name` |
-| `AfterApply` | `agent/tools.rs` — after `apply_patch_batch` | `tool_name: "apply_patch"`, `agent_name` |
-| `BeforeShell` | `agent/tools.rs` — before `tokio::process::Command` | `shell_command`, `agent_name` |
-| `AfterShell` | `agent/tools.rs` — after shell completes | `shell_command`, `agent_name` |
-| `BeforeFsWrite` | `filesystem/mod.rs` — before write/edit/delete | `file_path` |
-| `AfterFsWrite` | `filesystem/mod.rs` — after write/edit/delete | `file_path` |
-| `OnStartup` | `engine/orchestrator.rs` — end of `initialize()` | (empty) |
-| `OnShutdown` | `engine/orchestrator.rs` — start of `shutdown()` | (empty) |
-
-## Config Schema
-
-```yaml
-# ~/.config/anacleto/config.yaml
-hooks:
-  on_startup:
-    - type: shell
-      command: "codegraph sync"
-      timeout_secs: 60
-  on_shutdown:
-    - type: shell
-      command: "echo 'engine stopped' >> /tmp/anacleto.log"
-  before_tool:
-    - type: shell
-      command: "echo 'tool: {{tool_name}}' >> /tmp/hooks.log"
-  after_apply:
-    - type: shell
-      command: "codegraph sync"
-  before_shell:
-    - type: shell
-      command: "echo 'running: {{shell_command}}'"
-```
-
-Template variables `{{tool_name}}`, `{{file_path}}`, `{{shell_command}}`, `{{agent_name}}` are substituted from `HookContext` before execution.
-
-## Testing
-
-- **Unit tests in `src/hook/mod.rs`:**
-  - `HookRegistry::run` with a valid shell command returns `Ok` with captured stdout
-  - `HookRegistry::run` with a failing command returns `Ok` with non-zero exit code (does not propagate error)
-  - `HookRegistry::run` with a timeout returns timeout error gracefully
-  - `HookRegistry::run` with no hooks configured is a no-op
-  - `HookPoint` serialization round-trip via serde
-
-- **Integration test in `tests/hook_integration.rs`:**
-  - Start engine with hook config pointing to `echo "hello"`
-  - Send user input, verify hook fires via event channel
-  - Shutdown engine, verify OnShutdown hook fires
-
-- **Config parsing test in `src/config/types.rs`:**
-  - Parse YAML with `hooks` section, verify `HookActionConfig` deserialization
-
-- **No regression:** existing tests pass without hooks configured (empty `hooks: {}` is the default)
+1. `cargo build` debe compilar sin errores ni warnings.
+2. `cargo clippy` sin nuevos warnings.
+3. Ejecutar el TUI en un repo git: el footer debe mostrar `📁 /path ⎇ main 🤖 modelo`.
+4. Ejecutar el TUI fuera de un repo git: el footer debe verse exactamente como antes (sin rama).
+5. Ejecutar el TUI en un repo con detached HEAD (`git checkout --detach`): no mustra rama.
