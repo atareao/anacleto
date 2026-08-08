@@ -9,6 +9,7 @@ pub mod db;
 pub mod engine;
 pub mod error;
 pub mod filesystem;
+pub mod hook;
 pub mod llm;
 pub mod lsp;
 pub mod mcp;

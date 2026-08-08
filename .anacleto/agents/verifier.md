@@ -2,7 +2,7 @@
 name: verifier
 description: Comprueba que el artículo es correcto y completo según la investigación y los criterios editoriales
 role: subagent
-model: deepseek/deepseek-v4-flash-0731
+model: deepseek/deepseek-v4-flash
 skills:
   - .anacleto/skills/web-research/
 mcps: []

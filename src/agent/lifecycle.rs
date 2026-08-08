@@ -23,6 +23,7 @@ use crate::db::session::Database;
 use crate::engine::jobs::JobRegistry;
 use crate::engine::orchestrator::{EngineEvent, UsageEvent};
 use crate::error::{Error, Result};
+use crate::hook::{HookContext, HookPoint, HookRegistry};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry};
 use crate::llm::template::render_template;
 use crate::llm::types::{
@@ -123,6 +124,8 @@ pub struct SpawnAgentConfig {
     pub plugins: Option<Arc<PluginRegistry>>,
     /// Semaphore to limit concurrent subagent spawns.
     pub concurrency_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    /// Hook registry for pre/post execution hooks.
+    pub hook_registry: HookRegistry,
 }
 
 /// Spawn a new agent task and return a handle to it.
@@ -157,6 +160,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         job_registry,
         plugins,
         concurrency_semaphore,
+        hook_registry,
     } = config;
     let (tx, mut rx) = mpsc::channel::<AgentMessage>(256);
     let handle = AgentHandle::new(tx);
@@ -587,8 +591,34 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                 let mcp_tool_map = &mcp_tool_map;
                                 let mode = &mode;
                                 let concurrency_semaphore = &concurrency_semaphore;
+                                let hook_registry = &hook_registry;
 
                                 let execute_one = |tc: ToolCall| async move {
+                                    // Fire BeforeTool hook
+                                    {
+                                        let ctx = HookContext {
+                                            tool_name: Some(tc.function.name.clone()),
+                                            agent_name: Some(agent_name.clone()),
+                                            ..Default::default()
+                                        };
+                                        let hook_results =
+                                            hook_registry.run(HookPoint::BeforeTool, &ctx).await;
+                                        for r in &hook_results {
+                                            let _ = event_tx
+                                                .send(EngineEvent::HookExecuted {
+                                                    point: format!("{:?}", HookPoint::BeforeTool),
+                                                    command: r.command.clone(),
+                                                    success: r.exit_code == Some(0),
+                                                    output: if r.stdout.is_empty() {
+                                                        r.stderr.clone()
+                                                    } else {
+                                                        r.stdout.clone()
+                                                    },
+                                                })
+                                                .await;
+                                        }
+                                    }
+
                                     // Check permissions before executing
                                     let permission_ok = check_tool_permission(
                                         &tc,
@@ -665,7 +695,29 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             .await
                                             .unwrap_or_else(|e| e)
                                     } else if tc.function.name == "apply_patch" {
-                                        execute_apply_patch_tool(
+                                        let apply_ctx = HookContext {
+                                            tool_name: Some(tc.function.name.clone()),
+                                            agent_name: Some(agent_name.clone()),
+                                            ..Default::default()
+                                        };
+                                        let hook_results = hook_registry
+                                            .run(HookPoint::BeforeApply, &apply_ctx)
+                                            .await;
+                                        for r in &hook_results {
+                                            let _ = event_tx
+                                                .send(EngineEvent::HookExecuted {
+                                                    point: format!("{:?}", HookPoint::BeforeApply),
+                                                    command: r.command.clone(),
+                                                    success: r.exit_code == Some(0),
+                                                    output: if r.stdout.is_empty() {
+                                                        r.stderr.clone()
+                                                    } else {
+                                                        r.stdout.clone()
+                                                    },
+                                                })
+                                                .await;
+                                        }
+                                        let apply_result = execute_apply_patch_tool(
                                             workspace,
                                             agent_permissions,
                                             pending_approvals,
@@ -674,7 +726,25 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             &tc,
                                         )
                                         .await
-                                        .unwrap_or_else(|e| e)
+                                        .unwrap_or_else(|e| e);
+                                        let hook_results = hook_registry
+                                            .run(HookPoint::AfterApply, &apply_ctx)
+                                            .await;
+                                        for r in &hook_results {
+                                            let _ = event_tx
+                                                .send(EngineEvent::HookExecuted {
+                                                    point: format!("{:?}", HookPoint::AfterApply),
+                                                    command: r.command.clone(),
+                                                    success: r.exit_code == Some(0),
+                                                    output: if r.stdout.is_empty() {
+                                                        r.stderr.clone()
+                                                    } else {
+                                                        r.stdout.clone()
+                                                    },
+                                                })
+                                                .await;
+                                        }
+                                        apply_result
                                     } else if tc.function.name == "read" {
                                         execute_read_tool(workspace, agent_permissions, &tc)
                                             .await
@@ -744,7 +814,12 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                     } else if skill_names.contains(&tc.function.name) {
                                         let reg = skill_registry.read().await;
                                         execute_skill_tool(
-                                            &reg, agent_name, &tc, event_tx, agent_id,
+                                            &reg,
+                                            agent_name,
+                                            &tc,
+                                            event_tx,
+                                            agent_id,
+                                            Some(hook_registry),
                                         )
                                         .await
                                         .unwrap_or_else(|e| e)
@@ -845,6 +920,31 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                     } else {
                                         format!("Unknown tool or subagent: {}", tc.function.name)
                                     };
+
+                                    // Fire AfterTool hook
+                                    {
+                                        let ctx = HookContext {
+                                            tool_name: Some(tc.function.name.clone()),
+                                            agent_name: Some(agent_name.clone()),
+                                            ..Default::default()
+                                        };
+                                        let hook_results =
+                                            hook_registry.run(HookPoint::AfterTool, &ctx).await;
+                                        for r in &hook_results {
+                                            let _ = event_tx
+                                                .send(EngineEvent::HookExecuted {
+                                                    point: format!("{:?}", HookPoint::AfterTool),
+                                                    command: r.command.clone(),
+                                                    success: r.exit_code == Some(0),
+                                                    output: if r.stdout.is_empty() {
+                                                        r.stderr.clone()
+                                                    } else {
+                                                        r.stdout.clone()
+                                                    },
+                                                })
+                                                .await;
+                                        }
+                                    }
 
                                     (tc.id.clone(), result)
                                 };

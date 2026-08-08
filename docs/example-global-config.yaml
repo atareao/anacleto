@@ -54,3 +54,21 @@
 #     quit: ["ctrl+q"]
 #     cursor_word_left: ["ctrl+left", "alt+left"]
 #     send: ["enter"]
+
+# ---------------------------------------------------------------------------
+# Hooks (shell commands that fire at lifecycle points)
+# ---------------------------------------------------------------------------
+# Each hook has a `type` (currently only `shell`) and a `command` string.
+# Template variables ({{tool_name}}, {{file_path}}, {{shell_command}},
+# {{agent_name}}) are substituted before execution.
+#
+# Example — sync codegraph after every apply_patch:
+#
+# hooks:
+#   after_apply:
+#     - type: shell
+#       command: "codegraph sync"
+#       timeout_secs: 60
+#   on_startup:
+#     - type: shell
+#       command: "echo 'Engine started'"

@@ -193,6 +193,17 @@ pub enum EngineEvent {
     SnapshotReverted { snapshot_id: Uuid },
     /// The snapshots of the active session were listed (via `/snapshots`).
     SnapshotsListed(Vec<Snapshot>),
+    /// A hook was executed (fire-and-forget).
+    HookExecuted {
+        /// The hook point name (e.g. "AfterApply").
+        point: String,
+        /// The command that was executed.
+        command: String,
+        /// Whether the hook exited successfully (exit code 0).
+        success: bool,
+        /// Captured stdout/stderr (truncated).
+        output: String,
+    },
     /// Configuration was reloaded from disk (triggered by SIGHUP).
     ConfigReloaded,
 }

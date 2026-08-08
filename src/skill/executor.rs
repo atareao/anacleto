@@ -126,6 +126,7 @@ mod tests {
             description: "test".to_string(),
             instructions: instructions.to_string(),
             metadata: std::collections::HashMap::new(),
+            hooks: std::collections::HashMap::new(),
         }
     }
 

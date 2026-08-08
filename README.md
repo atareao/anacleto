@@ -106,6 +106,9 @@ that makes that orchestration explicit and composable:
   registration, loaded from `~/.config/anacleto/plugins/`.
 - **Custom slash commands** — user-defined commands with `{env}`/`{file}`
   templating.
+- **Hooks** — configurable shell commands that fire at lifecycle points
+  (before/after tool execution, apply_patch, shell commands, filesystem writes,
+  and engine start/stop) with template variable substitution.
 - **TUI** — a ratatui-based terminal interface with a keymap, which-key
   menu, toasts, model picker, and diff viewer, running in the same process as
   the engine.
@@ -450,6 +453,49 @@ delay = min(base_delay × 2^attempt × random(0.75, 1.25), max_delay)
 - **`workspaces`** — known workspace directories for the `/workspaces` command.
 - **`commands`** — custom slash commands with `{env}`/`{file}` templating.
 
+### Hooks
+
+Hooks are shell commands that fire automatically at specific points in the
+agent lifecycle. They are defined at the top level of your config and run
+**fire-and-forget**: their output is logged but does not affect execution.
+
+```yaml
+hooks:
+  # After every apply_patch batch, sync the codegraph index
+  after_apply:
+    - type: shell
+      command: "codegraph sync"
+      timeout_secs: 60
+
+  # On engine startup
+  on_startup:
+    - type: shell
+      command: "echo 'Engine started'"
+
+  # Before every shell command executed by the agent
+  before_shell:
+    - type: shell
+      command: "echo 'Running: {{shell_command}}' >> /tmp/anacleto-hooks.log"
+```
+
+#### Hook points
+
+| Hook point | Fires when | Context variables |
+|---|---|---|
+| `before_tool` | Before any tool execution | `{{tool_name}}`, `{{agent_name}}` |
+| `after_tool` | After any tool execution | `{{tool_name}}`, `{{agent_name}}` |
+| `before_apply` | Before `apply_patch` | `{{tool_name}}`, `{{agent_name}}` |
+| `after_apply` | After `apply_patch` success | `{{tool_name}}`, `{{agent_name}}` |
+| `before_shell` | Before shell command | `{{tool_name}}`, `{{shell_command}}`, `{{agent_name}}` |
+| `after_shell` | After shell command success | `{{tool_name}}`, `{{shell_command}}`, `{{agent_name}}` |
+| `before_fs_write` | Before file write/edit/delete | `{{tool_name}}`, `{{file_path}}`, `{{agent_name}}` |
+| `after_fs_write` | After file write/edit/delete success | `{{tool_name}}`, `{{file_path}}`, `{{agent_name}}` |
+| `on_startup` | Engine startup | — |
+| `on_shutdown` | Engine shutdown | — |
+
+Each hook has a configurable timeout (default 30 s). When a command times out
+it is killed and reported as a warning in the logs.
+
 ---
 
 ## Slash commands
@@ -532,6 +578,7 @@ Evolution phases ([`PLAN.md`](PLAN.md)), with phases 1–12 now complete:
 - [x] **FASE 10** — input that never interrupts typing
 - [x] **FASE 11** — split `app.rs` into cohesive modules
 - [x] **FASE 12** — split large files into cohesive modules
+- [x] **FASE 13** — hook system (configurable shell commands at lifecycle points)
 - [ ] MCP server lifecycle management
 - [ ] Skill marketplace
 

@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::hook::{HookActionConfig, HookPoint};
 use crate::llm::types::{ToolCall, ToolDefinition};
 
 /// A plugin hook result. Hooks may return a replacement value or `None` to
@@ -45,6 +46,12 @@ pub struct PluginManifest {
 pub trait Plugin: Send + Sync {
     /// The plugin's unique name.
     fn name(&self) -> &str;
+
+    /// Return hooks this plugin wants to register.
+    /// Called once at engine startup.
+    fn register_hooks(&self) -> Vec<(HookPoint, HookActionConfig)> {
+        Vec::new() // default: no hooks
+    }
 
     /// Called when an agent is spawned. May return a modified system prompt.
     fn on_agent_spawn(&self, _agent_name: &str, _system_prompt: &str) -> HookResult<String> {
@@ -113,6 +120,11 @@ impl PluginRegistry {
     /// Whether the registry is empty.
     pub fn is_empty(&self) -> bool {
         self.plugins.is_empty()
+    }
+
+    /// Return a reference to all registered plugins.
+    pub fn list(&self) -> &[Box<dyn Plugin>] {
+        &self.plugins
     }
 
     /// Custom tool definitions registered by plugins.
@@ -320,5 +332,56 @@ mod tests {
         let n = reg.load_from_dir(tmp.path()).unwrap();
         assert_eq!(n, 1);
         assert_eq!(reg.len(), 1);
+    }
+
+    // -- Plugin::register_hooks tests ---------------------------------------
+
+    use crate::hook::{HookAction, HookActionConfig, HookPoint};
+
+    struct HookTestPlugin;
+    impl Plugin for HookTestPlugin {
+        fn name(&self) -> &str {
+            "hook-test"
+        }
+
+        fn register_hooks(&self) -> Vec<(HookPoint, HookActionConfig)> {
+            vec![(
+                HookPoint::AfterApply,
+                HookActionConfig {
+                    action: HookAction::Shell {
+                        command: "echo plugin".into(),
+                    },
+                    timeout_secs: 10,
+                },
+            )]
+        }
+    }
+
+    #[test]
+    fn test_plugin_register_hooks() {
+        let plugin = HookTestPlugin;
+        let hooks = plugin.register_hooks();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].0, HookPoint::AfterApply);
+    }
+
+    #[test]
+    fn test_plugin_default_no_hooks() {
+        struct EmptyPlugin;
+        impl Plugin for EmptyPlugin {
+            fn name(&self) -> &str {
+                "empty"
+            }
+        }
+        let plugin = EmptyPlugin;
+        assert!(plugin.register_hooks().is_empty());
+    }
+
+    #[test]
+    fn test_plugin_registry_list() {
+        let mut reg = PluginRegistry::new();
+        assert!(reg.list().is_empty());
+        reg.register(Box::new(HookTestPlugin));
+        assert_eq!(reg.list().len(), 1);
     }
 }

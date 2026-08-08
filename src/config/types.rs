@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::agent::types::AgentRole;
+use crate::hook::HookActionConfig;
 
 /// Top-level configuration for Anacleto.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -52,6 +53,22 @@ pub struct Config {
     /// Custom slash commands defined in config.
     #[serde(default)]
     pub commands: Vec<CustomCommand>,
+
+    /// Hook system configuration: maps hook point names to lists of actions.
+    ///
+    /// Example:
+    /// ```yaml
+    /// hooks:
+    ///   after_apply:
+    ///     - type: shell
+    ///       command: "codegraph sync"
+    ///       timeout_secs: 60
+    ///   on_startup:
+    ///     - type: shell
+    ///       command: "echo 'engine started'"
+    /// ```
+    #[serde(default)]
+    pub hooks: HashMap<String, Vec<HookActionConfig>>,
 }
 
 /// LLM provider configurations.
