@@ -496,14 +496,14 @@ fn format_tokens(n: u64) -> String {
     }
 }
 
-/// Panel 2: Info — unified Skills/MCPs panel with two tabs ([Skills|MCPs]).
+/// Panel 2: Info — unified Skills/MCPs/SubAgents panel with three tabs.
 fn render_info_panel(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)].as_ref())
         .split(area);
 
-    let titles: Vec<Line> = [" Skills ", " MCPs "]
+    let titles: Vec<Line> = [" Skills ", " MCPs ", " SubAgents "]
         .iter()
         .map(|t| Line::from(Span::styled(*t, Style::default())))
         .collect();
@@ -514,8 +514,10 @@ fn render_info_panel(f: &mut Frame, area: Rect, app: &App) {
 
     if app.info_tab == 0 {
         render_skill_panel(f, chunks[1], app);
-    } else {
+    } else if app.info_tab == 1 {
         render_mcp_panel(f, chunks[1], app);
+    } else {
+        render_subagent_panel(f, chunks[1], app);
     }
 }
 
@@ -566,6 +568,58 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
             .title(format!(" [2] MCPs ({}) ", unique_mcps.len())),
+    );
+
+    f.render_widget(list, area);
+}
+
+/// Panel 2c: SubAgents — configured subagent names (active when `info_tab = 2`).
+fn render_subagent_panel(f: &mut Frame, area: Rect, app: &App) {
+    let unique_subagents: Vec<&str> = {
+        let set: std::collections::BTreeSet<&str> = app
+            .configured_subagents
+            .values()
+            .flat_map(|v| v.iter().map(|s| s.as_str()))
+            .collect();
+        set.into_iter().collect()
+    };
+
+    let focused = app.focus == Focus::Info && app.info_tab == 2;
+    let border_color = if focused {
+        app.theme.accent()
+    } else {
+        Color::Cyan
+    };
+
+    let items: Vec<ListItem> = if unique_subagents.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "(none)",
+            Style::default().fg(Color::DarkGray),
+        )))]
+    } else {
+        unique_subagents
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let style = if focused && i == app.subagent_panel_index {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(app.theme.accent())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(Span::styled(*name, style)))
+            })
+            .collect()
+    };
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(border_color))
+            .title(format!(" [2] SubAgents ({}) ", unique_subagents.len())),
     );
 
     f.render_widget(list, area);
