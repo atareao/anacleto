@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-08-08
+
+### Added
+
+- **Auto-Configuration Hooks** — Configurable hook system that fires shell commands at agent lifecycle points (`BeforeTool`, `AfterTool`, `BeforeApply`, `AfterApply`, `BeforeShell`, `AfterShell`, `BeforeFsWrite`, `AfterFsWrite`, `OnStartup`, `OnShutdown`).
+- **Three-layer auto-registration** merged into the `HookRegistry` with precedence Config > Plugin > Skill > Auto-detect and deduplication:
+  - PATH auto-detect (`src/hook/autoconfig.rs`): scans PATH for known tools (e.g. codegraph) and registers their sync hooks.
+  - Skill frontmatter: skills can declare `hooks` in their YAML frontmatter.
+  - Plugin trait: `Plugin::register_hooks()` lets plugins register hooks.
+- Hooks wired into tool execution (shell, filesystem) and the engine orchestrator.
+- `PluginRegistry::list()`.
+- `temporal.txt` and the third-party `awesome-claude-skills/` repository excluded from the repo (added to `.gitignore`).
+
+### Changed
+
+- `src/hook/` (new): `HookRegistry` with three-layer merged auto-registration and deduplication.
+- `src/hook/autoconfig.rs` (new): PATH auto-detection of known tools.
+- Hooks connected to tool execution (shell, filesystem) and the engine orchestrator.
+- `PluginRegistry::list()`.
+- `.gitignore`: `temporal.txt` and `awesome-claude-skills/`.
+
+[0.13.0]: https://github.com/atareao/anacleto/releases/tag/v0.13.0
+
 ## [0.11.0] - 2026-08-08
 
 ### Added

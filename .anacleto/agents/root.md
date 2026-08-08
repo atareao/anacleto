@@ -8,7 +8,6 @@ skills:
   - .anacleto/skills/shell/
   - .anacleto/skills/filesystem/
   - .anacleto/skills/web-research/
-  - .anacleto/skills/agent-creator/
   - .anacleto/skills/code-review/
   - .anacleto/skills/rust-dev/
 mcps: [codegraph]

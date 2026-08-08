@@ -209,7 +209,6 @@ Sync codegraph"#;
     #[test]
     fn test_installed_ok_skills_load() {
         let expected = [
-            "agent-creator",
             "code-review",
             "filesystem",
             "rust-dev",
