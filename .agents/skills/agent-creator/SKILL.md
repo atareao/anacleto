@@ -67,7 +67,7 @@ The frontmatter holds the structural config; the Markdown body is the system pro
 
 ```
 # Project-level agents (override globals)
-.anacleto/agents/<name>.md
+.agents/agents/<name>.md
 
 # Global agents (machine-wide defaults)
 ~/.config/anacleto/agents/<name>.md
@@ -83,7 +83,7 @@ role: root | subagent             # Optional for non-root agents. "root" for roo
 model: <provider/model>           # Required. e.g. "claude-sonnet-4", "deepseek/deepseek-v4-flash"
 max_steps: <integer>              # Optional. Max LLM+tool iterations per task. Default from config (90).
 skills:                           # Optional. List of paths to skill directories.
-  - .anacleto/skills/<name>/
+  - .agents/skills/<name>/
 mcps: [<mcp-name>]                # Optional. List of MCP server names (from config).
 permissions:                      # Optional. Allow/deny rules.
   allow: []                       #   Explicit allow list (rarely needed — deny by default).
@@ -159,14 +159,14 @@ Before writing the file, resolve these concrete values:
 
 | Scope | Path pattern |
 |---|---|
-| Project | `.anacleto/skills/<name>/` |
+| Project | `.agents/skills/<name>/` |
 | Global | `~/.config/anacleto/skills/<name>/` |
 
 **MCP references**: Must match a name in `config.yaml` → `mcps:` section.
 
 ### Phase 3 — Write the agent file
 
-Create the file at `.anacleto/agents/<name>.md`.
+Create the file at `.agents/agents/<name>.md`.
 
 **Structure the system prompt** with these sections:
 
@@ -206,7 +206,7 @@ How the agent formats its responses.
 
 Ensure the agent is discoverable by the engine:
 
-1. The file is at `.anacleto/agents/<name>.md` (project) or `~/.config/anacleto/agents/<name>.md` (global).
+1. The file is at `.agents/agents/<name>.md` (project) or `~/.config/anacleto/agents/<name>.md` (global).
 2. If it's a root agent, `role: root` is set.
 3. If it's a subagent, its parent agent lists it in the `subagents:` field.
 4. The engine discovers agents by scanning `agents/` directories.
@@ -225,7 +225,7 @@ triggers delegation to the new subagent.
 ### 1. Read the current agent file
 
 ```bash
-cat .anacleto/agents/<name>.md
+cat .agents/agents/<name>.md
 ```
 
 ### 2. Identify what to change
@@ -252,7 +252,7 @@ Edit the agent file. Validate the YAML frontmatter is well-formed.
 List available skills from the project:
 
 ```bash
-ls .anacleto/skills/
+ls .agents/skills/
 ```
 
 List global skills:
@@ -264,13 +264,13 @@ ls ~/.config/anacleto/skills/ 2>/dev/null
 Inspect a skill's frontmatter to see its description:
 
 ```bash
-head -5 .anacleto/skills/<name>/SKILL.md
+head -5 .agents/skills/<name>/SKILL.md
 ```
 
 ### Add a skill to an agent
 
 1. Edit the agent's frontmatter `skills:` list.
-2. Add the path: `.anacleto/skills/<name>/` or `~/.config/anacleto/skills/<name>/`.
+2. Add the path: `.agents/skills/<name>/` or `~/.config/anacleto/skills/<name>/`.
 3. Ensure the skill exists at that path.
 4. If the agent's system prompt lists capabilities, update it to mention the new skill.
 
@@ -290,7 +290,7 @@ Read the config file to see defined MCP servers:
 
 ```bash
 # From project config
-cat .anacleto/config.yaml
+cat .agents/config.yaml
 
 # From global config
 cat ~/.config/anacleto/config.yaml 2>/dev/null
@@ -300,7 +300,7 @@ List configured MCP server names:
 
 ```bash
 # From project config
-yq '.mcps | keys | .[]' .anacleto/config.yaml 2>/dev/null
+yq '.mcps | keys | .[]' .agents/config.yaml 2>/dev/null
 
 # From global config
 yq '.mcps | keys | .[]' ~/.config/anacleto/config.yaml 2>/dev/null
@@ -333,7 +333,7 @@ Subagents are **fully independent** (no inheritance). They need their own:
 
 ### Step 2 — Create the subagent file
 
-Write the file at `.anacleto/agents/<subagent-name>.md`.
+Write the file at `.agents/agents/<subagent-name>.md`.
 
 Example minimal subagent:
 ```markdown
@@ -343,7 +343,7 @@ description: Handles a specific task
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
-  - .anacleto/skills/shell/
+  - .agents/skills/shell/
 mcps: []
 permissions:
   deny:
@@ -391,7 +391,7 @@ You can also delegate tasks to your subagents:
 
 1. Remove the subagent file (or archive it):
    ```bash
-   mv .anacleto/agents/<subagent>.md .anacleto/agents/<subagent>.md.bak
+   mv .agents/agents/<subagent>.md .agents/agents/<subagent>.md.bak
    ```
 2. Edit the parent agent's frontmatter — remove the subagent name from `subagents:`.
 3. Update the parent agent's system prompt — remove mention of the subagent.
@@ -487,7 +487,7 @@ Before declaring an agent done, verify:
 3. Permissions: Read-only, no network, no sudo.
 4. Model: Same as parent.
 
-Then create `.anacleto/agents/rust-fmt-checker.md`:
+Then create `.agents/agents/rust-fmt-checker.md`:
 
 ```markdown
 ---
@@ -496,7 +496,7 @@ description: Checks Rust code formatting with cargo fmt --check
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
-  - .anacleto/skills/shell/
+  - .agents/skills/shell/
 mcps: []
 permissions:
   deny:
@@ -532,12 +532,12 @@ and update the system prompt.
 
 **You do:**
 
-1. Verify `filesystem` skill exists: `ls .anacleto/skills/filesystem/SKILL.md`
-2. Edit `.anacleto/agents/root.md` frontmatter:
+1. Verify `filesystem` skill exists: `ls .agents/skills/filesystem/SKILL.md`
+2. Edit `.agents/agents/root.md` frontmatter:
    ```yaml
    skills:
-     - .anacleto/skills/shell/
-     - .anacleto/skills/filesystem/   # ← added
+     - .agents/skills/shell/
+     - .agents/skills/filesystem/   # ← added
    ```
 3. Update the system prompt's capabilities section to mention the new skill.
 
@@ -547,7 +547,7 @@ and update the system prompt.
 
 **You do:**
 
-1. Read the agent file: `cat .anacleto/agents/root.md`
+1. Read the agent file: `cat .agents/agents/root.md`
 2. Find the `mcps:` line and remove `postgres` from the list.
 3. Save and confirm the change.
 
@@ -558,7 +558,7 @@ and update the system prompt.
 **You do:**
 
 1. Capture intent: documentation specialist, web research, no shell access.
-2. Create `.anacleto/agents/doc-writer.md`:
+2. Create `.agents/agents/doc-writer.md`:
 
 ```markdown
 ---
@@ -567,7 +567,7 @@ description: Documentation specialist for creating and maintaining project docs
 role: root
 model: deepseek/deepseek-v4-flash
 skills:
-  - .anacleto/skills/web-research/
+  - .agents/skills/web-research/
 mcps: []
 permissions:
   deny:
@@ -638,7 +638,7 @@ If a subagent references a parent that doesn't list it in `subagents:`:
 ## Creating test prompts
 
 After creating an agent, create test prompts to verify it works. Store them at
-`.anacleto/skills/agent-creator/tests/<agent-name>-tests.md`.
+`.agents/skills/agent-creator/tests/<agent-name>-tests.md`.
 
 Each test file should contain:
 

@@ -4,9 +4,9 @@ description: Rust development specialist — writes, compiles, tests and debugs 
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
-  - .anacleto/skills/rust-dev/
-  - .anacleto/skills/shell/
-  - .anacleto/skills/code-review/
+  - .agents/skills/rust-dev/
+  - .agents/skills/shell/
+  - .agents/skills/code-review/
 mcps: []
 permissions:
   deny:

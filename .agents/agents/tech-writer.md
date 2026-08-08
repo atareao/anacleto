@@ -4,7 +4,7 @@ description: Especialista en redacción de artículos técnicos con el estilo ed
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
-  - .anacleto/skills/web-research/
+  - .agents/skills/web-research/
 mcps: []
 permissions:
   allow: []

@@ -216,7 +216,7 @@ Sync codegraph"#;
             "web-research",
         ];
         for name in expected {
-            let dir = Path::new(".anacleto/skills").join(name);
+            let dir = Path::new(".agents/skills").join(name);
             let loaded = load_skills_from_dir(&dir).expect("dir should exist");
             assert!(
                 loaded.iter().any(|s| s.name == name),

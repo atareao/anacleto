@@ -25,7 +25,7 @@ Anacleto needs a mechanism to provide agents with specialized capabilities (skil
 - The **body** is only loaded into context when the skill is invoked.
 - Skills can bundle optional resources: `scripts/`, `references/`, `assets/`.
 - Skills are loaded from:
-  - A local project directory (`.anacleto/skills/`)
+  - A local project directory (`.agents/skills/`)
   - Absolute paths on the filesystem
 - Each agent/subagent has its **own independent set of skills**.
 - The **LLM decides which skill to invoke** based on the `description` field, unless explicitly routed.

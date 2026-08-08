@@ -35,11 +35,17 @@ impl SkillRegistry {
         self.sources.clear();
 
         for path in paths {
-            let loaded = load_single_or_dir(path)?;
-            for skill in loaded {
-                let key = skill.name.to_lowercase();
-                self.skills.insert(key.clone(), skill);
-                self.sources.insert(key, path.clone());
+            match load_single_or_dir(path) {
+                Ok(loaded) => {
+                    for skill in loaded {
+                        let key = skill.name.to_lowercase();
+                        self.skills.insert(key.clone(), skill);
+                        self.sources.insert(key, path.clone());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: {e}");
+                }
             }
         }
 

@@ -4,7 +4,7 @@ description: Code review specialist
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
-  - .anacleto/skills/code-review/
+  - .agents/skills/code-review/
 mcps: []
 permissions:
   deny:

@@ -1,8 +1,8 @@
 //! Path resolution for Anacleto's project and global configuration.
 //!
-//! Project paths (`.anacleto/`) are resolved relative to the *project root*,
+//! Project paths (`.agents/`) are resolved relative to the *project root*,
 //! which is discovered by walking up from the current working directory until
-//! a directory containing `.anacleto/` is found. This makes the binary robust
+//! a directory containing `.agents/` is found. This makes the binary robust
 //! to the directory from which it is invoked — running `anacleto` from a
 //! subdirectory of the project works exactly as running it from the root.
 
@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 
 /// Determine the project root directory.
 ///
-/// Walks up from the current working directory looking for a `.anacleto/`
+/// Walks up from the current working directory looking for a `.agents/`
 /// directory. If an explicit project root is provided (e.g. derived from the
 /// `--config` flag), that takes precedence. Falls back to the CWD when no
-/// `.anacleto/` directory is found.
+/// `.agents/` directory is found.
 pub fn project_root(explicit: Option<&Path>) -> PathBuf {
     if let Some(root) = explicit {
         return root.to_path_buf();
@@ -24,11 +24,11 @@ pub fn project_root(explicit: Option<&Path>) -> PathBuf {
 }
 
 /// Walk up from `start` looking for the nearest ancestor containing a
-/// `.anacleto/` directory. Falls back to `start` itself when none is found.
+/// `.agents/` directory. Falls back to `start` itself when none is found.
 fn walk_up_to_project_root(start: &Path) -> PathBuf {
     let mut dir = Some(start);
     while let Some(d) = dir {
-        if d.join(".anacleto").is_dir() {
+        if d.join(".agents").is_dir() {
             return d.to_path_buf();
         }
         dir = d.parent();
@@ -36,16 +36,16 @@ fn walk_up_to_project_root(start: &Path) -> PathBuf {
     start.to_path_buf()
 }
 
-/// Path to the project config file: `<project_root>/.anacleto/config.yaml`.
+/// Path to the project config file: `<project_root>/.agents/config.yaml`.
 pub fn project_config_path(explicit_root: Option<&Path>) -> PathBuf {
     project_root(explicit_root)
-        .join(".anacleto")
+        .join(".agents")
         .join("config.yaml")
 }
 
-/// Path to the project agents directory: `<project_root>/.anacleto/agents`.
+/// Path to the project agents directory: `<project_root>/.agents/agents`.
 pub fn project_agents_dir(explicit_root: Option<&Path>) -> PathBuf {
-    project_root(explicit_root).join(".anacleto").join("agents")
+    project_root(explicit_root).join(".agents").join("agents")
 }
 
 /// Path to the global plugins directory: `~/.config/anacleto/plugins`.
@@ -81,11 +81,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_project_root_walks_up_to_anacleto_dir() {
-        // Create a temp tree: <tmp>/project/.anacleto and <tmp>/project/sub/deeper
+    fn test_project_root_walks_up_to_agents_dir() {
+        // Create a temp tree: <tmp>/project/.agents and <tmp>/project/sub/deeper
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("project");
-        std::fs::create_dir_all(project.join(".anacleto")).unwrap();
+        std::fs::create_dir_all(project.join(".agents")).unwrap();
         let deeper = project.join("sub").join("deeper");
         std::fs::create_dir_all(&deeper).unwrap();
 
@@ -94,7 +94,7 @@ mod tests {
     }
 
     #[test]
-    fn test_walk_up_falls_back_to_start_when_no_anacleto() {
+    fn test_walk_up_falls_back_to_start_when_no_agents() {
         let tmp = tempfile::tempdir().unwrap();
         let nested = tmp.path().join("a").join("b");
         std::fs::create_dir_all(&nested).unwrap();
@@ -110,21 +110,21 @@ mod tests {
     }
 
     #[test]
-    fn test_project_config_path_joins_anacleto() {
+    fn test_project_config_path_joins_agents() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("proj");
-        std::fs::create_dir_all(root.join(".anacleto")).unwrap();
+        std::fs::create_dir_all(root.join(".agents")).unwrap();
         let p = project_config_path(Some(&root));
-        assert_eq!(p, root.join(".anacleto").join("config.yaml"));
+        assert_eq!(p, root.join(".agents").join("config.yaml"));
     }
 
     #[test]
-    fn test_project_agents_dir_joins_anacleto() {
+    fn test_project_agents_dir_joins_agents() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("proj");
-        std::fs::create_dir_all(root.join(".anacleto")).unwrap();
+        std::fs::create_dir_all(root.join(".agents")).unwrap();
         let p = project_agents_dir(Some(&root));
-        assert_eq!(p, root.join(".anacleto").join("agents"));
+        assert_eq!(p, root.join(".agents").join("agents"));
     }
 
     #[test]

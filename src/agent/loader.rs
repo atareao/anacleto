@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 /// role: root
 /// model: deepseek/deepseek-v4-flash
 /// skills:
-///   - .anacleto/skills/shell/
+///   - .agents/skills/shell/
 /// mcps: []
 /// permissions:
 ///   deny: []
@@ -154,7 +154,7 @@ pub fn load_agents(
 
     // Resolve relative skill paths against the project root so skills load
     // regardless of the process's current working directory (e.g. when the
-    // binary is launched from inside `.anacleto/`).
+    // binary is launched from inside `.agents/`).
     let root = crate::config::paths::project_root(explicit_root);
     for agent in &mut merged {
         agent.skills = agent
@@ -187,7 +187,7 @@ fn global_agents_dir() -> PathBuf {
         .join("agents")
 }
 
-/// Path to project agents directory: <project_root>/.anacleto/agents
+/// Path to project agents directory: <project_root>/.agents/agents
 fn project_agents_dir(explicit_root: Option<&Path>) -> PathBuf {
     crate::config::paths::project_agents_dir(explicit_root)
 }
@@ -227,7 +227,7 @@ description: Senior engineering agent
 role: root
 model: deepseek/deepseek-v4-flash
 skills:
-  - .anacleto/skills/shell/
+  - .agents/skills/shell/
 mcps:
   - filesystem
 permissions:
@@ -248,7 +248,7 @@ You are **Anacleto**, a senior engineering agent.
         assert_eq!(agent.description, "Senior engineering agent");
         assert_eq!(agent.role, AgentRole::Root);
         assert_eq!(agent.model, "deepseek/deepseek-v4-flash");
-        assert_eq!(agent.skills, vec![PathBuf::from(".anacleto/skills/shell/")]);
+        assert_eq!(agent.skills, vec![PathBuf::from(".agents/skills/shell/")]);
         assert_eq!(agent.mcps, vec!["filesystem".to_string()]);
         assert_eq!(agent.permissions.deny, vec!["command.run.sudo".to_string()]);
         assert_eq!(agent.subagents, vec!["reviewer".to_string()]);
@@ -485,8 +485,8 @@ role: root
         let root = Path::new("/proj");
         // Relative paths are joined to the project root.
         assert_eq!(
-            resolve_skill_path(Path::new(".anacleto/skills/shell/"), root),
-            PathBuf::from("/proj/.anacleto/skills/shell/")
+            resolve_skill_path(Path::new(".agents/skills/shell/"), root),
+            PathBuf::from("/proj/.agents/skills/shell/")
         );
         // Absolute paths are returned unchanged.
         assert_eq!(
