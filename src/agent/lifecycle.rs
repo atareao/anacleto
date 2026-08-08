@@ -30,7 +30,7 @@ use crate::llm::types::{
 };
 use crate::mcp::client::McpRegistry;
 use crate::plugin::PluginRegistry;
-use crate::skill::types::Skill;
+use crate::skill::registry::SharedSkillRegistry;
 use crate::tools::glob::{execute_glob_tool, glob_tool_definition};
 use crate::tools::grep::{execute_grep_tool, grep_tool_definition};
 use crate::tools::lsp::{execute_lsp_query_tool, lsp_query_tool_definition};
@@ -88,7 +88,10 @@ impl AgentHandle {
 pub struct SpawnAgentConfig {
     pub agent: Agent,
     pub provider: Arc<dyn LlmProvider>,
-    pub skills: Vec<Skill>,
+    /// Reference to the central skill registry.
+    pub skill_registry: SharedSkillRegistry,
+    /// Names of skills this agent has access to.
+    pub skill_names: Vec<String>,
     pub subagent_configs: Vec<AgentConfig>,
     pub llm_registry: LlmProviderRegistry,
     pub mcp_registry: Option<Arc<tokio::sync::Mutex<McpRegistry>>>,
@@ -118,6 +121,8 @@ pub struct SpawnAgentConfig {
     pub job_registry: Option<Arc<tokio::sync::Mutex<JobRegistry>>>,
     /// Loaded plugins and their custom tools.
     pub plugins: Option<Arc<PluginRegistry>>,
+    /// Semaphore to limit concurrent subagent spawns.
+    pub concurrency_semaphore: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 /// Spawn a new agent task and return a handle to it.
@@ -126,11 +131,12 @@ pub struct SpawnAgentConfig {
 /// provider with loaded skills as tools, and handles tool call loops.
 /// If `subagent_configs` is non-empty, those subagents are exposed as
 /// tools the LLM can invoke for task delegation.
-pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
+pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     let SpawnAgentConfig {
         agent,
         provider,
-        skills,
+        skill_registry,
+        skill_names,
         subagent_configs,
         llm_registry,
         mcp_registry,
@@ -150,6 +156,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         mode,
         job_registry,
         plugins,
+        concurrency_semaphore,
     } = config;
     let (tx, mut rx) = mpsc::channel::<AgentMessage>(256);
     let handle = AgentHandle::new(tx);
@@ -163,8 +170,15 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
 
     // Load agent description as system prompt (rendered as a template below)
 
-    // Build tool list: skills + subagents + built-in todo tool
-    let mut tools: Vec<ToolDefinition> = skills.iter().map(skill_to_tool_definition).collect();
+    // Build tool list from registry: skills + subagents + built-in tools
+    let mut tools: Vec<ToolDefinition> = {
+        let reg = skill_registry.read().await;
+        skill_names
+            .iter()
+            .filter_map(|name| reg.get(name))
+            .map(skill_to_tool_definition)
+            .collect()
+    };
     for sc in &subagent_configs {
         tools.push(subagent_config_to_tool_definition(sc));
     }
@@ -553,7 +567,8 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                 // multiple times, including concurrently).
                                 let agent_permissions = &agent_permissions;
                                 let llm_registry = &llm_registry;
-                                let skills = &skills;
+                                let skill_registry = &skill_registry;
+                                let skill_names = &skill_names;
                                 let event_tx = &event_tx;
                                 let usage_tx = &usage_tx;
                                 let db = &db;
@@ -571,6 +586,7 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                 let mcp_registry = &mcp_registry;
                                 let mcp_tool_map = &mcp_tool_map;
                                 let mode = &mode;
+                                let concurrency_semaphore = &concurrency_semaphore;
 
                                 let execute_one = |tc: ToolCall| async move {
                                     // Check permissions before executing
@@ -603,11 +619,26 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                         // A plugin short-circuited this tool call.
                                         hook_result
                                     } else if tc.function.name == "task" {
+                                        // Acquire concurrency permit if semaphore is configured
+                                        let _permit = if let Some(sem) = concurrency_semaphore {
+                                            match sem.acquire().await {
+                                                Ok(permit) => Some(permit),
+                                                Err(e) => {
+                                                    return (
+                                                        tc.id.clone(),
+                                                        format!("Semaphore error: {e}"),
+                                                    );
+                                                }
+                                            }
+                                        } else {
+                                            None
+                                        };
                                         execute_task_tool(
                                             &tc,
                                             agent_permissions,
                                             llm_registry,
-                                            skills,
+                                            skill_registry,
+                                            skill_names,
                                             event_tx,
                                             usage_tx,
                                             db,
@@ -710,11 +741,10 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                         execute_lsp_query_tool(agent_permissions, &tc)
                                             .await
                                             .unwrap_or_else(|e| e)
-                                    } else if let Some(_skill) =
-                                        skills.iter().find(|s| s.name == tc.function.name)
-                                    {
+                                    } else if skill_names.contains(&tc.function.name) {
+                                        let reg = skill_registry.read().await;
                                         execute_skill_tool(
-                                            skills, agent_name, &tc, event_tx, agent_id,
+                                            &reg, agent_name, &tc, event_tx, agent_id,
                                         )
                                         .await
                                         .unwrap_or_else(|e| e)
@@ -751,7 +781,8 @@ pub fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             debug: debug_mode.clone(),
                                             max_steps: config.max_steps,
                                             depth: depth + 1,
-                                            skills_override: None,
+                                            skill_registry: skill_registry.clone(),
+                                            skill_names: skill_names.clone(),
                                             permissions_override: None,
                                             agent_type: Some(config.name.clone()),
                                             mode: TaskMode::Foreground,

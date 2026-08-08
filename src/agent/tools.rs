@@ -15,13 +15,15 @@ use crate::engine::jobs::JobRegistry;
 use crate::engine::orchestrator::{EngineEvent, UsageEvent};
 use crate::error::{Error, Result};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry};
-use crate::llm::types::{LlmMessage, LlmRequest, LlmResponse, LlmStreamChunk, LlmUsage, MessageRole, ToolCall, ToolDefinition,};
+use crate::llm::types::{
+    LlmMessage, LlmRequest, LlmResponse, LlmStreamChunk, LlmUsage, MessageRole, ToolCall,
+    ToolDefinition,
+};
 use crate::permissions::checker::{
     check_command_run, check_fs_read, check_fs_write, check_mcp_use, check_net_http,
     check_skill_use,
 };
 use crate::permissions::types::Permissions;
-use crate::skill::loader::load_agent_skills;
 use crate::skill::types::Skill;
 
 // ---------------------------------------------------------------------------
@@ -609,22 +611,19 @@ pub(crate) async fn execute_apply_patch_tool(
 
 /// Execute a tool call against a matching skill and return the result as a string.
 pub(crate) async fn execute_skill_tool(
-    skills: &[Skill],
+    registry: &crate::skill::registry::SkillRegistry,
     agent_name: &str,
     tool_call: &ToolCall,
     event_tx: &mpsc::Sender<EngineEvent>,
     agent_id: &crate::agent::types::AgentId,
 ) -> std::result::Result<String, String> {
     // Find the skill by name
-    let skill = skills
-        .iter()
-        .find(|s| s.name == tool_call.function.name)
-        .ok_or_else(|| {
-            format!(
-                "Skill '{}' not found in agent's skills",
-                tool_call.function.name
-            )
-        })?;
+    let skill = registry.get(&tool_call.function.name).ok_or_else(|| {
+        format!(
+            "Skill '{}' not found in agent's skills",
+            tool_call.function.name
+        )
+    })?;
 
     // Extract the task argument from the JSON string
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
@@ -1135,7 +1134,8 @@ pub(crate) async fn execute_task_tool(
     tool_call: &ToolCall,
     parent_permissions: &Permissions,
     llm_registry: &LlmProviderRegistry,
-    parent_skills: &[Skill],
+    parent_skill_registry: &crate::skill::registry::SharedSkillRegistry,
+    parent_skill_names: &[String],
     event_tx: &mpsc::Sender<EngineEvent>,
     usage_tx: &Option<mpsc::Sender<UsageEvent>>,
     db: &Option<Database>,
@@ -1196,8 +1196,16 @@ pub(crate) async fn execute_task_tool(
             debug: debug.clone(),
             max_steps: config.max_steps,
             depth: depth + 1,
-            // Load the configured type's own skills from `config.skills`.
-            skills_override: None,
+            // Use the configured type's own skill names from config.skills
+            skill_registry: parent_skill_registry.clone(),
+            skill_names: config
+                .skills
+                .iter()
+                .filter_map(|p| {
+                    p.file_stem()
+                        .and_then(|f| f.to_str().map(|s| s.to_string()))
+                })
+                .collect(),
             permissions_override: Some(child_permissions),
             agent_type: args.agent.clone(),
             mode: args.mode.clone(),
@@ -1209,24 +1217,8 @@ pub(crate) async fn execute_task_tool(
         // The child's effective permissions are always `parent ∩ child` — the
         // parent's permissions intersected with the child's own (here the
         // default, i.e. allow-by-default). The `tools` list only filters which
-        // *skills* the child is granted (see `skills_override` below); it is a
-        // capability allow-list for skills, not a permission restriction.
-        // Reimplementing per-tool permission filtering is intentionally out of
         // scope here.
         let child_permissions = parent_permissions.intersection(&Permissions::default());
-
-        // Filter the parent's skills by the requested tool names (or grant all).
-        // This is the ONLY effect of the `tools` list: it narrows the set of
-        // skills the child can invoke. It does not alter the child's permissions.
-        let skills_override: Vec<Skill> = if args.tools.is_empty() {
-            parent_skills.to_vec()
-        } else {
-            parent_skills
-                .iter()
-                .filter(|s| args.tools.iter().any(|t| t == &s.name))
-                .cloned()
-                .collect()
-        };
 
         let model = args
             .model
@@ -1238,7 +1230,7 @@ pub(crate) async fn execute_task_tool(
             description: args.description.clone(),
             role: AgentRole::SubAgent,
             model,
-            skills: Vec::new(), // skills provided via `skills_override`
+            skills: Vec::new(), // skills resolved through registry in spawn_subagent_and_delegate
             mcps: Vec::new(),
             permissions: crate::config::PermissionConfig::default(),
             subagents: Vec::new(),
@@ -1261,7 +1253,13 @@ pub(crate) async fn execute_task_tool(
             debug: debug.clone(),
             max_steps: 90,
             depth: depth + 1,
-            skills_override: Some(skills_override),
+            // Dynamic subagent inherits parent's skill registry and filtered names
+            skill_registry: parent_skill_registry.clone(),
+            skill_names: if args.tools.is_empty() {
+                parent_skill_names.to_vec()
+            } else {
+                args.tools.clone()
+            },
             permissions_override: Some(child_permissions),
             agent_type: None,
             mode: args.mode.clone(),
@@ -1365,9 +1363,10 @@ pub struct SpawnSubagentConfig {
     pub max_steps: u32,
     /// Delegation depth of the spawned subagent (parent depth + 1).
     pub depth: u32,
-    /// Pre-loaded skills to grant the subagent. If `None`, skills are loaded
-    /// from the config's skill paths.
-    pub skills_override: Option<Vec<Skill>>,
+    /// Reference to the central skill registry for subagent skill resolution.
+    pub skill_registry: crate::skill::registry::SharedSkillRegistry,
+    /// Names of skills this subagent has access to.
+    pub skill_names: Vec<String>,
     /// Effective permissions for the subagent (parent ∩ child). If `Some`,
     /// overrides the permissions derived from `config.permissions`.
     pub permissions_override: Option<Permissions>,
@@ -1398,7 +1397,8 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
         debug,
         max_steps,
         depth: _depth,
-        skills_override,
+        skill_registry,
+        skill_names,
         permissions_override,
         agent_type,
         mode,
@@ -1435,12 +1435,23 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
     // Resolve provider
     let provider = resolve_provider_for_model(&model, &llm_registry).map_err(Error::Provider)?;
 
-    // Load subagent's own skills (or use pre-loaded skills from `skills_override`).
-    let skills = match skills_override {
-        Some(s) => s,
-        None => load_agent_skills(&agent.skills),
+    // Load subagent's own skills from the registry
+    let skills: Vec<Skill> = {
+        let reg = skill_registry.read().await;
+        skill_names
+            .iter()
+            .filter_map(|name| reg.get(name).cloned())
+            .collect()
     };
     let subagent_tools: Vec<ToolDefinition> = skills.iter().map(skill_to_tool_definition).collect();
+
+    // Build a temporary registry from the subagent's skills so the tool loop
+    // can use the new `SkillRegistry` lookup. (Subagents are refactored to use
+    // the shared registry in a later task.)
+    let mut subagent_registry = crate::skill::registry::SkillRegistry::new();
+    for skill in &skills {
+        subagent_registry.insert(skill.clone());
+    }
 
     // Load subagent description as system prompt
     let system_prompt = agent.description.clone();
@@ -1658,10 +1669,15 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
 
                     // Execute each tool call
                     for tc in &response.tool_calls {
-                        let result =
-                            execute_skill_tool(&skills, &agent_name, tc, &event_tx, &agent_id)
-                                .await
-                                .unwrap_or_else(|e| e);
+                        let result = execute_skill_tool(
+                            &subagent_registry,
+                            &agent_name,
+                            tc,
+                            &event_tx,
+                            &agent_id,
+                        )
+                        .await
+                        .unwrap_or_else(|e| e);
 
                         conversation.push(LlmMessage {
                             role: MessageRole::Tool,
@@ -1723,12 +1739,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_skill_tool_found() {
-        let skills = vec![Skill {
+        let mut registry = crate::skill::registry::SkillRegistry::new();
+        registry.insert(Skill {
             name: "test-skill".into(),
             description: "A test skill".into(),
             instructions: "Do the thing.".into(),
             metadata: Default::default(),
-        }];
+        });
         let tool_call = ToolCall {
             id: "call_1".into(),
             call_type: "function".into(),
@@ -1739,7 +1756,7 @@ mod tests {
         };
         let (tx, _) = mpsc::channel(64);
         let id = crate::agent::types::AgentId::new();
-        let result = execute_skill_tool(&skills, "agent", &tool_call, &tx, &id).await;
+        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id).await;
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("test-skill"));
@@ -1749,12 +1766,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_skill_tool_shell_reality() {
-        let skills = vec![Skill {
+        let mut registry = crate::skill::registry::SkillRegistry::new();
+        registry.insert(Skill {
             name: "shell".into(),
             description: "Run shell commands".into(),
             instructions: "Execute commands via sh -c".into(),
             metadata: Default::default(),
-        }];
+        });
         let tool_call = ToolCall {
             id: "call_shell".into(),
             call_type: "function".into(),
@@ -1765,7 +1783,7 @@ mod tests {
         };
         let (tx, _) = mpsc::channel(64);
         let id = crate::agent::types::AgentId::new();
-        let result = execute_skill_tool(&skills, "agent", &tool_call, &tx, &id).await;
+        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id).await;
         assert!(result.is_ok(), "Expected Ok, got Err: {:?}", result);
         let output = result.unwrap();
         assert!(
@@ -1776,12 +1794,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_skill_tool_shell_error() {
-        let skills = vec![Skill {
+        let mut registry = crate::skill::registry::SkillRegistry::new();
+        registry.insert(Skill {
             name: "shell".into(),
             description: "Run shell commands".into(),
             instructions: "Execute commands via sh -c".into(),
             metadata: Default::default(),
-        }];
+        });
         let tool_call = ToolCall {
             id: "call_shell_err".into(),
             call_type: "function".into(),
@@ -1792,7 +1811,7 @@ mod tests {
         };
         let (tx, _) = mpsc::channel(64);
         let id = crate::agent::types::AgentId::new();
-        let result = execute_skill_tool(&skills, "agent", &tool_call, &tx, &id).await;
+        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id).await;
         assert!(result.is_err(), "Expected Err for exit 1, got Ok");
     }
 
@@ -1873,7 +1892,7 @@ mod tests {
     }
     #[tokio::test]
     async fn test_execute_skill_tool_not_found() {
-        let skills = vec![];
+        let registry = crate::skill::registry::SkillRegistry::new();
         let tool_call = ToolCall {
             id: "call_1".into(),
             call_type: "function".into(),
@@ -1884,7 +1903,7 @@ mod tests {
         };
         let (tx, _) = mpsc::channel(64);
         let id = crate::agent::types::AgentId::new();
-        let result = execute_skill_tool(&skills, "agent", &tool_call, &tx, &id).await;
+        let result = execute_skill_tool(&registry, "agent", &tool_call, &tx, &id).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("nonexistent"));
     }
@@ -2003,11 +2022,16 @@ mod tests {
         };
         let (tx, _) = mpsc::channel(64);
         let id = crate::agent::types::AgentId::new();
+        let parent_skill_registry: crate::skill::registry::SharedSkillRegistry = Arc::new(
+            tokio::sync::RwLock::new(crate::skill::registry::SkillRegistry::new()),
+        );
+        let parent_skill_names: Vec<String> = Vec::new();
         let result = execute_task_tool(
             &tool_call,
             &Permissions::default(),
             &LlmProviderRegistry::default(),
-            &[],
+            &parent_skill_registry,
+            &parent_skill_names,
             &tx,
             &None,
             &None,

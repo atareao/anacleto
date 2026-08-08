@@ -72,8 +72,7 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(non_blocking)
         .with_ansi(false)
         .with_filter(filter.clone());
-    let stdout_layer = tracing_subscriber::fmt::layer()
-        .with_filter(filter);
+    let stdout_layer = tracing_subscriber::fmt::layer().with_filter(filter);
 
     tracing_subscriber::registry()
         .with(file_layer)
@@ -106,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
     // SIGHUP handler for config hot-reload
     let sighup_cmd_tx = cmd_tx.clone();
     tokio::spawn(async move {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut stream = match signal(SignalKind::hangup()) {
             Ok(s) => s,
             Err(e) => {

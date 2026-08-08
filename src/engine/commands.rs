@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 
 use uuid::Uuid;
 
-use crate::agent::types::{AgentMessage, AgentRole};
+use crate::agent::types::AgentMessage;
 use crate::db::models::StoredMessage;
 use crate::engine::events::{
     EngineEvent, InitAnswers, McpStatus, SkillInfo, StatusInfo, TimelineEntry,
@@ -19,19 +19,13 @@ use crate::engine::events::{
 use crate::engine::orchestrator::Engine;
 use crate::error::{Error, Result};
 use crate::shell::{git_worktree_add, git_worktree_list, git_worktree_remove};
-use crate::skill::loader::load_agent_skills;
 
 impl Engine {
     /// Handle `/skills`: list the skills of the root agent.
     pub(crate) async fn handle_list_skills(&self) -> Result<()> {
-        let skills = self
-            .config
-            .agents
-            .iter()
-            .find(|a| a.role == AgentRole::Root)
-            .map(|c| load_agent_skills(&c.skills))
-            .unwrap_or_default();
-        let infos: Vec<SkillInfo> = skills
+        let registry = self.skill_registry.read().await;
+        let infos: Vec<SkillInfo> = registry
+            .list()
             .iter()
             .map(|s| SkillInfo {
                 name: s.name.clone(),
