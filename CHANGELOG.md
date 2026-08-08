@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-08-08
+
+### Added
+
+- **Soporte de ratón en TUI** — Click izquierdo para seleccionar paneles (Chat, Input,
+  Info, Agents, Queue). El layout se replica desde `render.rs` para mapeo preciso
+  de coordenadas.
+- **Ciclo de foco con Tab/Shift+Tab** — Tab avanza el foco entre paneles
+  (Chat → Info → Agents → Queue → Input), Shift+Tab retrocede.
+- **Streaming inline de herramientas** — Marcadores de tool execution (🔧) y
+  resultados (✅/❌) aparecen inline en el stream activo del agente, no como
+  bloques separados. Helper `one_line()` colapsa contenido multi-línea.
+- **Auto-scroll al enviar** — El chat salta automáticamente al final al enviar
+  un mensaje.
+- **Nuevos skills** — Se añaden 9 skills: `agent-creator`, `ax`, `find-docs`,
+  `find-skills`, `get-api-docs`, `karpathy-guidelines`, `planning-with-files`,
+  `skill-creator`, `tdd`. Verificados con test de carga.
+
+### Changed
+
+- `src/tui/keys.rs`: nuevo método `handle_mouse()` para mapeo de clicks a paneles.
+- `src/tui/app.rs`: event loop maneja `Event::Mouse` además de `Event::Key`.
+- `src/main.rs`: mouse capture activado/desactivado en init/cleanup.
+- `src/tui/keymap.rs`: nuevas acciones `FocusNext` (Tab) y `FocusPrev` (BackTab).
+- `src/tui/navigation.rs`: Info panel usa Left/Right para tabs (Tab ahora es foco);
+  scroll direction corregido.
+- `src/tui/events.rs`: tool calls inline en stream; `one_line()` helper.
+- `src/tui/input.rs`: auto-scroll a 0 al enviar mensaje.
+- `src/tui/render.rs`: colores de herramientas leídos del Theme.
+- `src/tui/theme.rs`: nuevos métodos de color para tool borders, exec, ok, err.
+- `src/agent/tools.rs`: eliminado tool inventory redundante del resultado shell.
+- `src/llm/provider.rs`: fix URL HTTP-Referer a github.com/atareao/anacleto.
+- `.anacleto/agents/root.md`: se añaden 9 nuevos skills.
+- `.anacleto/config.yaml`: limpieza de comentarios obsoletos.
+
+### Fixed
+
+- **Scroll direction en chat** — `j` ahora baja (muestra más reciente) y `k`
+  sube (más antiguo), invirtiendo la dirección anterior.
+
+[0.12.0]: https://github.com/atareao/anacleto/releases/tag/v0.12.0
+
 ## [0.11.0] - 2026-08-08
 
 ### Added
