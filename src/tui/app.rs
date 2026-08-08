@@ -42,6 +42,8 @@ pub struct App {
     pub(crate) mcp_panel_index: usize,
     /// Selected index in the Skills sidebar panel.
     pub(crate) skill_panel_index: usize,
+    /// Selected index in the SubAgents sidebar panel.
+    pub(crate) subagent_panel_index: usize,
     /// Selected index in the Agents sidebar panel.
     pub(crate) agent_panel_index: usize,
     /// History of previously submitted inputs (for Up/Down arrow navigation).
@@ -264,6 +266,7 @@ impl App {
             info_tab: 0,
             mcp_panel_index: 0,
             skill_panel_index: 0,
+            subagent_panel_index: 0,
             agent_panel_index: 0,
             input_history: Vec::new(),
             history_index: None,

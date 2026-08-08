@@ -50,10 +50,10 @@ impl App {
         modifiers: KeyModifiers,
         key_event: KeyEvent,
     ) {
-        // Left/Right cycle through the Skills/MCPs tabs.
+        // Left/Right cycle through the Skills/MCPs/SubAgents tabs.
         match key {
             KeyCode::Right => {
-                self.info_tab = (self.info_tab + 1) % 2;
+                self.info_tab = (self.info_tab + 1) % 3;
                 return;
             }
             KeyCode::Left => {
@@ -66,14 +66,18 @@ impl App {
         // Up/Down (and list navigation) move the selection within the active tab.
         let (len, index) = if self.info_tab == 0 {
             (self.unique_skill_count(), self.skill_panel_index)
-        } else {
+        } else if self.info_tab == 1 {
             (self.unique_mcp_count(), self.mcp_panel_index)
+        } else {
+            (self.unique_subagent_count(), self.subagent_panel_index)
         };
         let new_index = self.handle_list_nav_key(key, modifiers, key_event, len, index);
         if self.info_tab == 0 {
             self.skill_panel_index = new_index;
-        } else {
+        } else if self.info_tab == 1 {
             self.mcp_panel_index = new_index;
+        } else {
+            self.subagent_panel_index = new_index;
         }
     }
 
@@ -170,6 +174,23 @@ impl App {
         let len = self.agent_panel_count();
         self.agent_panel_index =
             self.handle_list_nav_key(key, modifiers, key_event, len, self.agent_panel_index);
+
+        // Enter switches to the selected agent
+        if key == KeyCode::Enter {
+            let display_agents: Vec<&crate::tui::types::AgentInfo> = self
+                .agents
+                .iter()
+                .filter(|a| a.status != crate::agent::types::AgentStatus::Completed)
+                .collect();
+            if let Some(agent) = display_agents.get(self.agent_panel_index) {
+                if agent.name != self.active_agent {
+                    let name = agent.name.clone();
+                    let _ = self.cmd_tx.try_send(
+                        crate::engine::orchestrator::EngineCommand::SwitchAgent(name),
+                    );
+                }
+            }
+        }
     }
 
     /// Shared Vim/arrow navigation for a list panel (MCPs, Skills, Agents).
@@ -276,6 +297,9 @@ mod tests {
         let (c, ev, m) = key(KeyCode::Right);
         app.handle_info_panel_key(c, m, ev);
         assert_eq!(app.info_tab, 1);
+        app.handle_info_panel_key(c, m, ev);
+        assert_eq!(app.info_tab, 2);
+        // Third Right wraps back to 0 (3 tabs).
         app.handle_info_panel_key(c, m, ev);
         assert_eq!(app.info_tab, 0);
     }
