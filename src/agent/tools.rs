@@ -708,10 +708,12 @@ async fn execute_shell_command(
 
     // Fire BeforeShell hook
     {
-        let mut ctx = HookContext::default();
-        ctx.tool_name = Some("shell".into());
-        ctx.shell_command = Some(command.clone());
-        ctx.agent_name = Some(agent_name.to_string());
+        let ctx = HookContext {
+            tool_name: Some("shell".into()),
+            shell_command: Some(command.clone()),
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        };
         let hook_results = hook_registry.run(HookPoint::BeforeShell, &ctx).await;
         for r in &hook_results {
             let _ = event_tx
