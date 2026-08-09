@@ -336,6 +336,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                         &model,
                         false,
                         Some(&tool_store),
+                        Some(&retry_config),
                     )
                     .await;
 
@@ -382,6 +383,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                             &model,
                             false,
                             Some(&tool_store),
+                            Some(&retry_config),
                         )
                         .await;
 
@@ -1076,6 +1078,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                         &model,
                         true,
                         Some(&tool_store),
+                        Some(&retry_config),
                     )
                     .await;
                     let _ = event_tx
