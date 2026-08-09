@@ -179,6 +179,11 @@ pub struct ProviderConfig {
     /// providers.
     #[serde(default)]
     pub thinking_budget_tokens: Option<u32>,
+
+    /// Optional per-provider retry configuration. When set, overrides the
+    /// global `session.retry` for this provider.
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
 }
 
 fn default_model() -> String {
@@ -211,6 +216,11 @@ pub struct OllamaConfig {
     /// Context window size.
     #[serde(default = "default_context_window")]
     pub context_window: usize,
+
+    /// Optional per-provider retry configuration. When set, overrides the
+    /// global `session.retry` for this provider.
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
 }
 
 impl Default for OllamaConfig {
@@ -219,6 +229,7 @@ impl Default for OllamaConfig {
             base_url: default_ollama_url(),
             model: default_ollama_model(),
             context_window: default_context_window(),
+            retry: None,
         }
     }
 }

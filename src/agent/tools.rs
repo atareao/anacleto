@@ -1648,6 +1648,7 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
                 &model,
                 false,
                 None, // subagents have no access to the parent's tool store
+                None, // use global default retry
             )
             .await;
 

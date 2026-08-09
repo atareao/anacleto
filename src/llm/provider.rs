@@ -612,6 +612,7 @@ impl Default for LlmProviderRegistry {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::types::RetryConfig;
     use super::*;
     use crate::llm::anthropic::{AnthropicCacheControl, AnthropicRequest, AnthropicResponse};
 
@@ -642,6 +643,7 @@ mod tests {
                 output_price_per_million: 15.0,
                 cache_control: CacheControl::Auto,
                 thinking_budget_tokens: None,
+            retry: RetryConfig::default(),
             };
             let provider = create_provider(&config);
             assert_eq!(
@@ -666,6 +668,7 @@ mod tests {
             output_price_per_million: 15.0,
             cache_control: CacheControl::Auto,
             thinking_budget_tokens: None,
+            retry: RetryConfig::default(),
         };
         registry.register("primary".into(), Arc::from(create_provider(&config)));
         assert!(registry.get("primary").is_some());

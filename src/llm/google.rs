@@ -65,6 +65,7 @@ impl LlmProvider for GoogleProvider {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::types::RetryConfig;
     use super::*;
     use crate::llm::types::CacheControl;
 
@@ -80,6 +81,7 @@ mod tests {
             output_price_per_million: 5.0,
             cache_control: CacheControl::Auto,
             thinking_budget_tokens: None,
+            retry: RetryConfig::default(),
         };
         let provider = GoogleProvider::new(&config);
         assert_eq!(provider.context_window(), 1_000_000);
@@ -98,6 +100,7 @@ mod tests {
             output_price_per_million: 5.0,
             cache_control: CacheControl::Auto,
             thinking_budget_tokens: None,
+            retry: RetryConfig::default(),
         };
         let provider = GoogleProvider::new(&config);
         assert!(provider.inner.base_url().contains("generativelanguage"));

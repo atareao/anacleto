@@ -68,6 +68,7 @@ impl LlmProvider for AzureProvider {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::types::RetryConfig;
     use super::*;
     use crate::llm::types::CacheControl;
 
@@ -83,6 +84,7 @@ mod tests {
             output_price_per_million: 15.0,
             cache_control: CacheControl::Auto,
             thinking_budget_tokens: None,
+            retry: RetryConfig::default(),
         };
         let provider = AzureProvider::new(&config);
         assert_eq!(provider.context_window(), 128_000);
@@ -101,6 +103,7 @@ mod tests {
             output_price_per_million: 15.0,
             cache_control: CacheControl::Auto,
             thinking_budget_tokens: None,
+            retry: RetryConfig::default(),
         };
         let provider = AzureProvider::new(&config);
         assert!(provider.inner.base_url().contains("openai.azure.com"));
