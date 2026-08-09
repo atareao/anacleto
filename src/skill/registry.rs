@@ -105,6 +105,26 @@ impl SkillRegistry {
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }
+
+    /// Discover skills on disk and load them into the registry.
+    ///
+    /// Calls `discover_skills()` to find all SKILL.md files in workspace and
+    /// global directories, collects their source directories into a deduplicated
+    /// list, and passes them to `load_from_paths()`.
+    ///
+    /// Existing loaded skills are replaced.
+    pub fn discover_and_register(&mut self) -> Result<()> {
+        let discovered = crate::skill::discovery::discover_skills();
+        let paths: Vec<PathBuf> = discovered.into_iter().map(|s| s.source_dir).collect();
+        // Deduplicate paths
+        let mut unique = Vec::new();
+        for p in paths {
+            if !unique.contains(&p) {
+                unique.push(p);
+            }
+        }
+        self.load_from_paths(&unique)
+    }
 }
 
 impl Default for SkillRegistry {
@@ -214,5 +234,39 @@ Updated instructions.
 
         let names = reg.skill_names();
         assert!(names.contains("code-review"));
+    }
+
+    #[test]
+    fn test_discover_and_register() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a mock project skills directory
+        let project_skills = dir.path().join("project").join(".agents").join("skills");
+        let review_dir = project_skills.join("code-review");
+        std::fs::create_dir_all(&review_dir).unwrap();
+        std::fs::write(
+            review_dir.join("SKILL.md"),
+            r#"---
+name: code-review
+description: Review code
+---
+Instructions.
+"#,
+        )
+        .unwrap();
+
+        // Temporarily override the workspace root so project_skills_dir resolves
+        let original_dir = std::env::current_dir().ok();
+        std::env::set_current_dir(dir.path().join("project")).unwrap();
+
+        let mut reg = SkillRegistry::new();
+        let result = reg.discover_and_register();
+        assert!(result.is_ok());
+        assert!(reg.contains("code-review"));
+
+        // Restore original directory
+        if let Some(orig) = original_dir {
+            std::env::set_current_dir(orig).unwrap();
+        }
     }
 }

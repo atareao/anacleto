@@ -57,12 +57,6 @@ pub struct App {
     pub current_stream: Option<String>,
     /// Current streaming thinking/reasoning being accumulated.
     pub current_thinking: Option<String>,
-    /// Index (into `messages`) of the in-progress stream that was already
-    /// committed via `commit_stream`, so that `AgentOutput` replaces exactly
-    /// that message instead of duplicating the partial content. Using the index
-    /// (rather than `last_mut()`) keeps the replacement correct even if other
-    /// messages are pushed in between.
-    pub(crate) stream_committed_index: Option<usize>,
     /// Whether the app should exit.
     pub should_exit: bool,
     /// Error message to display.
@@ -88,6 +82,11 @@ pub struct App {
     /// Configured subagent names per root agent (from config frontmatter),
     /// used to show subagents in `/subagents` even before they are spawned.
     pub(crate) configured_subagents: HashMap<String, Vec<String>>,
+    /// All available agent names from the merged config (workspace + global),
+    /// used to populate the subagent picker in the edit dialog so the user
+    /// can add any existing agent as a subagent, even if no root agent
+    /// currently references it.
+    pub(crate) all_agent_names: Vec<String>,
 
     // ── Human-in-the-loop approval ────────────────────────────────────
     /// Pending approval request (None if no pending request).
@@ -166,6 +165,8 @@ pub struct App {
     pub(crate) stash_stack: Vec<String>,
     /// Skills listed by the engine (`/skills`).
     pub(crate) skills_list: Vec<SkillInfo>,
+    /// All skills discovered on disk (workspace + global), for edit dialog.
+    pub(crate) all_discovered_skills: Vec<String>,
     /// MCP servers with on/off state (`/mcps`).
     pub(crate) mcps_list: Vec<McpStatus>,
     /// Engine status report (`/status`).
@@ -260,6 +261,11 @@ impl App {
             .map(|a| (a.name.clone(), a.subagents.clone()))
             .collect::<HashMap<_, _>>();
 
+        // Collect all available agent names from the merged config
+        // (workspace .agents/agents/ + global $HOME/.agents/agents/)
+        // for the subagent picker in the edit dialog.
+        let all_agent_names: Vec<String> = config.agents.iter().map(|a| a.name.clone()).collect();
+
         Self {
             cmd_tx,
             event_rx,
@@ -276,7 +282,6 @@ impl App {
             messages: Vec::new(),
             current_stream: None,
             current_thinking: None,
-            stream_committed_index: None,
             should_exit: false,
             error: None,
             session_name: "default".into(),
@@ -288,6 +293,7 @@ impl App {
             show_subagents: false,
             active_agent: String::new(),
             configured_subagents,
+            all_agent_names,
             pending_approval: None,
             pending_question: None,
             total_tokens: 0,
@@ -332,6 +338,7 @@ impl App {
             message_timestamps: Vec::new(),
             stash_stack: Vec::new(),
             skills_list: Vec::new(),
+            all_discovered_skills: Vec::new(),
             mcps_list: Vec::new(),
             status_info: None,
             workspaces_list: Vec::new(),
@@ -370,7 +377,6 @@ impl App {
         if let Some(stream) = self.current_stream.take() {
             if !stream.is_empty() {
                 self.push_msg(stream);
-                self.stream_committed_index = Some(self.messages.len() - 1);
             }
         }
     }
@@ -463,15 +469,23 @@ impl App {
         mcps: &[String],
         subagents: Option<&[String]>,
     ) {
-        // Collect all unique skills across all agents
+        // Collect all unique skills across all agents AND from the skill registry
         let all_skills: Vec<String> = {
-            let mut set: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
             for agent in &self.agents {
                 for s in &agent.skills {
-                    set.insert(s.as_str());
+                    set.insert(s.clone());
                 }
             }
-            set.into_iter().map(String::from).collect()
+            // Also include skills from the registry (loaded from $HOME/.agents/skills etc.)
+            for skill in &self.skills_list {
+                set.insert(skill.name.clone());
+            }
+            // Include ALL skills discovered on disk (workspace + global)
+            for name in &self.all_discovered_skills {
+                set.insert(name.clone());
+            }
+            set.into_iter().collect()
         };
 
         let skills_enabled: Vec<bool> = all_skills.iter().map(|s| skills.contains(s)).collect();
@@ -489,16 +503,9 @@ impl App {
 
         let mcps_enabled: Vec<bool> = all_mcps.iter().map(|m| mcps.contains(m)).collect();
 
-        // Collect all unique subagent names from configured_subagents
-        let all_subagents: Vec<String> = {
-            let mut set: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-            for v in self.configured_subagents.values() {
-                for s in v {
-                    set.insert(s.as_str());
-                }
-            }
-            set.into_iter().map(String::from).collect()
-        };
+        // Collect all unique subagent names from the merged config
+        // (workspace .agents/agents/ + global $HOME/.agents/agents/)
+        let all_subagents: Vec<String> = self.all_agent_names.clone();
 
         let subagents_enabled: Vec<bool> = if let Some(sa) = subagents {
             all_subagents.iter().map(|s| sa.contains(s)).collect()
@@ -887,20 +894,20 @@ mod tests {
     }
 
     #[test]
-    fn alt_1_switches_focus_to_chat() {
+    fn alt_1_switches_focus_to_input() {
         let mut app = test_app();
         app.input = String::from("some text");
-        app.focus = Focus::Input;
+        app.focus = Focus::Chat;
         app.handle_key(KeyCode::Char('1'), KeyModifiers::ALT);
-        assert_eq!(app.focus, Focus::Chat);
+        assert_eq!(app.focus, Focus::Input);
     }
 
     #[test]
-    fn alt_5_switches_focus_to_input() {
+    fn alt_5_switches_focus_to_queue() {
         let mut app = test_app();
         app.focus = Focus::Chat;
         app.handle_key(KeyCode::Char('5'), KeyModifiers::ALT);
-        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.focus, Focus::Queue);
     }
 
     #[test]

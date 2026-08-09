@@ -49,12 +49,15 @@ architecture (see `docs/adr/ADR-0001-agent-model.md`):
 | Type | `role` field | `subagents` field | Invocable by user |
 |---|---|---|---|
 | **Root agent** | `root` | Contains subagent names | ✅ Yes |
-| **Agent** (non-root) | (omitted) or custom | Must be `[]` | ✅ Yes |
+| **Agent** (non-root) | `root` | Must be `[]` | ✅ Yes |
 | **Subagent** | `subagent` | Must be `[]` | ❌ No (parent-only) |
 
-> ⚠️ **Only agents with `role: root` may have subagents.** Non-root agents (no `role` or
-> a custom role) cannot orchestrate subagent teams. If you need an agent that delegates
-> work to others, it must declare `role: root`.
+> ⚠️ **The `role` field only accepts two values: `root` or `subagent`.**
+> No other values are valid — `role: conversational`, `role: assistant`, etc. will cause a parse error.
+> - Use `root` for any agent a user can invoke directly (includes both "root" agents and standalone non-root agents).
+> - Use `subagent` for agents that are only invoked by a parent.
+> - If `role` is omitted, it defaults to `subagent`.
+> - **Only agents with `role: root` may declare subagents** (a non-empty `subagents` list).
 
 ---
 
@@ -79,17 +82,17 @@ The frontmatter holds the structural config; the Markdown body is the system pro
 ---
 name: <agent-name>                # Required. Unique identifier (kebab-case).
 description: <brief description>  # Required. One-line summary of the agent's purpose.
-role: root | subagent             # Optional for non-root agents. "root" for root agents, "subagent" for subagents.
+role: root | subagent             # Required. Only these two values are valid: "root" (user-invocable) or "subagent" (parent-only). Defaults to "subagent" if omitted.
 model: <provider/model>           # Required. e.g. "claude-sonnet-4", "deepseek/deepseek-v4-flash"
 max_steps: <integer>              # Optional. Max LLM+tool iterations per task. Default from config (90).
 skills:                           # Optional. List of paths to skill directories.
   - .agents/skills/<name>/
 mcps: [<mcp-name>]                # Optional. List of MCP server names (from config).
 permissions:                      # Optional. Allow/deny rules.
-  allow: []                       #   Explicit allow list (rarely needed — deny by default).
-  deny:                           #   Explicit deny list.
-    - command.run.sudo
-    - net.http.delete
+  allow: []                       #   Vacío = allow-by-default. Si se lista algo → deny-by-default.
+  deny:                           #   Solo acepta: fs.read, fs.write, fs.external, net.http,
+    - command.run                 #   command.run, mcp.use, env.read, skill.use
+                                  #   Sub-permisos tipo "command.run.sudo" se ignoran silenciosamente
 subagents:                        # Optional. Subagent names (only for agents, not subagents).
   - reviewer
   - writer
@@ -412,24 +415,35 @@ You can also delegate tasks to your subagents:
 | Environment read | Read environment variables | `env.read` |
 | Skill usage | Invoke skills | `skill.use` |
 
-### Scoped deny (with sub-permissions)
+### ⚠️ Importante: No existe "scoped deny"
 
-```yaml
-permissions:
-  deny:
-    - command.run.sudo          # Deny only sudo commands
-    - net.http.delete           # Deny only DELETE requests
-    - fs.write./etc/            # Deny writes to /etc/
-```
+El enum `Permission` solo acepta 8 valores exactos:
+`fs.read`, `fs.write`, `fs.external`, `net.http`, `command.run`, `mcp.use`, `env.read`, `skill.use`.
+
+Cadenas como `command.run.sudo`, `net.http.delete` o `fs.write./etc/` **no son permisos válidos**
+y se **ignoran silenciosamente** al parsear. No filtran nada.
+
+### Cómo funciona realmente
+
+| `allow` | Modo | Efecto |
+|---------|------|--------|
+| `[]` (vacío) | **Allow-by-default** ✅ | Todo permitido excepto lo denegado |
+| `[comando.run, ...]` | **Deny-by-default** ❌ | Solo se permite lo listado en `allow` |
+
+### Consejo práctico
+
+Usa `allow: []` (allow-by-default) y deniega solo los permisos válidos que quieras
+bloquear. La seguridad ante operaciones peligrosas (sudo, `rm -rf`, rutas del sistema)
+ya la gestiona el sistema de aprobación humana.
 
 ### Common patterns
 
-| Agent type | Recommended deny list |
+| Agent type | Config |
 |---|---|
-| **Root agent** | `command.run.sudo`, `net.http.delete` |
-| **Reviewer subagent** | `command.run`, `fs.write` (read-only) |
-| **Writer subagent** | `command.run`, `net.http` |
-| **Research subagent** | `command.run`, `fs.write` |
+| **Root agent confiable** | `allow: []` + `deny: []` |
+| **Reviewer subagent** | `allow: []` + `deny: [command.run]` |
+| **Writer subagent** | `allow: []` + `deny: [command.run, net.http]` |
+| **Research subagent** | `allow: []` + `deny: [command.run, fs.write]` |
 
 ---
 
@@ -460,9 +474,8 @@ Before declaring an agent done, verify:
 - [ ] `name` is kebab-case and unique
 - [ ] `description` is a single line
 - [ ] `role` is correct:
-  - `root` for root agents (those that orchestrate subagents)
-  - `subagent` for subagents (those invoked by parent agents)
-  - omitted for standalone non-root agents without subagents
+  - `root` for user-invocable agents (with or without subagents)
+  - `subagent` for agents only invoked by a parent (omit → defaults to `subagent`)
 - [ ] Agents with `role: root` have at least one subagent listed (or intentionally none)
 - [ ] Agents with `role: subagent` have `subagents: []`
 - [ ] `model` refers to a configured provider

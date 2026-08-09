@@ -6,6 +6,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 /// Parse a line of text for inline markdown and return styled Spans.
 /// Uses COLOR changes (not modifiers) for italic since color is
@@ -132,6 +133,254 @@ pub(crate) fn parse_inline(text: &str, base_style: Style) -> Vec<Span<'static>> 
     }
 
     spans
+}
+
+/// Render a markdown table block (consecutive lines starting with `|`) into
+/// styled lines using box-drawing characters.
+///
+/// The first non-separator row is treated as the header. The separator row
+/// (`|---|---|`) is detected and skipped. All remaining rows are data rows.
+///
+/// Each output line is prefixed with `prefix` (e.g. `"▐ "` for committed
+/// messages or `""` for streaming).
+///
+/// Cell content is parsed for inline markdown (`**bold**`, `*italic*`, `` `code` ``)
+/// so that formatting renders inside table cells.
+pub(crate) fn render_table_block(
+    table_lines: &[&str],
+    prefix: &str,
+    border_style: Style,
+    cell_style: Style,
+) -> Vec<Line<'static>> {
+    if table_lines.is_empty() {
+        return vec![];
+    }
+
+    // Parse rows: split each line by `|`, trim cells.
+    // Skip lines that don't look like table rows.
+    struct TableRow {
+        cells: Vec<String>,
+        is_separator: bool,
+    }
+
+    let mut rows: Vec<TableRow> = Vec::new();
+
+    for line in table_lines {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('|') || !trimmed.ends_with('|') || trimmed.len() < 2 {
+            continue;
+        }
+        // Remove leading and trailing `|`
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let cells: Vec<String> = inner.split('|').map(|c| c.trim().to_string()).collect();
+
+        if cells.is_empty() {
+            continue;
+        }
+
+        // Detect separator row: all cells contain only `-`, `:`, and spaces
+        let is_separator = cells
+            .iter()
+            .all(|c| !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' '));
+
+        rows.push(TableRow {
+            cells,
+            is_separator,
+        });
+    }
+
+    // Filter out separator rows for column-width calculation
+    let data_rows: Vec<&TableRow> = rows.iter().filter(|r| !r.is_separator).collect();
+
+    if data_rows.is_empty() {
+        return vec![];
+    }
+
+    // Calculate column widths (based on plain-text length, ignoring markdown tokens)
+    let num_cols = data_rows.iter().map(|r| r.cells.len()).max().unwrap_or(0);
+    if num_cols == 0 {
+        return vec![];
+    }
+
+    let mut col_widths: Vec<usize> = vec![0; num_cols];
+    for row in &data_rows {
+        for (i, cell) in row.cells.iter().enumerate() {
+            if i < num_cols {
+                // Use visual width (strip markdown tokens, then measure display width)
+                let plain = strip_inline_markdown(cell);
+                col_widths[i] = col_widths[i].max(plain.width());
+            }
+        }
+    }
+
+    // Clamp column widths to avoid insanely wide tables
+    let max_col = 40usize;
+    for w in &mut col_widths {
+        *w = (*w).min(max_col);
+    }
+
+    let mut out: Vec<Line> = Vec::new();
+
+    // Helper: build a horizontal separator line
+    let build_sep = |left: &str, mid: &str, right: &str, h: &str| -> String {
+        let mut s = String::from(prefix);
+        s.push_str(left);
+        for (i, w) in col_widths.iter().enumerate() {
+            if i > 0 {
+                s.push_str(mid);
+            }
+            // +2 for the mandatory space padding on each side
+            s.push_str(&h.repeat(*w + 2));
+        }
+        s.push_str(right);
+        s
+    };
+
+    // Helper: render a row of cells as a Line with styled spans.
+    // Each cell's content is parsed through parse_inline for bold/italic/code.
+    let render_row = |cells: &[String], style: Style| -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+
+        // Prefix
+        spans.push(Span::styled(prefix.to_string(), border_style));
+        spans.push(Span::styled("│".to_string(), border_style));
+
+        for (i, cell) in cells.iter().enumerate() {
+            let w = col_widths.get(i).copied().unwrap_or(0);
+            let plain = strip_inline_markdown(cell);
+            let plain_width = plain.width();
+
+            let display_text: String = if plain_width > w {
+                // Truncate to visual width with ellipsis
+                truncate_to_width(&plain, w.saturating_sub(1)) + "…"
+            } else {
+                plain
+            };
+            let display_width = display_text.width();
+
+            // Space before cell content
+            spans.push(Span::styled(" ".to_string(), border_style));
+
+            // Parse cell content for inline markdown
+            let cell_spans = parse_inline(cell, style);
+            spans.extend(cell_spans);
+
+            // Padding to fill remaining column width (based on visual width)
+            let padding = w.saturating_sub(display_width);
+            if padding > 0 {
+                spans.push(Span::styled(" ".repeat(padding), style));
+            }
+
+            // Space and separator after cell
+            spans.push(Span::styled(" │".to_string(), border_style));
+        }
+
+        Line::from(spans)
+    };
+
+    // Top border
+    out.push(Line::from(Span::styled(
+        build_sep("\u{250c}", "\u{252c}", "\u{2510}", "\u{2500}"),
+        border_style,
+    )));
+
+    // Find the header row (first non-separator row)
+    if let Some(header) = data_rows.first() {
+        out.push(render_row(
+            &header.cells,
+            cell_style.add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    // Header/data separator
+    out.push(Line::from(Span::styled(
+        build_sep("\u{251c}", "\u{253c}", "\u{2524}", "\u{2500}"),
+        border_style,
+    )));
+
+    // Data rows (skip header)
+    for row in data_rows.iter().skip(1) {
+        out.push(render_row(&row.cells, cell_style));
+    }
+
+    // Bottom border
+    out.push(Line::from(Span::styled(
+        build_sep("\u{2514}", "\u{2534}", "\u{2518}", "\u{2500}"),
+        border_style,
+    )));
+
+    out
+}
+
+/// Strip inline markdown tokens from a string, returning only the visible text.
+/// Used to calculate column widths without markdown syntax characters.
+fn strip_inline_markdown(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Skip `code` backticks
+        if chars[i] == '`' {
+            i += 1;
+            while i < len && chars[i] != '`' {
+                result.push(chars[i]);
+                i += 1;
+            }
+            if i < len {
+                i += 1; // skip closing backtick
+            }
+            continue;
+        }
+
+        // Skip **bold** markers
+        if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
+            i += 2;
+            while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '*') {
+                result.push(chars[i]);
+                i += 1;
+            }
+            if i + 1 < len {
+                i += 2; // skip closing **
+            }
+            continue;
+        }
+
+        // Skip *italic* markers
+        if chars[i] == '*' {
+            i += 1;
+            while i < len && chars[i] != '*' {
+                result.push(chars[i]);
+                i += 1;
+            }
+            if i < len {
+                i += 1; // skip closing *
+            }
+            continue;
+        }
+
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    result
+}
+
+/// Truncate a string so its visual width (as measured by `unicode-width`)
+/// does not exceed `max_width`. Uses character-level granularity.
+fn truncate_to_width(s: &str, max_width: usize) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = UnicodeWidthStr::width(c.to_string().as_str());
+        if w + cw > max_width {
+            break;
+        }
+        out.push(c);
+        w += cw;
+    }
+    out
 }
 
 /// Estimate how many visual rows a logical Line occupies when wrapped at

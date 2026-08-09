@@ -235,23 +235,23 @@ impl Default for Keymap {
         );
         km.bind(Action::FocusSidebar, vec![]);
         km.bind(
-            Action::FocusChat,
+            Action::FocusInput,
             vec![KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT)],
         );
         km.bind(
-            Action::FocusInfo,
+            Action::FocusChat,
             vec![KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT)],
         );
         km.bind(
-            Action::FocusAgents,
+            Action::FocusInfo,
             vec![KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT)],
         );
         km.bind(
-            Action::FocusQueue,
+            Action::FocusAgents,
             vec![KeyEvent::new(KeyCode::Char('4'), KeyModifiers::ALT)],
         );
         km.bind(
-            Action::FocusInput,
+            Action::FocusQueue,
             vec![KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT)],
         );
         // FocusMcps / FocusSkills retain no default binding but remain
@@ -463,23 +463,23 @@ mod tests {
         let km = Keymap::default();
         assert!(km.matches(
             KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT),
-            Action::FocusChat
+            Action::FocusInput
         ));
         assert!(km.matches(
             KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT),
-            Action::FocusInfo
+            Action::FocusChat
         ));
         assert!(km.matches(
             KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT),
-            Action::FocusAgents
+            Action::FocusInfo
         ));
         assert!(km.matches(
             KeyEvent::new(KeyCode::Char('4'), KeyModifiers::ALT),
-            Action::FocusQueue
+            Action::FocusAgents
         ));
         assert!(km.matches(
             KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT),
-            Action::FocusInput
+            Action::FocusQueue
         ));
     }
 
@@ -494,11 +494,11 @@ mod tests {
         // Modified keys still switch focus.
         assert!(km.matches(
             KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT),
-            Action::FocusChat
+            Action::FocusInput
         ));
         assert!(km.matches(
-            KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT),
-            Action::FocusInput
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT),
+            Action::FocusChat
         ));
     }
 

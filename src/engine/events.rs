@@ -212,6 +212,11 @@ pub enum EngineEvent {
     },
     /// Configuration was reloaded from disk (triggered by SIGHUP).
     ConfigReloaded,
+    /// Skills have been re-discovered on disk (triggered by `ScanSkills` command).
+    SkillsDiscovered {
+        /// List of all discovered skill names.
+        skills: Vec<String>,
+    },
 }
 
 /// Output format for a session export.
@@ -393,6 +398,8 @@ pub enum EngineCommand {
     Commit { name: Option<String> },
     /// Reload configuration from disk (triggered by SIGHUP).
     ReloadConfig,
+    /// Re-scan skill directories and reload the skill registry.
+    ScanSkills,
     /// Update the configuration of an agent/subagent (skills, mcps, subagents).
     UpdateAgentConfig {
         name: String,

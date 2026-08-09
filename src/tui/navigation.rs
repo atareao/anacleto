@@ -14,7 +14,7 @@ use super::types::Focus;
 use crate::tui::keymap::Action;
 
 impl App {
-    /// Handle a key while the Chat window (1) has focus.
+    /// Handle a key while the Chat window (2) has focus.
     pub(crate) fn handle_chat_key(
         &mut self,
         key: KeyCode,
@@ -42,7 +42,7 @@ impl App {
         }
     }
 
-    /// Handle a key while the Info panel (2) has focus — the unified
+    /// Handle a key while the Info panel (3) has focus — the unified
     /// Skills/MCPs tabbed panel.
     pub(crate) fn handle_info_panel_key(
         &mut self,
@@ -50,13 +50,13 @@ impl App {
         modifiers: KeyModifiers,
         key_event: KeyEvent,
     ) {
-        // Left/Right cycle through the Skills/MCPs/SubAgents tabs.
+        // Left/Right (and vim h/l) cycle through the Skills/MCPs/SubAgents tabs.
         match key {
-            KeyCode::Right => {
+            KeyCode::Right | KeyCode::Char('l') => {
                 self.info_tab = (self.info_tab + 1) % 3;
                 return;
             }
-            KeyCode::Left => {
+            KeyCode::Left | KeyCode::Char('h') => {
                 self.info_tab = self.info_tab.saturating_sub(1);
                 return;
             }
@@ -333,6 +333,7 @@ mod tests {
     fn info_tab_skill_down_navigates_skill_list() {
         let mut app = test_app();
         app.info_tab = 0;
+        app.active_agent = "agent".to_string();
         app.agents.push(agent_with_skills(3));
         app.skill_panel_index = 0;
         let (d, ev, m) = key(KeyCode::Down);
@@ -347,6 +348,7 @@ mod tests {
     fn info_tab_mcp_down_navigates_mcp_list() {
         let mut app = test_app();
         app.info_tab = 1;
+        app.active_agent = "agent".to_string();
         app.agents.push(agent_with_mcps(3));
         app.mcp_panel_index = 0;
         let (d, ev, m) = key(KeyCode::Down);

@@ -16,6 +16,7 @@ skills:
   - .agents/skills/planning/
   - .agents/skills/version-control/
   - .agents/skills/tool-discovery/
+  - .agents/skills/weather/
 mcps: [codegraph]
 permissions:
   deny:

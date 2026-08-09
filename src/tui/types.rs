@@ -227,16 +227,16 @@ impl InitFlow {
 /// Which of the 5 windows currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
-    /// (1) Chat panel.
-    Chat,
-    /// (2) Info panel (unified Skills/MCPs tabs).
-    Info,
-    /// (3) Agents sidebar panel.
-    Agents,
-    /// (4) Queue panel (visible prompt queue).
-    Queue,
-    /// (5) Input box.
+    /// (1) Input box.
     Input,
+    /// (2) Chat panel.
+    Chat,
+    /// (3) Info panel (unified Skills/MCPs tabs).
+    Info,
+    /// (4) Agents sidebar panel.
+    Agents,
+    /// (5) Queue panel (visible prompt queue).
+    Queue,
 }
 
 /// State for the conversation history search overlay (Ctrl+R).

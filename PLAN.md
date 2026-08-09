@@ -1,397 +1,432 @@
-# LLM Thinking/Reasoning Support — Implementation Plan
+# Skill Loading Fixes — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add real-time display of LLM reasoning/thinking (Anthropic extended thinking, OpenRouter reasoning tokens) in the TUI, togglable via `/thinking`.
+**Goal:** Fix two startup errors caused by skill loading: (1) the frontmatter parser crashes on nested YAML values under `metadata`, and (2) the `tool-discovery` skill path referenced in `root.md` does not exist.
 
-**Architecture:** Extend `LlmStreamChunk` with a `Thinking` variant that carries reasoning text. Each provider parses its native reasoning field and emits `Thinking` chunks. The engine forwards these as `EngineEvent::AgentThinkingChunk`. The TUI accumulates them in a separate `current_thinking` field and renders with a distinct yellow/amber style. The existing `/thinking` command (which toggles `show_thinking`) controls visibility.
+**Architecture:** Bug 1 is fixed by changing the deserialization strategy in `src/skill/loader.rs` — parse `metadata` as `serde_yaml::Value` and extract only string-valued entries, keeping the public `Skill.metadata` type (`HashMap<String, String>`) unchanged. Bug 2 is fixed by creating the missing skill directory and `SKILL.md` file modeled after existing skills.
 
-**Tech Stack:** Rust, Tokio, ratatui, serde, reqwest
+**Tech Stack:** Rust, serde_yaml 0.9 (already a dependency), Markdown + YAML frontmatter
 
-## Global Constraints
+**Global Constraints**
 
-- Edition 2024, Rust ≥ 1.85
-- `cargo fmt --check && cargo clippy && cargo test` must pass before commits
-- No new dependencies
-- All providers must compile (even if they don't support reasoning)
+- `Skill.metadata` field type in `src/skill/types.rs` must remain `HashMap<String, String>` — no public API changes
+- The `blog-avoid-ai` skill is at `$HOME/.agents/skills/blog-avoid-ai/SKILL.md` (global, not in the repo)
+- The `tool-discovery` skill goes in `.agents/skills/tool-discovery/` (project-local, in the repo)
+- All existing tests must continue to pass
+- `cargo fmt --check && cargo clippy && cargo test` must pass before each commit
 
 ---
 
-### Task 1: LLM types — LlmStreamChunk::Thinking + OpenAI reasoning fields
+## File Structure
+
+| File | Responsibility |
+|---|---|
+| `src/skill/loader.rs` (modify) | Change `Frontmatter.metadata` deserialization from `HashMap<String, String>` to `serde_yaml::Value` with string-only extraction |
+| `.agents/skills/tool-discovery/SKILL.md` (create) | New skill file for tool-discovery workflow |
+
+---
+
+### Task 1: Make frontmatter metadata parsing resilient to nested values
+
+**Goal:** The `Frontmatter` struct in `loader.rs` deserializes `metadata` directly as `HashMap<String, String>`, which fails when a skill's frontmatter has nested YAML (e.g. `metadata.openclaw` is a map). Fix by parsing as `serde_yaml::Value` and extracting only string-valued entries.
 
 **Files:**
-- Modify: `src/llm/types.rs:100-105`
-- Modify: `src/llm/openai.rs:84-88`
-- Modify: `src/llm/openai.rs:112-117`
+- Modify: `src/skill/loader.rs:52-63`
 
 **Interfaces:**
-- Consumes: `LlmStreamChunk` enum, `OpenAiResponseMessage`, `OpenAiStreamDelta`
-- Produces: `LlmStreamChunk::Thinking(String)` variant, `OpenAiResponseMessage.reasoning: Option<String>`, `OpenAiStreamDelta.reasoning: Option<String>`
+- Changes: `Frontmatter.metadata` field type changes from `HashMap<String, String>` to `serde_yaml::Value` (internal struct only)
+- Preserves: `Skill.metadata` remains `HashMap<String, String>` — the conversion happens in the `Skill` constructor
 
-- [ ] **Step 1: Add `Thinking` variant to `LlmStreamChunk`**
+- [ ] **Step 1: Change the `Frontmatter` struct's `metadata` field to `serde_yaml::Value`**
 
-In `src/llm/types.rs`, add after `ToolCall(ToolCall),`:
-```rust
-    /// Intermediate reasoning/thinking text (e.g. Anthropic extended thinking,
-    /// OpenRouter reasoning tokens). Emitted before Content when available.
-    Thinking(String),
-```
+  Replace lines 56-57 in `src/skill/loader.rs`:
 
-- [ ] **Step 2: Add `reasoning` to `OpenAiResponseMessage`**
+  ```rust
+      #[serde(default)]
+      metadata: std::collections::HashMap<String, String>,
+  ```
 
-In `src/llm/openai.rs`, add after `tool_calls`:
-```rust
-    /// OpenRouter/OpenAI reasoning tokens (non-streaming).
-    #[serde(default)]
-    pub(crate) reasoning: Option<String>,
-```
+  With:
 
-- [ ] **Step 3: Add `reasoning` to `OpenAiStreamDelta`**
+  ```rust
+      #[serde(default)]
+      metadata: serde_yaml::Value,
+  ```
 
-In `src/llm/openai.rs`, add after `tool_calls`:
-```rust
-    /// OpenRouter/OpenAI reasoning tokens (streaming).
-    #[serde(default)]
-    pub(crate) reasoning: Option<String>,
-```
+  This allows `serde_yaml` to deserialize any valid YAML value (string, map, sequence, etc.) without failing.
 
-- [ ] **Step 4: Verify compilation**
+- [ ] **Step 2: Update the `Skill` construction to extract only string values**
 
-Run: `cargo build 2>&1 | head -30`
-Expected: Clean compilation or only pre-existing warnings.
+  Replace lines 65-71 in `src/skill/loader.rs`:
+
+  ```rust
+      Ok(Skill {
+          name: frontmatter.name,
+          description: frontmatter.description,
+          instructions,
+          metadata: frontmatter.metadata,
+          hooks: frontmatter.hooks,
+      })
+  ```
+
+  With:
+
+  ```rust
+      let metadata = match frontmatter.metadata {
+          serde_yaml::Value::Mapping(map) => {
+              let mut result = std::collections::HashMap::new();
+              for (key, value) in map {
+                  if let (Some(k), serde_yaml::Value::String(v)) =
+                      (key.as_str(), &value)
+                  {
+                      result.insert(k.to_string(), v.clone());
+                  }
+              }
+              result
+          }
+          _ => std::collections::HashMap::new(),
+      };
+
+      Ok(Skill {
+          name: frontmatter.name,
+          description: frontmatter.description,
+          instructions,
+          metadata,
+          hooks: frontmatter.hooks,
+      })
+  ```
+
+  This iterates over the YAML mapping and only keeps entries where the value is a string. Nested maps, sequences, numbers, booleans, and nulls are silently skipped.
+
+- [ ] **Step 3: Add a test for nested metadata (the `blog-avoid-ai` case)**
+
+  Add to the `mod tests` block in `src/skill/loader.rs` (after `test_parse_skill_with_metadata` at line 175):
+
+  ```rust
+      #[test]
+      fn test_parse_skill_with_nested_metadata() {
+          let content = r#"---
+  name: blog-avoid-ai
+  description: Audit and rewrite content
+  metadata:
+    author: Conor Bronsdon
+    tags: writing editing voice quality
+    openclaw:
+      emoji: "\u270D\uFE0F"
+  ---
+  Instructions here
+  "#;
+          let skill = parse_skill(content).unwrap();
+          // String values are preserved
+          assert_eq!(skill.metadata.get("author").unwrap(), "Conor Bronsdon");
+          assert_eq!(skill.metadata.get("tags").unwrap(), "writing editing voice quality");
+          // Nested map value is skipped (not a string)
+          assert!(skill.metadata.get("openclaw").is_none());
+      }
+  ```
+
+- [ ] **Step 4: Add a test for non-Mapping metadata (edge case)**
+
+  Add after the nested metadata test:
+
+  ```rust
+      #[test]
+      fn test_parse_skill_with_scalar_metadata() {
+          // metadata as a scalar (not a map) — should not crash, returns empty
+          let content = r#"---
+  name: test
+  description: A test skill
+  metadata: just-a-string
+  ---
+  Body
+  "#;
+          let skill = parse_skill(content).unwrap();
+          assert!(skill.metadata.is_empty());
+      }
+  ```
+
+- [ ] **Step 5: Verify existing tests still pass**
+
+  Run: `cargo test -p anacleto -- skill::loader::tests --nocapture`
+  Expected: All tests PASS, including `test_parse_skill_with_metadata` (flat string values still work)
+
+- [ ] **Step 6: Verify the `blog-avoid-ai` skill loads without error**
+
+  Run: `cargo run` (or a targeted test that loads the global skill)
+  Expected: No `Invalid frontmatter` error for `blog-avoid-ai/SKILL.md`
+
+  Alternatively, write a quick one-off test:
+
+  ```rust
+  #[test]
+  fn test_blog_avoid_ai_loads() {
+      let path = home::home_dir()
+          .unwrap()
+          .join(".agents/skills/blog-avoid-ai/SKILL.md");
+      if path.exists() {
+          let skill = crate::skill::loader::load_skill(&path).unwrap();
+          assert_eq!(skill.name, "blog-avoid-ai");
+      }
+  }
+  ```
+
+  Run: `cargo test -p anacleto -- skill::loader::tests::test_blog_avoid_ai_loads --nocapture`
+  Expected: PASS (or skipped if the file doesn't exist on CI)
+
+- [ ] **Step 7: Run full test suite**
+
+  Run: `cargo test -p anacleto`
+  Expected: All tests PASS
+
+- [ ] **Step 8: Commit**
+
+  ```bash
+  git add src/skill/loader.rs
+  git commit -m "fix(skill): resilient frontmatter metadata parsing for nested YAML values"
+  ```
 
 ---
 
-### Task 2: OpenRouter provider — parse reasoning in complete() and complete_stream()
+### Task 2: Create the missing `tool-discovery` skill
+
+**Goal:** The root agent references `.agents/skills/tool-discovery/` in its skill list (line 18 of `.agents/agents/root.md`), but the directory does not exist, producing `Warning: Skill path does not exist: .../tool-discovery/`. Create the missing skill with a proper SKILL.md file.
 
 **Files:**
-- Modify: `src/llm/provider.rs:425-445` (complete)
-- Modify: `src/llm/provider.rs:455-540` (complete_stream)
+- Create: `.agents/skills/tool-discovery/SKILL.md`
 
 **Interfaces:**
-- Consumes: `OpenAiResponseMessage.reasoning`, `OpenAiStreamDelta.reasoning`, `LlmStreamChunk::Thinking`
-- Produces: `LlmResponse.thinking` populated with reasoning text from non-streaming calls; `LlmStreamChunk::Thinking` emitted for streaming reasoning
+- Produces: A skill named `tool-discovery` that describes the tool-discovery workflow (audit which skill/MCP/subagent to use for a given task before execution)
 
-- [ ] **Step 1: Parse reasoning in `OpenRouterProvider::complete()`**
+- [ ] **Step 1: Create the directory and SKILL.md file**
 
-Find the section in `src/llm/provider.rs` around line 440 where `Ok(LlmResponse { ... })` is constructed. Change:
-```rust
-            thinking: None,
-```
-to:
-```rust
-            thinking: choice.message.reasoning,
-```
+  Create `.agents/skills/tool-discovery/SKILL.md`:
 
-- [ ] **Step 2: Emit Thinking chunks in `OpenRouterProvider::complete_stream()`**
+  ```markdown
+  ---
+  name: tool-discovery
+  description: |
+    Audits and recommends which skill, MCP server, or subagent to use for a
+    given task. Must be invoked before Execute to ensure the right tool is
+    selected for the job. Prevents using generic tools when a specialized
+    one exists.
+  metadata:
+    version: "1.0"
+    category: system
+    risk: low
+  ---
 
-In `src/llm/provider.rs`, in the streaming loop where `choice.delta.content` is checked, add after content emission (around line 464):
-```rust
-                                    // Emit reasoning tokens if present
-                                    if let Some(ref reasoning) = choice.delta.reasoning
-                                        && !reasoning.is_empty()
-                                    {
-                                        let _ = tx.send(Ok(LlmStreamChunk::Thinking(reasoning.clone()))).await;
-                                    }
-```
+  # Tool Discovery (Anacleto)
 
-- [ ] **Step 3: Verify compilation**
+  This skill helps you **audit which tool to use** before executing a task.
+  It prevents the common mistake of reaching for a generic tool (`shell`,
+  `filesystem`) when a specialized skill, MCP, or subagent exists.
 
-Run: `cargo build 2>&1 | head -30`
-Expected: Clean compilation.
+  **When to use:** Before every `Execute` step in your workflow. The root
+  agent's workflow (step 3) mandates: "Before executing, invoke the
+  `tool-discovery` skill to audit which skills, MCPs, and subagents are
+  best suited for this task."
+
+  ---
+
+  ## How it works
+
+  Given a task description, tool-discovery evaluates:
+
+  1. **Skills** — Is there a dedicated skill for this domain?
+     (e.g. `code-review` for reviewing code, `rust-dev` for Rust development)
+  2. **MCP servers** — Does an MCP provide structured access to the needed data?
+     (e.g. `codegraph` for code intelligence, `filesystem` for file operations)
+  3. **Subagents** — Should this be delegated to a specialist subagent?
+     (e.g. `reviewer` for code review, `tech-writer` for technical articles)
+
+  ---
+
+  ## Audit checklist
+
+  For each task, answer these questions in order:
+
+  ### 1. Is there a dedicated skill?
+
+  ```bash
+  # List all available skills
+  ls .agents/skills/ 2>/dev/null
+  ls ~/.agents/skills/ 2>/dev/null
+
+  # Search skill descriptions for keywords
+  rg -l "keyword" .agents/skills/*/SKILL.md ~/.agents/skills/*/SKILL.md 2>/dev/null
+  ```
+
+  If a dedicated skill exists, **use it**. Do not fall back to `shell` or
+  `filesystem` for tasks that have their own skill.
+
+  ### 2. Is there a relevant MCP server?
+
+  Check the agent's configured MCPs (from the agent's frontmatter `mcps` list).
+  Each MCP provides structured access to specific data:
+
+  | MCP | Best for |
+  |---|---|
+  | `codegraph` | Code structure, symbol lookup, impact analysis |
+  | `filesystem` | File read/write operations |
+  | `context7` | Library documentation lookups |
+  | `mis-notas` | Personal notes and knowledge base |
+
+  ### 3. Should a subagent handle this?
+
+  Subagents are specialists. Delegate when:
+
+  - **reviewer** — Code review, quality checks, linting
+  - **writer** / **tech-writer** — Documentation, articles, READMEs
+  - **rust-dev** — Rust implementation, compilation, testing
+  - **python-dev** — Python implementation, testing
+
+  ---
+
+  ## Output format
+
+  After running the audit, produce a recommendation like:
+
+  ```
+  ## Tool Discovery Audit
+
+  Task: <brief description>
+
+  Recommended:
+  - Skill: <skill-name> — <why this skill>
+  - MCP: <mcp-name> — <what data it provides>
+  - Subagent: <subagent-name> — <what it handles>
+
+  Rationale: <one-line explanation of why these tools are the right choice>
+  ```
+
+  ---
+
+  ## Examples
+
+  | Task | Recommended Skill | Why |
+  |---|---|---|
+  | Review a PR for correctness | `code-review` | Dedicated code review skill with structured output |
+  | Write a Rust function | `rust-dev` | Handles compilation, clippy, and testing |
+  | Search for a symbol in code | `codegraph` MCP | Structured code intelligence, not raw grep |
+  | Create project documentation | `writer` subagent | Technical writing specialist |
+  | Find a skill for a task | `find-skills` | Searches local and remote skill registries |
+  | Execute a shell command | `shell` | General-purpose command execution |
+  ```
+
+  ---
+
+  ## Important notes
+
+  1. **Must be invoked before Execute.** Do not skip this step — it prevents
+     using generic tools when a specialized one exists.
+
+  2. **Not a replacement for thinking.** Use this skill as a structured check,
+     not as a substitute for reasoning about the task.
+
+  3. **Skills take priority.** If a dedicated skill exists for the task, it
+     should almost always be preferred over a generic tool or direct MCP access.
+  ```
+
+- [ ] **Step 2: Verify the path resolves without warning**
+
+  Run: `cargo run` (or `cargo check` followed by inspecting startup output)
+  Expected: No `Warning: Skill path does not exist: .../tool-discovery/` message
+
+  The warning originates from `src/skill/loader.rs` line 121 (`load_agent_skills`):
+  ```rust
+  Err(e) => eprintln!("Warning: {e}"),
+  ```
+  which is triggered by `load_single_or_dir` at line 108-110:
+  ```rust
+  Err(Error::Skill(format!("Skill path does not exist: {}", path.display())))
+  ```
+
+  After creating the directory with `SKILL.md`, `load_single_or_dir` will find it
+  as a directory and call `load_skills_from_dir`, which will find `SKILL.md` and
+  load it successfully.
+
+- [ ] **Step 3: Run full test suite**
+
+  Run: `cargo test -p anacleto`
+  Expected: All tests PASS
+
+- [ ] **Step 4: Commit**
+
+  ```bash
+  git add .agents/skills/tool-discovery/SKILL.md
+  git commit -m "fix(skill): create missing tool-discovery skill referenced by root agent"
+  ```
 
 ---
 
-### Task 3: OpenAI provider — parse reasoning (forward-compatible)
+### Task 3: Verify both original errors are resolved
 
-**Files:**
-- Modify: `src/llm/openai.rs:370-395` (complete)
-- Modify: `src/llm/openai.rs:400-490` (complete_stream)
+**Goal:** Confirm that both startup errors are gone by running the full test suite and checking startup output.
 
-**Interfaces:**
-- Same changes as Task 2 but in `src/llm/openai.rs`
+- [ ] **Step 1: Run full test suite**
 
-- [ ] **Step 1: Parse reasoning in `OpenAIProvider::complete()`**
+  Run: `cargo test -p anacleto`
+  Expected: All tests PASS
 
-In `src/llm/openai.rs`, find the `Ok(LlmResponse { ... })` construction (around line 380). Change:
-```rust
-            thinking: None,
-```
-to:
-```rust
-            thinking: choice.message.reasoning,
-```
+- [ ] **Step 2: Run clippy and fmt checks**
 
-- [ ] **Step 2: Emit Thinking chunks in `OpenAIProvider::complete_stream()`**
+  Run: `cargo fmt --check && cargo clippy`
+  Expected: Clean output, no warnings or errors
 
-In `src/llm/openai.rs`, where `choice.delta.content` is checked, add after content emission (around line 395):
-```rust
-                                    // Emit reasoning tokens if present (OpenAI-compatible)
-                                    if let Some(ref reasoning) = choice.delta.reasoning
-                                        && !reasoning.is_empty()
-                                    {
-                                        let _ = tx.send(Ok(LlmStreamChunk::Thinking(reasoning.clone()))).await;
-                                    }
-```
+- [ ] **Step 3: Verify `blog-avoid-ai` skill loads without error**
 
-- [ ] **Step 3: Verify compilation**
+  The `blog-avoid-ai` skill is at `$HOME/.agents/skills/blog-avoid-ai/SKILL.md` (global).
+  It has nested YAML under `metadata.openclaw` which previously caused:
+  ```
+  metadata.openclaw: invalid type: map, expected a string
+  ```
 
-Run: `cargo build 2>&1 | head -30`
-Expected: Clean compilation.
+  After Task 1, this should load silently. Verify by running the test added in
+  Task 1 Step 6, or by running the application and checking stderr for the absence
+  of the error message.
 
----
+- [ ] **Step 4: Verify `tool-discovery` path resolves without warning**
 
-### Task 4: Anthropic provider — emit Thinking in complete_stream()
+  The warning was:
+  ```
+  Warning: Skill path does not exist: .../tool-discovery/
+  ```
 
-**Files:**
-- Modify: `src/llm/anthropic.rs:295-305`
+  After Task 2, the directory and `SKILL.md` exist, so `load_single_or_dir` will
+  find it as a valid directory and load the skill. Verify by running the application
+  and checking stderr for the absence of the warning.
 
-**Interfaces:**
-- Consumes: `LlmResponse.thinking` (already populated by `complete()`)
-- Produces: `LlmStreamChunk::Thinking(response.thinking)` before content
+- [ ] **Step 5: Final commit (if any fixes needed)**
 
-- [ ] **Step 1: Emit Thinking chunk before Content in complete_stream()**
-
-In `src/llm/anthropic.rs`, around line 295, change:
-```rust
-        if !response.content.is_empty() {
-            let _ = tx.send(Ok(LlmStreamChunk::Content(response.content))).await;
-        }
-```
-to:
-```rust
-        // Emit thinking first (if present), then content
-        if let Some(thinking) = response.thinking.filter(|t| !t.is_empty()) {
-            let _ = tx.send(Ok(LlmStreamChunk::Thinking(thinking))).await;
-        }
-        if !response.content.is_empty() {
-            let _ = tx.send(Ok(LlmStreamChunk::Content(response.content))).await;
-        }
-```
-
-- [ ] **Step 2: Verify compilation**
-
-Run: `cargo build 2>&1 | head -30`
-Expected: Clean compilation.
+  If any of the above steps reveal issues, fix them before the final commit.
+  Otherwise, no additional commit is needed — the two commits from Tasks 1 and 2
+  are sufficient.
 
 ---
 
-### Task 5: Engine — handle Thinking chunks + new EngineEvent
+## Self-Review Checklist
 
-**Files:**
-- Modify: `src/agent/lifecycle.rs:430-482`
-- Modify: `src/engine/events.rs:42-47`
+**1. Spec coverage:**
+- ✅ Bug 1: Frontmatter metadata parsing handles nested YAML values — Task 1
+- ✅ Bug 1: `Skill.metadata` type remains `HashMap<String, String>` — unchanged in `types.rs`
+- ✅ Bug 1: Tests for nested metadata and scalar metadata edge cases — Task 1 Steps 3-4
+- ✅ Bug 2: Missing `tool-discovery` skill created — Task 2
+- ✅ Bug 2: Skill modeled after existing skills (frontmatter + body) — Task 2 Step 1
+- ✅ Verification that both errors are gone — Task 3
 
-**Interfaces:**
-- Consumes: `LlmStreamChunk::Thinking(String)` — the engine receives these from the stream
-- Produces: `EngineEvent::AgentThinkingChunk { agent_id, agent_name, content }` — new event sent to TUI
+**2. Placeholder scan:** All code blocks contain real, compilable Rust code or valid Markdown. No TBDs, TODOs, or placeholders.
 
-- [ ] **Step 1: Add `AgentThinkingChunk` variant to `EngineEvent`**
-
-In `src/engine/events.rs`, add after `AgentStreamChunk` (around line 47):
-```rust
-    /// Thinking/reasoning chunk from an agent's LLM response.
-    AgentThinkingChunk {
-        agent_id: AgentId,
-        agent_name: String,
-        content: String,
-    },
-```
-
-- [ ] **Step 2: Handle `LlmStreamChunk::Thinking` in engine stream loop**
-
-In `src/agent/lifecycle.rs`, in the stream processing loop (around line 434), add a new match arm before `Ok(LlmStreamChunk::Content(text))`:
-```rust
-                                        Ok(LlmStreamChunk::Thinking(text)) => {
-                                            let _ = event_tx
-                                                .send(EngineEvent::AgentThinkingChunk {
-                                                    agent_id: agent_id.clone(),
-                                                    agent_name: agent_name.clone(),
-                                                    content: text,
-                                                })
-                                                .await;
-                                        }
-```
-
-- [ ] **Step 3: Verify compilation**
-
-Run: `cargo build 2>&1 | head -30`
-Expected: Clean compilation.
+**3. Type consistency:** `Frontmatter.metadata` is internal to `loader.rs` — changing it to `serde_yaml::Value` does not affect the public `Skill` type. The conversion logic extracts only string values, matching the `HashMap<String, String>` contract.
 
 ---
 
-### Task 6: App state — current_thinking field + Theme thinking colors
+## Execution Handoff
 
-**Files:**
-- Modify: `src/tui/app.rs:54-60` (add field)
-- Modify: `src/tui/app.rs:269-275` (initialize)
-- Modify: `src/tui/theme.rs` (add thinking colors)
+Plan complete and saved to `PLAN.md`. Two execution options:
 
-**Interfaces:**
-- Consumes: None (new state)
-- Produces: `App.current_thinking: Option<String>`, `Theme::thinking()`, `Theme::thinking_dim()` used by renderer
+**1. Subagent-Driven (recommended)** — Dispatch a fresh subagent per task, review between tasks, fast iteration
 
-- [ ] **Step 1: Add `current_thinking` field to `App`**
+**2. Inline Execution** — Execute tasks in this session with checkpoints
 
-In `src/tui/app.rs`, add after `current_stream` (around line 55):
-```rust
-    /// Current streaming thinking/reasoning being accumulated.
-    pub current_thinking: Option<String>,
-```
-
-- [ ] **Step 2: Initialize in constructor**
-
-In `src/tui/app.rs`, add near `current_stream: None` (around line 269):
-```rust
-            current_thinking: None,
-```
-
-- [ ] **Step 3: Add thinking colors to Theme**
-
-In `src/tui/theme.rs`, add after `tool_err_dim`:
-```rust
-    /// Color for thinking/reasoning text.
-    pub(crate) fn thinking(&self) -> Color {
-        match self {
-            Theme::Default => Color::Rgb(255, 200, 100),
-            Theme::Nord => Color::Rgb(235, 203, 139),
-            Theme::Dracula => Color::Rgb(241, 250, 140),
-            Theme::Solarized => Color::Rgb(181, 137, 0),
-        }
-    }
-
-    /// Dimmed variant of `thinking` for finalized messages.
-    pub(crate) fn thinking_dim(&self) -> Color {
-        match self {
-            Theme::Default => Color::Rgb(160, 120, 50),
-            Theme::Nord => Color::Rgb(140, 120, 70),
-            Theme::Dracula => Color::Rgb(150, 150, 70),
-            Theme::Solarized => Color::Rgb(110, 80, 0),
-        }
-    }
-```
-
-- [ ] **Step 4: Verify compilation**
-
-Run: `cargo build 2>&1 | head -30`
-Expected: Clean compilation.
-
----
-
-### Task 7: TUI events — handle AgentThinkingChunk with show_thinking
-
-**Files:**
-- Modify: `src/tui/events.rs:56-71`
-- Modify: `src/tui/events.rs:72-90`
-- Modify: `src/tui/commands.rs:430-440`
-
-**Interfaces:**
-- Consumes: `EngineEvent::AgentThinkingChunk`, `App.current_thinking`, `App.show_thinking`
-- Produces: Updated `current_thinking` field
-
-- [ ] **Step 1: Handle `AgentThinkingChunk` in event loop**
-
-In `src/tui/events.rs`, add a new match arm after `AgentStreamChunk` (around line 71):
-```rust
-            EngineEvent::AgentThinkingChunk { content, .. } => {
-                if self.show_thinking {
-                    let thinking = self.current_thinking.get_or_insert_with(String::new);
-                    thinking.push_str(&content);
-                }
-            }
-```
-
-- [ ] **Step 2: Clear `current_thinking` on `AgentOutput`**
-
-In `src/tui/events.rs`, in the `AgentOutput` handler (around line 77), add at the beginning:
-```rust
-                self.current_thinking = None;
-                // ... existing code
-                let final_content = self.current_stream.take().unwrap_or(content);
-```
-
-- [ ] **Step 3: Clear `current_thinking` on Escape key**
-
-In `src/tui/keys.rs`, find where `self.current_stream = None` is set on Escape (around line 451), and add:
-```rust
-                self.current_thinking = None;
-```
-
-- [ ] **Step 4: Verify compilation**
-
-Run: `cargo build 2>&1 | head -30`
-Expected: Clean compilation.
-
----
-
-### Task 8: TUI rendering — show thinking with distinct style
-
-**Files:**
-- Modify: `src/tui/render.rs:1064-1098`
-
-**Interfaces:**
-- Consumes: `App.current_thinking`, `App.show_thinking`, `Theme::thinking()`, `Theme::thinking_dim()`
-- Produces: Rendered thinking block in chat with yellow/amber styling
-
-- [ ] **Step 1: Render thinking block before stream**
-
-In `src/tui/render.rs`, in the `render_chat` function, after the message loop (around line 1064) and before the stream block, add:
-```rust
-    // Add thinking/reasoning block if active (only if show_thinking is true)
-    if let Some(thinking) = &app.current_thinking
-        && !thinking.is_empty()
-        && app.show_thinking
-    {
-        let thinking_color = app.theme.thinking();
-        let mut first = true;
-        for line_text in thinking.split('\n') {
-            let prefix = if first {
-                "\u{258c} "
-            } else {
-                "  "
-            };
-            first = false;
-            let span = Span::styled(
-                format!("{}{}", prefix, line_text),
-                Style::default()
-                    .fg(thinking_color)
-                    .add_modifier(Modifier::DIM),
-            );
-            lines.push(Line::from(vec![
-                Span::styled("▐ ", Style::default().fg(app.theme.thinking_dim())),
-                span,
-            ]));
-        }
-        // Add a blank separator line after thinking block
-        lines.push(Line::from(Span::styled(
-            "▐",
-            Style::default().fg(app.theme.thinking_dim()),
-        )));
-    }
-```
-
-- [ ] **Step 2: Verify compilation**
-
-Run: `cargo build 2>&1 | head -30`
-Expected: Clean compilation.
-
----
-
-### Task 9: Verify — fmt, clippy, test
-
-**Files:** None (verification only)
-
-- [ ] **Step 1: Format check**
-
-Run: `cargo fmt --check`
-Expected: No formatting changes needed.
-
-- [ ] **Step 2: Clippy**
-
-Run: `cargo clippy 2>&1`
-Expected: No new warnings.
-
-- [ ] **Step 3: Tests**
-
-Run: `cargo test 2>&1 | tail -5`
-Expected: All 428+ tests pass.
+**Which approach?**

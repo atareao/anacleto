@@ -15,7 +15,7 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
-use super::markdown::{render_markdown_line, select_visible_start};
+use super::markdown::{render_markdown_line, render_table_block, select_visible_start};
 use super::palette::{render_agent_palette, render_command_palette, render_model_palette};
 use super::types::{AgentInfo, Focus};
 use crate::agent::types::{AgentRole, AgentStatus, TaskMode};
@@ -526,12 +526,13 @@ fn render_info_panel(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-/// Panel 2a: MCPs — connected MCP server names (active when `info_tab = 1`).
+/// Panel 2a: MCPs — MCP server names of the active agent (active when `info_tab = 1`).
 fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
     let unique_mcps: Vec<&str> = {
         let set: std::collections::BTreeSet<&str> = app
             .agents
             .iter()
+            .filter(|a| a.name == app.active_agent)
             .flat_map(|a| a.mcps.iter().map(|s| s.as_str()))
             .collect();
         set.into_iter().collect()
@@ -578,14 +579,14 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(list, area);
 }
 
-/// Panel 2c: SubAgents — configured subagent names (active when `info_tab = 2`).
+/// Panel 2c: SubAgents — subagent names of the active agent (active when `info_tab = 2`).
 fn render_subagent_panel(f: &mut Frame, area: Rect, app: &App) {
     let unique_subagents: Vec<&str> = {
         let set: std::collections::BTreeSet<&str> = app
             .configured_subagents
-            .values()
-            .flat_map(|v| v.iter().map(|s| s.as_str()))
-            .collect();
+            .get(&app.active_agent)
+            .map(|v| v.iter().map(|s| s.as_str()).collect())
+            .unwrap_or_default();
         set.into_iter().collect()
     };
 
@@ -630,12 +631,13 @@ fn render_subagent_panel(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(list, area);
 }
 
-/// Panel 2b: Skills — loaded skill names (active when `info_tab = 0`).
+/// Panel 2b: Skills — skill names of the active agent (active when `info_tab = 0`).
 fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
     let unique_skills: Vec<&str> = {
         let set: std::collections::BTreeSet<&str> = app
             .agents
             .iter()
+            .filter(|a| a.name == app.active_agent)
             .flat_map(|a| a.skills.iter().map(|s| s.as_str()))
             .collect();
         set.into_iter().collect()
@@ -676,7 +678,7 @@ fn render_skill_panel(f: &mut Frame, area: Rect, app: &App) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(format!(" [2] Skills ({}) ", unique_skills.len())),
+            .title(format!(" [3] Skills ({}) ", unique_skills.len())),
     );
 
     f.render_widget(list, area);
@@ -803,7 +805,7 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(format!(" [3] Agents ({}) ", display_agents.len())),
+            .title(format!(" [4] Agents ({}) ", display_agents.len())),
     );
 
     f.render_widget(list, area);
@@ -849,7 +851,7 @@ fn render_queue_panel(f: &mut Frame, area: Rect, app: &App) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(format!(" [4] Queue ({}) ", app.prompt_queue.len())),
+            .title(format!(" [5] Queue ({}) ", app.prompt_queue.len())),
     );
 
     f.render_widget(list, area);
@@ -924,6 +926,324 @@ fn render_working_dir(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(line), area);
 }
 
+// ---------------------------------------------------------------------------
+// Shared sectioned-block renderer for committed messages and stream.
+// ---------------------------------------------------------------------------
+
+/// Styles for each section type.
+struct SectionStyles {
+    border: Style,
+    thinking_border: Style,
+    thinking_text: Style,
+    tool_border: Style,
+    tool_exec: Style,
+    tool_ok: Style,
+    tool_err: Style,
+}
+
+/// Configures whether/how the normal (non-thinking, non-tool) section draws
+/// its `▐` borders and which prefix to use on its lines.
+struct SectionConfig {
+    /// Emit `▐` top/bottom borders around the normal section (true for
+    /// committed messages, false for stream where normal is prefix-only).
+    normal_has_borders: bool,
+    /// Prefix for the first normal line (e.g. "\u{258c}" for stream vs "▐ " for
+    /// committed).
+    first_normal_prefix: &'static str,
+    /// Prefix for subsequent normal lines (e.g. " " for stream vs "▐ " for
+    /// committed).
+    subsequent_normal_prefix: &'static str,
+}
+
+/// Helper: flush accumulated table lines into styled output.
+fn flush_table(
+    out: &mut Vec<Line>,
+    table_buffer: &mut Vec<String>,
+    first_normal: &mut bool,
+    section_has_content: &mut bool,
+    prefix: &'static str,
+    border_style: Style,
+    cell_style: Style,
+) -> bool {
+    if table_buffer.is_empty() {
+        return false;
+    }
+    let table_lines: Vec<&str> = table_buffer.iter().map(|s| s.as_str()).collect();
+    let table_rows = render_table_block(&table_lines, prefix, border_style, cell_style);
+    let count = table_rows.len();
+    out.extend(table_rows);
+    table_buffer.clear();
+    *first_normal = false;
+    *section_has_content = true;
+    count > 0
+}
+
+/// Shared section-tracking state machine that renders `[thinking]`/`[/thinking]`
+/// markers and tool-execution lines (🔧/✅/❌) into independently-bordered
+/// visual sections.
+///
+/// `normal_line_render` is called for every non-thinking, non-tool, non-table
+/// line. It receives `(full_line_text, prefix_string, border_style)` and must
+/// return a complete `Line` (including the prefix span rendered as it wishes).
+///
+/// Consecutive lines starting with `|` are automatically detected and rendered
+/// as a table block using box-drawing characters.
+fn render_sectioned_block(
+    content: &str,
+    ts: &str,
+    config: &SectionConfig,
+    styles: &SectionStyles,
+    table_cell_style: Style,
+    normal_line_render: impl Fn(String, &'static str, Style) -> Line<'static>,
+) -> Vec<Line<'static>> {
+    let mut out: Vec<Line> = Vec::new();
+    let mut section: &str = "normal";
+    let mut section_has_content = false;
+    let mut awaiting_ts = !ts.is_empty();
+    let mut first_normal = true;
+    let mut table_buffer: Vec<String> = Vec::new();
+
+    // Helper to pick the right prefix
+    let prefix = |first: bool| -> &'static str {
+        if first {
+            config.first_normal_prefix
+        } else {
+            config.subsequent_normal_prefix
+        }
+    };
+
+    for line_text in content.split('\n') {
+        let marker = line_text.trim();
+
+        // ── [thinking] / [/thinking] markers ──
+        if marker == "[thinking]" {
+            // Flush any pending table before switching sections
+            let p = prefix(first_normal);
+            flush_table(
+                &mut out,
+                &mut table_buffer,
+                &mut first_normal,
+                &mut section_has_content,
+                p,
+                styles.border,
+                table_cell_style,
+            );
+            // Close previous section only if it had actual content
+            if section_has_content {
+                let close_style = match section {
+                    "thinking" => styles.thinking_border,
+                    "tool" => styles.tool_border,
+                    _ => styles.border,
+                };
+                out.push(Line::from(Span::styled("\u{2590}", close_style)));
+            }
+            section = "thinking";
+            section_has_content = false;
+            out.push(Line::from(Span::styled("\u{2590}", styles.thinking_border)));
+            continue;
+        }
+        if marker == "[/thinking]" {
+            // Flush any pending table before closing thinking section
+            let p = prefix(first_normal);
+            flush_table(
+                &mut out,
+                &mut table_buffer,
+                &mut first_normal,
+                &mut section_has_content,
+                p,
+                styles.border,
+                table_cell_style,
+            );
+            if section_has_content {
+                out.push(Line::from(Span::styled("\u{2590}", styles.thinking_border)));
+            }
+            section = "normal";
+            section_has_content = false;
+            continue;
+        }
+
+        // Build full line with optional timestamp prefix
+        let ts_prefix = if awaiting_ts { ts } else { "" };
+        awaiting_ts = false;
+        let full_line = format!("{}{}", ts_prefix, line_text);
+
+        // Detect tool markers (🔧 / ✅ / ❌ ) — only strip leading whitespace
+        let trimmed = line_text.trim_start();
+        let is_tool = trimmed.starts_with("\u{1f527}")
+            || trimmed.starts_with("\u{2705}")
+            || trimmed.starts_with("\u{274c}");
+
+        // ── Tool section transitions (only outside thinking blocks) ──
+        if section != "thinking" {
+            let from_normal_to_tool = is_tool && section != "tool";
+            let from_tool_to_normal = !is_tool && section == "tool";
+
+            if from_normal_to_tool {
+                // Flush any pending table before switching to tool section
+                let p = prefix(first_normal);
+                flush_table(
+                    &mut out,
+                    &mut table_buffer,
+                    &mut first_normal,
+                    &mut section_has_content,
+                    p,
+                    styles.border,
+                    table_cell_style,
+                );
+                // Close normal section only if it had content AND normal has borders
+                if section_has_content && config.normal_has_borders {
+                    out.push(Line::from(Span::styled("\u{2590}", styles.border)));
+                }
+                section = "tool";
+                out.push(Line::from(Span::styled("\u{2590}", styles.tool_border)));
+            } else if from_tool_to_normal {
+                if section_has_content {
+                    out.push(Line::from(Span::styled("\u{2590}", styles.tool_border)));
+                }
+                section = "normal";
+            }
+        }
+
+        // ── Render the line ──
+        if section == "thinking" {
+            out.push(Line::from(vec![
+                Span::styled("\u{2590} ", styles.thinking_border),
+                Span::styled(full_line, styles.thinking_text),
+            ]));
+            section_has_content = true;
+        } else if is_tool {
+            let tool_style = if trimmed.starts_with("\u{1f527}") {
+                styles.tool_exec
+            } else if trimmed.starts_with("\u{2705}") {
+                styles.tool_ok
+            } else {
+                styles.tool_err
+            };
+            out.push(Line::from(vec![
+                Span::styled("\u{2590} ", styles.tool_border),
+                Span::styled(full_line, tool_style),
+            ]));
+            section_has_content = true;
+        } else {
+            // ── Table detection (consecutive | lines) ──
+            if marker.starts_with('|') {
+                // Entering table mode: emit normal top border if first content
+                if table_buffer.is_empty() && first_normal && config.normal_has_borders {
+                    out.push(Line::from(Span::styled("\u{2590}", styles.border)));
+                    first_normal = false;
+                }
+                table_buffer.push(line_text.to_string());
+                section_has_content = true;
+                continue;
+            }
+
+            // If we were accumulating a table and hit a non-table line, flush it
+            let p = prefix(first_normal);
+            flush_table(
+                &mut out,
+                &mut table_buffer,
+                &mut first_normal,
+                &mut section_has_content,
+                p,
+                styles.border,
+                table_cell_style,
+            );
+
+            // Normal line — delegate to caller for markdown / plain rendering
+            // Emit top border for normal section when the first normal line appears
+            // (not eagerly, so messages that start with [thinking] don't get a
+            // spurious normal border before the thinking section).
+            if first_normal && config.normal_has_borders {
+                out.push(Line::from(Span::styled("\u{2590}", styles.border)));
+            }
+            let p = if first_normal {
+                first_normal = false;
+                config.first_normal_prefix
+            } else {
+                config.subsequent_normal_prefix
+            };
+            let rendered = normal_line_render(full_line, p, styles.border);
+            out.push(rendered);
+            section_has_content = true;
+        }
+    }
+
+    // Flush any remaining table at end of content
+    let p = prefix(first_normal);
+    flush_table(
+        &mut out,
+        &mut table_buffer,
+        &mut first_normal,
+        &mut section_has_content,
+        p,
+        styles.border,
+        table_cell_style,
+    );
+
+    // Close the last section only if it had content
+    if section_has_content {
+        let close_style = match section {
+            "thinking" => styles.thinking_border,
+            "tool" => styles.tool_border,
+            _ if config.normal_has_borders => styles.border,
+            _ => return out,
+        };
+        out.push(Line::from(Span::styled("\u{2590}", close_style)));
+    }
+
+    out
+}
+
+/// Flush the accumulated AI message batch: join all messages and render them
+/// as a single sectioned block so that thinking → tool → response transitions
+/// produce only one `▐` separator between sections, not two.
+fn flush_ai_batch(lines: &mut Vec<Line<'static>>, batch: &mut Vec<(String, String)>, app: &App) {
+    if batch.is_empty() {
+        return;
+    }
+    let combined: String = batch
+        .iter()
+        .map(|(c, _)| c.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let ts = batch[0].1.clone();
+    batch.clear();
+
+    let themes = &app.theme;
+    let styles = SectionStyles {
+        border: Style::default().fg(themes.ai_border()),
+        thinking_border: Style::default().fg(themes.thinking_dim()),
+        thinking_text: Style::default()
+            .fg(themes.thinking())
+            .add_modifier(Modifier::DIM),
+        tool_border: Style::default().fg(themes.tool_border()),
+        tool_exec: Style::default().fg(themes.tool_text_dim()),
+        tool_ok: Style::default()
+            .fg(themes.tool_ok_dim())
+            .add_modifier(Modifier::DIM),
+        tool_err: Style::default()
+            .fg(themes.tool_err_dim())
+            .add_modifier(Modifier::DIM),
+    };
+    let config = SectionConfig {
+        normal_has_borders: true,
+        first_normal_prefix: "▐ ",
+        subsequent_normal_prefix: "▐ ",
+    };
+    let base = Style::default().fg(Color::Rgb(200, 220, 255));
+    lines.extend(render_sectioned_block(
+        &combined,
+        &ts,
+        &config,
+        &styles,
+        base,
+        |full_line, prefix, border| {
+            let mut rendered = render_markdown_line(&full_line, base);
+            rendered.spans.insert(0, Span::styled(prefix, border));
+            rendered
+        },
+    ));
+}
 fn render_chat(f: &mut Frame, area: Rect, app: &App) {
     if app.show_welcome {
         render_welcome_banner(f, area, app);
@@ -931,6 +1251,7 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let mut lines: Vec<Line> = Vec::with_capacity(app.messages.len() + 4);
+    let mut ai_batch: Vec<(String, String)> = Vec::new();
 
     for (idx, m) in app.messages.iter().enumerate() {
         let ts = if app.show_timestamps {
@@ -941,21 +1262,34 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
         } else {
             String::new()
         };
+
+        // AI-batchable messages
+        if m.starts_with("[thinking]")
+            || m.starts_with("\u{1f527}")
+            || m.starts_with("\u{2705}")
+            || m.starts_with("\u{274c}")
+        {
+            ai_batch.push((m.clone(), ts));
+            continue;
+        }
+
+        // Every other message type flushes the AI batch first.
+        flush_ai_batch(&mut lines, &mut ai_batch, app);
+
         if m.starts_with("> ") && !m.starts_with("> /") {
             let content_style = Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD);
 
-            // Top border extension — ▐ without content, one line
+            // Top border extension
             lines.push(Line::from(Span::styled(
-                "▐",
+                "\u{2590}",
                 Style::default().fg(Color::Rgb(60, 80, 60)),
             )));
 
-            // Message content with left border and background
-            for line_text in m.split('\n') {
+            for line_text in m.split("\n") {
                 lines.push(Line::from(vec![
-                    Span::styled("▐ ", Style::default().fg(Color::Rgb(60, 80, 60))),
+                    Span::styled("\u{2590} ", Style::default().fg(Color::Rgb(60, 80, 60))),
                     Span::styled(
                         format!("{}{}", ts, line_text.trim_start_matches("> ")),
                         content_style,
@@ -963,9 +1297,8 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
                 ]));
             }
 
-            // Bottom border extension — ▐ without content, one line
             lines.push(Line::from(Span::styled(
-                "▐",
+                "\u{2590}",
                 Style::default().fg(Color::Rgb(60, 80, 60)),
             )));
         } else if m.starts_with("> /") {
@@ -1006,7 +1339,7 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
         } else if m.starts_with("Unknown command") {
             lines.push(Line::from(Span::styled(
                 m.clone(),
-                Style::default().fg(Color::Red),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             )));
         } else if m.starts_with("Usage:") || m.starts_with("Commands:") {
             lines.push(Line::from(Span::styled(
@@ -1014,7 +1347,6 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(Color::Blue),
             )));
         } else if m.starts_with("$ ") {
-            // !command prompt — yellow bold
             lines.push(Line::from(Span::styled(
                 m.clone(),
                 Style::default()
@@ -1022,7 +1354,6 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             )));
         } else if m.starts_with("\u{2502} ") {
-            // stdout from !command — gray, dimmed
             lines.push(Line::from(Span::styled(
                 m.clone(),
                 Style::default()
@@ -1030,195 +1361,69 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::DIM),
             )));
         } else if m.starts_with("\u{2514} ") {
-            // stderr from !command — red, dimmed
             lines.push(Line::from(Span::styled(
                 m.clone(),
                 Style::default()
                     .fg(Color::Rgb(220, 120, 120))
                     .add_modifier(Modifier::DIM),
             )));
-        } else if m.starts_with("\u{1f527}") {
-            // Tool execution tracing — dimmed theme color (finalized)
-            lines.push(Line::from(Span::styled(
-                m.clone(),
-                Style::default()
-                    .fg(app.theme.tool_exec_dim())
-                    .add_modifier(Modifier::DIM),
-            )));
-        } else if m.starts_with("\u{2705}") {
-            // Tool result success — dimmed theme color (finalized)
-            lines.push(Line::from(Span::styled(
-                m.clone(),
-                Style::default()
-                    .fg(app.theme.tool_ok_dim())
-                    .add_modifier(Modifier::DIM),
-            )));
-        } else if m.starts_with("\u{274c}") {
-            // Tool result failure — dimmed theme color (finalized)
-            lines.push(Line::from(Span::styled(
-                m.clone(),
-                Style::default()
-                    .fg(app.theme.tool_err_dim())
-                    .add_modifier(Modifier::DIM),
-            )));
         } else if m.starts_with("\u{1f50d}") {
-            // Debug header — purple bold
             let style = Style::default()
                 .fg(Color::Rgb(180, 100, 255))
                 .add_modifier(Modifier::BOLD);
             lines.push(Line::from(Span::styled(m.clone(), style)));
         } else if m.starts_with("  ") && app.debug_mode {
-            // Debug payload — purple dim
             let style = Style::default()
                 .fg(Color::Rgb(180, 100, 255))
                 .add_modifier(Modifier::DIM);
             lines.push(Line::from(Span::styled(m.clone(), style)));
         } else {
-            // AI responses — split by newline, render markdown per line,
-            // but detect tool execution/result markers and render those
-            // with dimmed styling instead.
-            let base = Style::default().fg(Color::Rgb(200, 220, 255));
-            let border_style = Style::default().fg(app.theme.ai_border());
-            let tool_border_style = Style::default().fg(app.theme.tool_border());
-            let tool_style = Style::default()
-                .fg(app.theme.tool_exec_dim())
-                .add_modifier(Modifier::DIM);
-            let tool_ok_style = Style::default()
-                .fg(app.theme.tool_ok_dim())
-                .add_modifier(Modifier::DIM);
-            let tool_err_style = Style::default()
-                .fg(app.theme.tool_err_dim())
-                .add_modifier(Modifier::DIM);
-
-            // Top border extension — ▐ without content
-            lines.push(Line::from(Span::styled("▐", border_style)));
-
-            // Styles for committed thinking lines rendered in-message.
-            let thinking_border_style = Style::default().fg(app.theme.thinking_dim());
-            let thinking_style = Style::default()
-                .fg(app.theme.thinking())
-                .add_modifier(Modifier::DIM);
-
-            let mut in_thinking = false;
-            // The per-line timestamp prefix belongs to the first rendered line
-            // of the message; if that line is a [thinking]/[/thinking] marker
-            // it is deferred to the next rendered line so messages stay
-            // timestamped.
-            let mut awaiting_ts = true;
-
-            for line_text in m.split('\n') {
-                let marker = line_text.trim();
-                if marker == "[thinking]" || marker == "[/thinking]" {
-                    in_thinking = marker == "[thinking]";
-                    continue;
-                }
-
-                let prefix = if awaiting_ts { ts.as_str() } else { "" };
-                awaiting_ts = false;
-                let full_line = format!("{}{}", prefix, line_text);
-
-                // Committed thinking — show it in its in-message position with
-                // the dimmed reasoning style, before the response text.
-                if in_thinking {
-                    lines.push(Line::from(vec![
-                        Span::styled("▐ ", thinking_border_style),
-                        Span::styled(full_line, thinking_style),
-                    ]));
-                    continue;
-                }
-
-                // Detect tool markers within AI response text
-                let trimmed = line_text.trim_start();
-                let tool_style_override = if trimmed.starts_with("\u{1f527}") {
-                    Some(tool_style)
-                } else if trimmed.starts_with("\u{2705}") {
-                    Some(tool_ok_style)
-                } else if trimmed.starts_with("\u{274c}") {
-                    Some(tool_err_style)
-                } else {
-                    None
-                };
-
-                if let Some(override_style) = tool_style_override {
-                    // Render as tool line (dimmed, no markdown) with
-                    // a distinct border color to visually separate
-                    // tool output from AI text.
-                    let mut spans = vec![Span::styled("▐ ", tool_border_style)];
-                    spans.push(Span::styled(full_line, override_style));
-                    lines.push(Line::from(spans));
-                } else {
-                    // Normal AI response line — render markdown
-                    let mut rendered = render_markdown_line(&full_line, base);
-                    // Prepend "▐ " to the rendered line
-                    rendered.spans.insert(0, Span::styled("▐ ", border_style));
-                    lines.push(rendered);
-                }
-            }
-
-            // Bottom border extension — ▐ without content
-            lines.push(Line::from(Span::styled("▐", border_style)));
+            ai_batch.push((m.clone(), ts));
         }
     }
 
-    // Add thinking/reasoning block if active (only if show_thinking is true)
-    if let Some(thinking) = &app.current_thinking
-        && !thinking.is_empty()
-        && app.show_thinking
-    {
-        let thinking_color = app.theme.thinking();
-        for line_text in thinking.split('\n') {
-            let span = Span::styled(
-                line_text.to_string(),
-                Style::default()
-                    .fg(thinking_color)
-                    .add_modifier(Modifier::DIM),
-            );
-            lines.push(Line::from(vec![
-                Span::styled("▐ ", Style::default().fg(app.theme.thinking_dim())),
-                span,
-            ]));
-        }
-        // Add a blank separator line after thinking block
-        lines.push(Line::from(Span::styled(
-            "▐",
-            Style::default().fg(app.theme.thinking_dim()),
-        )));
-    }
+    // Flush any remaining AI messages.
+    flush_ai_batch(&mut lines, &mut ai_batch, app);
 
     // Add streaming indicator if active
-    // IMPORTANT: split by newlines so each logical Line = (roughly) one visual line.
-    // Without this split, a long streaming response wraps to many visual lines but
-    // counts as a single logical line, making bottom content invisible & unscrollable.
     if let Some(stream) = &app.current_stream {
         let stream_style = Style::default()
             .fg(Color::Rgb(100, 200, 255))
             .add_modifier(Modifier::DIM);
-        let stream_tool_style = Style::default()
-            .fg(app.theme.tool_exec())
-            .add_modifier(Modifier::DIM);
-        let stream_tool_ok_style = Style::default()
-            .fg(app.theme.tool_ok())
-            .add_modifier(Modifier::DIM);
-        let stream_tool_err_style = Style::default()
-            .fg(app.theme.tool_err())
-            .add_modifier(Modifier::DIM);
-        for (idx, line_text) in stream.split('\n').enumerate() {
-            let prefix = if idx == 0 { "\u{258c}" } else { " " };
-            let trimmed = line_text.trim_start();
-            let line_style = if trimmed.starts_with("\u{1f527}") {
-                stream_tool_style
-            } else if trimmed.starts_with("\u{2705}") {
-                stream_tool_ok_style
-            } else if trimmed.starts_with("\u{274c}") {
-                stream_tool_err_style
-            } else {
-                stream_style
-            };
-            lines.push(Line::from(Span::styled(
-                format!("{}{}", prefix, line_text),
-                line_style,
-            )));
-        }
+        let themes = &app.theme;
+        let styles = SectionStyles {
+            border: stream_style,
+            thinking_border: Style::default().fg(themes.thinking_dim()),
+            thinking_text: Style::default()
+                .fg(themes.thinking())
+                .add_modifier(Modifier::DIM),
+            tool_border: Style::default().fg(themes.tool_border()),
+            tool_exec: Style::default().fg(themes.tool_text()),
+            tool_ok: Style::default()
+                .fg(themes.tool_ok())
+                .add_modifier(Modifier::DIM),
+            tool_err: Style::default()
+                .fg(themes.tool_err())
+                .add_modifier(Modifier::DIM),
+        };
+        let config = SectionConfig {
+            normal_has_borders: false,
+            first_normal_prefix: "\u{258c}",
+            subsequent_normal_prefix: " ",
+        };
+        lines.extend(render_sectioned_block(
+            stream,
+            "",
+            &config,
+            &styles,
+            stream_style,
+            |full_line, prefix, _border| {
+                Line::from(Span::styled(
+                    format!("{}{}", prefix, full_line),
+                    stream_style,
+                ))
+            },
+        ));
     }
 
     let title = format!(" (1) \u{1f4ac} Chat [{}] ", app.session_name);
@@ -1228,9 +1433,9 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
         Color::DarkGray
     };
 
-    // Instead of using Paragraph::scroll() — which can leave content hidden when
-    // wrapping creates more visual lines than logical ones — we pre-select the
-    // subset of lines that fits the visible area, then render with scroll(0,0).
+    // Instead of using Paragraph::scroll() which can leave content hidden when
+    // wrapping creates more visual lines than logical ones we pre-select the
+    // subset of lines that fits the visible area then render with scroll(0,0).
     let content_width = (area.width.saturating_sub(2)).max(1) as usize; // minus borders
     let visible = (area.height.max(2) as usize) - 2; // minus borders
 
@@ -1252,8 +1457,6 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
 
     f.render_widget(paragraph, area);
 }
-
-/// Render a welcome banner centered in the chat area when there are no messages yet.
 fn render_welcome_banner(f: &mut Frame, area: Rect, app: &App) {
     let version = env!("CARGO_PKG_VERSION");
     let banner_lines = vec![
@@ -1699,48 +1902,85 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
         .add_modifier(Modifier::BOLD);
     let prompt = Span::styled(" ❯ ", input_style);
 
-    // Split input into lines
+    // Split input into logical lines
     let lines: Vec<&str> = app.input.split('\n').collect();
 
-    // Build rendered lines: first line gets prompt, rest get 3-space indent
-    let mut rendered: Vec<Line> = Vec::with_capacity(lines.len());
-    for (i, line_text) in lines.iter().enumerate() {
-        if i == 0 {
-            rendered.push(Line::from(vec![prompt.clone(), Span::raw(*line_text)]));
-        } else {
-            rendered.push(Line::from(vec![
-                Span::raw("   "), // 3-space indent to align with text after " ❯ "
-                Span::raw(*line_text),
-            ]));
+    // Available widths (minus borders).
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let first_row_text_w = inner_w.saturating_sub(3); // prompt/indent consumes 3 cols
+    let wrap_text_w = inner_w; // continuation rows have full width
+
+    // ── Manual character-wrap: build one Line per visual row ────────────
+    // We do our own wrapping (character-by-character, NOT word-wrap) so that
+    // cursor-position math matches the visual layout exactly.  Ratatui's
+    // built-in `Wrap` does word-wrap, which causes the cursor to land in the
+    // wrong column when long words straddle the wrap boundary.
+    let mut rendered: Vec<Line> = Vec::new();
+    // For cursor positioning: for each visual row, store its logical line
+    // index and the range of characters it displays.
+    struct VisRow {
+        line_idx: usize,
+        char_start: usize, // first character of this visual row in the logical line
+        char_count: usize, // how many characters this row shows
+    }
+    let mut vis_rows: Vec<VisRow> = Vec::new();
+
+    for (line_idx, line_text) in lines.iter().enumerate() {
+        let chars: Vec<char> = line_text.chars().collect();
+        let line_len = chars.len();
+
+        if line_len == 0 {
+            // Empty logical line still occupies one visual row.
+            let prefix = if line_idx == 0 {
+                prompt.clone()
+            } else {
+                Span::raw("   ")
+            };
+            rendered.push(Line::from(vec![prefix, Span::raw("")]));
+            vis_rows.push(VisRow {
+                line_idx,
+                char_start: 0,
+                char_count: 0,
+            });
+            continue;
+        }
+
+        let mut pos = 0usize;
+        let mut first = true;
+        while pos < line_len {
+            let row_width = if first { first_row_text_w } else { wrap_text_w };
+            let end = (pos + row_width).min(line_len);
+            let chunk: String = chars[pos..end].iter().collect();
+
+            let prefix = if line_idx == 0 && first {
+                prompt.clone()
+            } else if first {
+                Span::raw("   ")
+            } else {
+                Span::raw("")
+            };
+            rendered.push(Line::from(vec![prefix, Span::raw(chunk)]));
+            vis_rows.push(VisRow {
+                line_idx,
+                char_start: pos,
+                char_count: end - pos,
+            });
+
+            pos = end;
+            first = false;
         }
     }
 
-    // Content width available for text (minus borders and prompt/indent).
-    let inner_width = area.width.saturating_sub(2) as usize; // 2 for borders
-    let first_line_width = inner_width.saturating_sub(3); // " ❯ " prompt
-    let rest_line_width = inner_width.saturating_sub(3); // 3-space indent
+    let total_visual = rendered.len();
 
-    // Compute how many visual rows each logical line occupies when wrapped.
-    let mut visual_rows: Vec<usize> = Vec::with_capacity(lines.len());
-    for (i, line_text) in lines.iter().enumerate() {
-        let w = if i == 0 {
-            first_line_width
-        } else {
-            rest_line_width
-        };
-        let len = line_text.chars().count();
-        visual_rows.push(if w == 0 { 1 } else { len.div_ceil(w).max(1) });
-    }
-    let total_visual: usize = visual_rows.iter().sum();
-
-    // Bottom-anchored scroll: show last N visual rows where N = visible rows minus borders
+    // Bottom-anchored scroll: show last N visual rows
     let visible_rows = (area.height.saturating_sub(2)) as usize; // 2 for borders
     let scroll_offset = total_visual.saturating_sub(visible_rows);
 
     let title = if let Some(flow) = &app.init_flow {
         format!(" Init — {} ", flow.prompt())
     } else {
-        " (5) Input ".to_string()
+        " [1] Input ".to_string()
     };
     let input_border = if app.focus == Focus::Input {
         app.theme.accent()
@@ -1748,6 +1988,7 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
         Color::DarkGray
     };
 
+    // NOTE: no `.wrap()` — we already did character-level wrapping above.
     let paragraph = Paragraph::new(rendered)
         .block(
             Block::default()
@@ -1757,14 +1998,13 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
                 .title(title),
         )
         .scroll((scroll_offset as u16, 0))
-        .wrap(Wrap { trim: false })
         .style(Style::default().fg(Color::White));
 
     f.render_widget(paragraph, area);
 
-    // Cursor: position at `input_cursor` (char index), accounting for wrap.
+    // ── Cursor positioning ──────────────────────────────────────────────
+    // Find which logical line contains `input_cursor`.
     let cursor_char = app.input_cursor.min(app.input.chars().count());
-    // Find the logical line containing the cursor and the char offset within it.
     let mut remaining = cursor_char;
     let mut cursor_line_idx = 0usize;
     let mut col_in_line = 0usize;
@@ -1775,23 +2015,43 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
             col_in_line = remaining;
             break;
         }
-        remaining -= line_chars + 1; // +1 for the '\n' separator
+        remaining = remaining.saturating_sub(line_chars + 1); // +1 for '\n'
         cursor_line_idx = i + 1;
     }
-    let cursor_w = if cursor_line_idx == 0 {
-        first_line_width
-    } else {
-        rest_line_width
-    };
-    // Visual row of the cursor within its logical line (0-based).
-    let cursor_visual_in_line = col_in_line.checked_div(cursor_w).unwrap_or(0);
-    // Column within the wrapped row (0-based), plus prompt/indent offset.
-    let col_in_row = col_in_line.checked_rem(cursor_w).unwrap_or(0);
-    // Visual row of the cursor's logical line start (sum of previous lines' visual rows).
-    let cursor_line_start: usize = visual_rows[..cursor_line_idx].iter().sum();
-    let cursor_visual = cursor_line_start + cursor_visual_in_line;
-    let cursor_row = area.y + 1 + (cursor_visual.saturating_sub(scroll_offset)) as u16;
-    let cursor_col = area.x + 1 + 3 + col_in_row as u16;
+
+    // Walk the manually-built visual rows to find which row has this
+    // character, and what column within that row.
+    let mut cursor_vis_idx = 0usize;
+    let mut cursor_col_in_row = 0usize;
+    for (vi, vr) in vis_rows.iter().enumerate() {
+        if vr.line_idx == cursor_line_idx
+            && vr.char_start <= col_in_line
+            && col_in_line < vr.char_start + vr.char_count
+        {
+            cursor_vis_idx = vi;
+            cursor_col_in_row = col_in_line - vr.char_start;
+            break;
+        }
+        // If we reach the last visual row of this line and didn't match,
+        // the cursor is past the end — place it at the end of the last row.
+        if vr.line_idx == cursor_line_idx
+            && (vi + 1 >= vis_rows.len() || vis_rows[vi + 1].line_idx != cursor_line_idx)
+        {
+            cursor_vis_idx = vi;
+            cursor_col_in_row = vr.char_count;
+            break;
+        }
+    }
+
+    let cursor_row = area.y + 1 + (cursor_vis_idx.saturating_sub(scroll_offset)) as u16;
+
+    // Column offset: first visual row of its logical line has prompt/indent (3).
+    let is_first = vis_rows
+        .get(cursor_vis_idx)
+        .map(|vr| vr.char_start == 0)
+        .unwrap_or(true);
+    let col_offset: u16 = if is_first { 3 } else { 0 };
+    let cursor_col = area.x + 1 + col_offset + cursor_col_in_row as u16;
     f.set_cursor_position((cursor_col, cursor_row));
 }
 

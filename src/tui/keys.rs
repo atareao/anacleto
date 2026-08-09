@@ -6,6 +6,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use crate::engine::orchestrator::EngineCommand;
 use crate::tui::app::App;
 use crate::tui::keymap::Action;
+use crate::tui::render::shift_char;
 use crate::tui::toast::ToastKind;
 use crate::tui::types::Focus;
 
@@ -260,24 +261,24 @@ impl App {
         // ── Edit agent/subagent dialog navigation ──────────────────
         if self.edit_dialog.visible {
             match key {
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::Char('k') => {
                     if self.edit_dialog.index > 0 {
                         self.edit_dialog.index -= 1;
                     }
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     let len = self.edit_dialog.section_len();
                     if len > 0 && self.edit_dialog.index + 1 < len {
                         self.edit_dialog.index += 1;
                     }
                 }
-                KeyCode::Left => {
+                KeyCode::Left | KeyCode::Char('h') => {
                     if self.edit_dialog.section > 0 {
                         self.edit_dialog.section -= 1;
                         self.edit_dialog.index = 0;
                     }
                 }
-                KeyCode::Right => {
+                KeyCode::Right | KeyCode::Char('l') => {
                     if self.edit_dialog.section + 1 < self.edit_dialog.section_count() {
                         self.edit_dialog.section += 1;
                         self.edit_dialog.index = 0;
@@ -439,6 +440,43 @@ impl App {
             return;
         }
 
+        // / key from any panel switches focus to Input and inserts the slash
+        // so the user can immediately start typing a command.
+        //
+        // Without Kitty protocol: the terminal sends the actual character '/'
+        // (KeyModifiers::NONE on US layout, KeyModifiers::SHIFT on some
+        // terminals with Spanish layout where / is Shift+7).
+        //
+        // With Kitty protocol (kb_supported): the terminal sends the raw key
+        // (e.g. '7' on Spanish layout) and the SHIFT modifier; the application
+        // resolves the actual character via shift_char(). We use shift_char
+        // here too so the detection works regardless of keyboard layout.
+        if self.focus != Focus::Input {
+            let produces_slash = match key {
+                KeyCode::Char(c)
+                    if c == '/'
+                        && (modifiers == KeyModifiers::NONE
+                            || modifiers == KeyModifiers::SHIFT) =>
+                {
+                    true
+                }
+                KeyCode::Char(c)
+                    if self.kb_supported
+                        && modifiers == KeyModifiers::SHIFT
+                        && shift_char(c, &self.lang) == '/' =>
+                {
+                    true
+                }
+                _ => false,
+            };
+            if produces_slash {
+                self.focus = Focus::Input;
+                self.input = "/".to_string();
+                self.input_cursor = 1;
+                return;
+            }
+        }
+
         if self.keymap_applies(key_event) {
             if self.keymap.matches(key_event, Action::FocusChat) {
                 self.focus = Focus::Chat;
@@ -476,23 +514,24 @@ impl App {
             }
 
             // Tab / Shift+Tab cycle focus through panels.
+            // Order: Input(1) → Chat(2) → Info(3) → Agents(4) → Queue(5) → Input(1)
             if self.keymap.matches(key_event, Action::FocusNext) {
                 self.focus = match self.focus {
+                    Focus::Input => Focus::Chat,
                     Focus::Chat => Focus::Info,
                     Focus::Info => Focus::Agents,
                     Focus::Agents => Focus::Queue,
                     Focus::Queue => Focus::Input,
-                    Focus::Input => Focus::Chat,
                 };
                 return;
             }
             if self.keymap.matches(key_event, Action::FocusPrev) {
                 self.focus = match self.focus {
-                    Focus::Chat => Focus::Input,
                     Focus::Input => Focus::Queue,
                     Focus::Queue => Focus::Agents,
                     Focus::Agents => Focus::Info,
                     Focus::Info => Focus::Chat,
+                    Focus::Chat => Focus::Input,
                 };
                 return;
             }
@@ -543,7 +582,6 @@ impl App {
                 // Clear any in-progress streaming response
                 self.current_stream = None;
                 self.current_thinking = None;
-                self.stream_committed_index = None;
                 // Show a toast notification
                 self.toasts.push("⏹ Stopped", ToastKind::Info);
                 return;
@@ -578,12 +616,27 @@ impl App {
         }
     }
 
-    /// Handle a mouse click — set focus to the panel under the cursor.
+    /// Handle a mouse click or scroll — set focus to the panel under the cursor,
+    /// or scroll the chat with the mouse wheel.
     pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
-        // Only respond to left-click press events.
         use crossterm::event::MouseButton;
-        if mouse.kind != crossterm::event::MouseEventKind::Down(MouseButton::Left) {
-            return;
+        use crossterm::event::MouseEventKind;
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                // Scroll up (show older content)
+                self.chat_scroll = self.chat_scroll.saturating_add(3);
+                return;
+            }
+            MouseEventKind::ScrollDown => {
+                // Scroll down (show newer content)
+                self.chat_scroll = self.chat_scroll.saturating_sub(3);
+                return;
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Left-click: set focus to the panel under the cursor
+            }
+            _ => return,
         }
 
         let Ok((term_width, term_height)) = crossterm::terminal::size() else {
@@ -805,5 +858,140 @@ mod tests {
         assert!(app.edit_dialog.visible, "dialog should open on Ctrl+E");
         assert_eq!(app.edit_dialog.target_name, "reviewer");
         assert!(!app.edit_dialog.is_root);
+    }
+
+    #[test]
+    fn slash_from_chat_focuses_input_and_inserts_slash() {
+        let mut app = test_app();
+        app.focus = Focus::Chat;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_from_info_focuses_input_and_inserts_slash() {
+        let mut app = test_app();
+        app.focus = Focus::Info;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_from_agents_focuses_input_and_inserts_slash() {
+        let mut app = test_app();
+        app.focus = Focus::Agents;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_from_queue_focuses_input_and_inserts_slash() {
+        let mut app = test_app();
+        app.focus = Focus::Queue;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_from_input_does_not_duplicate() {
+        // When already in Input, pressing / should just type the character
+        // (handled by handle_input_key), not trigger the focus switch.
+        let mut app = test_app();
+        app.focus = Focus::Input;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_with_alt_modifier_does_not_trigger_focus_switch() {
+        // Alt+/ should not switch focus (it might be used for something else).
+        let mut app = test_app();
+        app.focus = Focus::Chat;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::ALT);
+
+        // Focus should remain on Chat since Alt modifier is used
+        assert_eq!(app.focus, Focus::Chat);
+    }
+
+    #[test]
+    fn slash_with_shift_modifier_triggers_focus_switch() {
+        // Shift+/ (Spanish keyboard layout) should switch focus to Input.
+        let mut app = test_app();
+        app.focus = Focus::Chat;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::SHIFT);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_with_kitty_protocol_spanish_layout() {
+        // With Kitty protocol enabled and Spanish keyboard,
+        // Shift+7 arrives as Char('7') + SHIFT.
+        let mut app = test_app();
+        app.kb_supported = true;
+        app.lang = "es_ES.UTF-8".to_string();
+        app.focus = Focus::Chat;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('7'), KeyModifiers::SHIFT);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_kitty_protocol_no_false_positive() {
+        // With Kitty protocol, plain '7' without shift should NOT trigger.
+        let mut app = test_app();
+        app.kb_supported = true;
+        app.lang = "es_ES.UTF-8".to_string();
+        app.focus = Focus::Chat;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('7'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Chat);
+        assert!(app.input.is_empty());
     }
 }

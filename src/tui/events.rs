@@ -54,6 +54,9 @@ impl App {
                 }
             }
             EngineEvent::AgentStreamChunk { content, .. } => {
+                // Commit any pending thinking as its own block first so
+                // thinking appears before the content it precedes.
+                commit_thinking_block(self);
                 let stream = self.current_stream.get_or_insert_with(String::new);
                 // If the stream ends with a tool result line (✅ or ❌) and the
                 // new content doesn't start with a newline, insert one to prevent
@@ -71,37 +74,31 @@ impl App {
             }
             EngineEvent::AgentThinkingChunk { content, .. } => {
                 if self.show_thinking {
+                    // If there's an active stream, commit it as a definitive
+                    // message before starting a new thinking block, so the
+                    // chronological order (stream arrived before thinking) is
+                    // preserved in the message timeline.
+                    if self.current_stream.is_some() {
+                        commit_stream_block(self);
+                    }
+                    // Always accumulate thinking in current_thinking.
+                    // It will be flushed to the stream by the next
+                    // non-thinking event handler (ToolExecution,
+                    // ToolResult, AgentStreamChunk, or AgentOutput)
+                    // so thinking and tool events stay interleaved.
                     let thinking = self.current_thinking.get_or_insert_with(String::new);
                     thinking.push_str(&content);
                 }
             }
             EngineEvent::AgentOutput { content, .. } => {
-                // Capture the accumulated stream (which includes tool markers
-                // appended by ToolExecution/ToolResult handlers) before
-                // clearing it, so tool calls remain visible in the final
-                // rendered message instead of disappearing.
-                let mut final_content = self.current_stream.take().unwrap_or(content);
-                // Persist the thinking accumulated during streaming so the
-                // reasoning is not lost when the answer completes. It is
-                // wrapped in a marker that the chat renderer detects, so it is
-                // shown in its correct position (before the response text)
-                // instead of being discarded after streaming.
-                if let Some(thinking) = self.current_thinking.take() {
-                    if !thinking.trim().is_empty() {
-                        final_content =
-                            format!("[thinking]\n{}\n[/thinking]\n{}", thinking, final_content);
-                    }
+                // Commit any pending stream first (it arrived chronologically
+                // before any pending thinking block), then commit thinking.
+                if self.current_stream.is_some() {
+                    commit_stream_block(self);
                 }
-                if let Some(idx) = self.stream_committed_index.take() {
-                    // The partial stream was already committed; replace exactly
-                    // that message with the full content to avoid duplication.
-                    if let Some(msg) = self.messages.get_mut(idx) {
-                        *msg = final_content;
-                    } else {
-                        self.push_msg(final_content);
-                    }
-                } else {
-                    self.push_msg(final_content);
+                commit_thinking_block(self);
+                if !content.is_empty() {
+                    self.push_msg(content);
                 }
                 self.chat_scroll = 0;
             }
@@ -245,12 +242,14 @@ impl App {
             EngineEvent::ToolExecution {
                 tool_name, task, ..
             } => {
+                // Commit any pending thinking first (it arrived chronologically
+                // before the stream), then commit any pending stream content
+                // so it appears before the tool execution marker in the chat
+                // timeline, rather than being pushed below it.
+                commit_thinking_block(self);
+                commit_stream_block(self);
                 let msg = format!("\u{1f527} {}: {}", tool_name, one_line(&task, 60));
-                if let Some(stream) = &mut self.current_stream {
-                    stream.push_str(&format!("\n{}", msg));
-                } else {
-                    self.messages.push(msg);
-                }
+                self.push_msg(msg);
                 self.chat_scroll = 0;
             }
             EngineEvent::ToolResult {
@@ -259,6 +258,9 @@ impl App {
                 summary,
                 ..
             } => {
+                // Commit any thinking that arrived between ToolExecution
+                // and ToolResult, then push the result as its own message.
+                commit_thinking_block(self);
                 let icon = if success { "\u{2705}" } else { "\u{274c}" };
                 let summary = one_line(&summary, 60);
                 let msg = if success {
@@ -266,11 +268,7 @@ impl App {
                 } else {
                     format!("{} {} failed: {}", icon, tool_name, summary)
                 };
-                if let Some(stream) = &mut self.current_stream {
-                    stream.push_str(&format!("\n{}", msg));
-                } else {
-                    self.push_msg(msg);
-                }
+                self.push_msg(msg);
                 self.chat_scroll = 0;
             }
             EngineEvent::LlmRequestDebug {
@@ -355,6 +353,9 @@ impl App {
                     self.skills_list.len()
                 ));
                 self.chat_scroll = 0;
+            }
+            EngineEvent::SkillsDiscovered { skills } => {
+                self.all_discovered_skills = skills;
             }
             EngineEvent::McpsListed(mcps) => {
                 self.mcps_list = mcps;
@@ -523,6 +524,25 @@ impl App {
     }
 }
 
+/// Commit any pending thinking block as a separate message, wrapped in
+/// `[thinking]`/`[/thinking]` markers so the renderer can style it.
+fn commit_thinking_block(app: &mut App) {
+    if let Some(thinking) = app.current_thinking.take() {
+        if !thinking.trim().is_empty() {
+            app.push_msg(format!("[thinking]\n{}\n[/thinking]", thinking.trim()));
+        }
+    }
+}
+
+/// Commit the current stream block as a message.
+fn commit_stream_block(app: &mut App) {
+    if let Some(stream) = app.current_stream.take() {
+        if !stream.trim().is_empty() {
+            app.push_msg(stream);
+        }
+    }
+}
+
 /// Collapse a string to a single line (newlines become spaces) and truncate
 /// it to at most `max_chars` characters, appending an ellipsis when cut.
 ///
@@ -640,8 +660,8 @@ mod tests {
             content: "hello world".to_string(),
         });
 
-        // On completion the thinking must not be discarded; it is folded into
-        // the committed message before the response text.
+        // On completion the thinking is committed as its own block and the
+        // streamed response text becomes a separate message.
         app.handle_event(EngineEvent::AgentOutput {
             agent_id: AgentId::new(),
             agent_name: "root".to_string(),
@@ -650,7 +670,10 @@ mod tests {
 
         assert_eq!(
             app.messages,
-            vec!["[thinking]\nreasoning step\n[/thinking]\nhello world".to_string()]
+            vec![
+                "[thinking]\nreasoning step\n[/thinking]".to_string(),
+                "hello world".to_string(),
+            ]
         );
         assert!(app.current_thinking.is_none());
         assert!(app.current_stream.is_none());

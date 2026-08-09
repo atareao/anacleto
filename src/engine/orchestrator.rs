@@ -182,6 +182,39 @@ impl Engine {
         self.database = Some(db.clone());
         self.active_session_id = Some(session_id);
 
+        // Try to load the persisted active agent for this workspace.
+        // If found and the agent still exists in config, override the default.
+        {
+            let workspace_str = self.workspace.to_string_lossy().to_string();
+            if let Ok(Some(persisted)) = db.get_workspace_active_agent(&workspace_str).await {
+                if self
+                    .config
+                    .agents
+                    .iter()
+                    .any(|a| a.name == persisted && a.role == AgentRole::Root)
+                {
+                    self.active_agent = persisted.clone();
+                    // Update current_model to match the persisted agent
+                    if let Some(agent) = self.config.agents.iter().find(|a| a.name == persisted) {
+                        self.current_model = agent.model.clone();
+                    }
+                    // Re-notify TUI with the persisted overrides
+                    self.event_tx
+                        .send(EngineEvent::AgentSwitched {
+                            name: persisted.clone(),
+                        })
+                        .await
+                        .ok();
+                    self.event_tx
+                        .send(EngineEvent::ModelChanged {
+                            model: self.current_model.clone(),
+                        })
+                        .await
+                        .ok();
+                }
+            }
+        }
+
         // Load plugins from the global plugins directory.
         let plugins_dir = crate::config::paths::global_plugins_dir();
         let mut plugins = PluginRegistry::new();
@@ -276,20 +309,63 @@ impl Engine {
             None
         };
 
-        // Load all skills into the central registry once
+        // Load all skills into the central registry once.
+        // Includes skills from agent config paths AND from $HOME/.agents/skills.
         {
-            let all_skill_paths: Vec<PathBuf> = self
+            let mut all_skill_paths: Vec<PathBuf> = self
                 .config
                 .agents
                 .iter()
                 .flat_map(|a| a.skills.clone())
                 .collect();
+            // Auto-discover skills from $HOME/.agents/skills
+            // The directory contains subdirectories, one per skill (e.g.
+            // shell/, code-review/), so we MUST iterate its children
+            // rather than push the parent directory directly.
+            let home_skills_dir = crate::config::paths::global_skills_dir();
+            if home_skills_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&home_skills_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            all_skill_paths.push(path);
+                        }
+                    }
+                }
+            }
+
+            // Auto-discover skills from <project_root>/.agents/skills
+            // Same structure: one subdirectory per skill with a SKILL.md file.
+            let project_skills_dir = crate::config::paths::project_skills_dir(None);
+            if project_skills_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&project_skills_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            all_skill_paths.push(path);
+                        }
+                    }
+                }
+            }
             if !all_skill_paths.is_empty() {
                 let mut reg = self.skill_registry.write().await;
                 if let Err(e) = reg.load_from_paths(&all_skill_paths) {
                     eprintln!("Warning: Failed to load some skills: {e}");
                 }
             }
+
+            // Emit SkillsDiscovered so the TUI knows all available skills
+            // immediately (not just after an explicit ScanSkills command).
+            let skill_names: Vec<String> = {
+                let reg = self.skill_registry.read().await;
+                reg.list().iter().map(|s| s.name.clone()).collect()
+            };
+            self.event_tx
+                .send(EngineEvent::SkillsDiscovered {
+                    skills: skill_names,
+                })
+                .await
+                .ok();
         }
 
         // Merge auto-detected, plugin, and skill hooks into the hook registry.
@@ -686,6 +762,9 @@ impl Engine {
                                     }
                                 }
                             }
+                            EngineCommand::ScanSkills => {
+                                self.handle_scan_skills().await;
+                            }
                         }
                         Ok(())
                     }
@@ -773,6 +852,12 @@ impl Engine {
         let name = name.to_string();
         self.active_agent = name.clone();
         self.current_model = agent.model.clone();
+
+        // Persist the active agent for this workspace so it survives restarts.
+        if let Some(db) = &self.database {
+            let workspace_str = self.workspace.to_string_lossy().to_string();
+            let _ = db.set_workspace_active_agent(&workspace_str, &name).await;
+        }
 
         self.event_tx
             .send(EngineEvent::AgentSwitched { name })
@@ -1093,6 +1178,27 @@ impl Engine {
         self.event_tx.send(EngineEvent::ConfigReloaded).await.ok();
 
         Ok(())
+    }
+    /// Re-discover skills on disk and reload the skill registry.
+    async fn handle_scan_skills(&mut self) {
+        {
+            let mut reg = self.skill_registry.write().await;
+            if let Err(e) = reg.discover_and_register() {
+                eprintln!("Warning: Failed to scan skills: {e}");
+                return;
+            }
+        }
+
+        // Notify the TUI with the updated list of skill names
+        let names: Vec<String> = {
+            let reg = self.skill_registry.read().await;
+            reg.list().iter().map(|s| s.name.clone()).collect()
+        };
+
+        self.event_tx
+            .send(EngineEvent::SkillsDiscovered { skills: names })
+            .await
+            .ok();
     }
 }
 // ---------------------------------------------------------------------------

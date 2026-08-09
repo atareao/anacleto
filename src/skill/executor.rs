@@ -50,12 +50,16 @@ impl SkillExecutor for DefaultSkillExecutor {
             }
         } else {
             format!(
-                r#"Executed skill "{}". Here are the skill instructions:
+                r#"📋 Loaded instructions from skill "{}". These are NOT the final result — they tell you HOW to fulfill the request.
 
+Follow the instructions below carefully. You may need to use other tools (like `shell`, `webfetch`, etc.) to actually fetch data or perform actions.
+
+--- Skill instructions for "{}" ---
 {}
+--- End of skill instructions ---
 
-The task requested was: {}"#,
-                skill.name, skill.instructions, task
+The original task was: {}"#,
+                skill.name, skill.name, skill.instructions, task
             )
         };
 
@@ -136,6 +140,7 @@ mod tests {
         let skill = make_skill("code-review", "Check for correctness.");
         let result = executor.execute(&skill, "Review this code").await;
         assert!(result.success);
+        assert!(result.output.contains("Loaded instructions from skill"));
         assert!(result.output.contains("code-review"));
         assert!(result.output.contains("Check for correctness."));
     }
@@ -146,6 +151,7 @@ mod tests {
         let skill = make_skill("custom-tool", "Do something custom.");
         let result = executor.execute(&skill, "Do it").await;
         assert!(result.success);
+        assert!(result.output.contains("Loaded instructions from skill"));
         assert!(result.output.contains("custom-tool"));
     }
 }
