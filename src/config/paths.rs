@@ -56,6 +56,19 @@ pub fn global_plugins_dir() -> PathBuf {
         .join("plugins")
 }
 
+/// Path to the global skills directory: `$HOME/.agents/skills`.
+pub fn global_skills_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".agents")
+        .join("skills")
+}
+
+/// Path to the project skills directory: `<project_root>/.agents/skills`.
+pub fn project_skills_dir(explicit_root: Option<&Path>) -> PathBuf {
+    project_root(explicit_root).join(".agents").join("skills")
+}
+
 /// Expand a leading `~` (or `~/`) in `path` to the user's home directory.
 ///
 /// - `~` → home directory
@@ -156,5 +169,14 @@ mod tests {
         // `~user/...` is not expanded (rare case, not required).
         let p = Path::new("~user/foo");
         assert_eq!(expand_tilde(p), p);
+    }
+
+    #[test]
+    fn test_project_skills_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(root.join(".agents")).unwrap();
+        let p = project_skills_dir(Some(&root));
+        assert_eq!(p, root.join(".agents").join("skills"));
     }
 }

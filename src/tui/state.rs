@@ -4,19 +4,21 @@ use crate::agent::types::AgentStatus;
 use crate::tui::app::App;
 
 impl App {
-    /// Number of unique MCP servers shown in the MCPs sidebar panel.
+    /// Number of unique MCP servers for the active agent.
     pub(crate) fn unique_mcp_count(&self) -> usize {
         self.agents
             .iter()
+            .filter(|a| a.name == self.active_agent)
             .flat_map(|a| a.mcps.iter())
             .collect::<std::collections::BTreeSet<_>>()
             .len()
     }
 
-    /// Number of unique skills shown in the Skills sidebar panel.
+    /// Number of unique skills for the active agent.
     pub(crate) fn unique_skill_count(&self) -> usize {
         self.agents
             .iter()
+            .filter(|a| a.name == self.active_agent)
             .flat_map(|a| a.skills.iter())
             .collect::<std::collections::BTreeSet<_>>()
             .len()
@@ -28,6 +30,14 @@ impl App {
             .iter()
             .filter(|a| a.status != AgentStatus::Completed)
             .count()
+    }
+
+    /// Number of unique subagent names configured for the active agent.
+    pub(crate) fn unique_subagent_count(&self) -> usize {
+        self.configured_subagents
+            .get(&self.active_agent)
+            .map(|v| v.iter().collect::<std::collections::BTreeSet<_>>().len())
+            .unwrap_or(0)
     }
 }
 

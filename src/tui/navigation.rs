@@ -14,7 +14,7 @@ use super::types::Focus;
 use crate::tui::keymap::Action;
 
 impl App {
-    /// Handle a key while the Chat window (1) has focus.
+    /// Handle a key while the Chat window (2) has focus.
     pub(crate) fn handle_chat_key(
         &mut self,
         key: KeyCode,
@@ -42,7 +42,7 @@ impl App {
         }
     }
 
-    /// Handle a key while the Info panel (2) has focus — the unified
+    /// Handle a key while the Info panel (3) has focus — the unified
     /// Skills/MCPs tabbed panel.
     pub(crate) fn handle_info_panel_key(
         &mut self,
@@ -50,13 +50,13 @@ impl App {
         modifiers: KeyModifiers,
         key_event: KeyEvent,
     ) {
-        // Left/Right cycle through the Skills/MCPs tabs.
+        // Left/Right (and vim h/l) cycle through the Skills/MCPs/SubAgents tabs.
         match key {
-            KeyCode::Right => {
-                self.info_tab = (self.info_tab + 1) % 2;
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.info_tab = (self.info_tab + 1) % 3;
                 return;
             }
-            KeyCode::Left => {
+            KeyCode::Left | KeyCode::Char('h') => {
                 self.info_tab = self.info_tab.saturating_sub(1);
                 return;
             }
@@ -66,14 +66,18 @@ impl App {
         // Up/Down (and list navigation) move the selection within the active tab.
         let (len, index) = if self.info_tab == 0 {
             (self.unique_skill_count(), self.skill_panel_index)
-        } else {
+        } else if self.info_tab == 1 {
             (self.unique_mcp_count(), self.mcp_panel_index)
+        } else {
+            (self.unique_subagent_count(), self.subagent_panel_index)
         };
         let new_index = self.handle_list_nav_key(key, modifiers, key_event, len, index);
         if self.info_tab == 0 {
             self.skill_panel_index = new_index;
-        } else {
+        } else if self.info_tab == 1 {
             self.mcp_panel_index = new_index;
+        } else {
+            self.subagent_panel_index = new_index;
         }
     }
 
@@ -170,6 +174,23 @@ impl App {
         let len = self.agent_panel_count();
         self.agent_panel_index =
             self.handle_list_nav_key(key, modifiers, key_event, len, self.agent_panel_index);
+
+        // Enter switches to the selected agent
+        if key == KeyCode::Enter {
+            let display_agents: Vec<&crate::tui::types::AgentInfo> = self
+                .agents
+                .iter()
+                .filter(|a| a.status != crate::agent::types::AgentStatus::Completed)
+                .collect();
+            if let Some(agent) = display_agents.get(self.agent_panel_index) {
+                if agent.name != self.active_agent {
+                    let name = agent.name.clone();
+                    let _ = self.cmd_tx.try_send(
+                        crate::engine::orchestrator::EngineCommand::SwitchAgent(name),
+                    );
+                }
+            }
+        }
     }
 
     /// Shared Vim/arrow navigation for a list panel (MCPs, Skills, Agents).
@@ -277,6 +298,9 @@ mod tests {
         app.handle_info_panel_key(c, m, ev);
         assert_eq!(app.info_tab, 1);
         app.handle_info_panel_key(c, m, ev);
+        assert_eq!(app.info_tab, 2);
+        // Third Right wraps back to 0 (3 tabs).
+        app.handle_info_panel_key(c, m, ev);
         assert_eq!(app.info_tab, 0);
     }
 
@@ -309,6 +333,7 @@ mod tests {
     fn info_tab_skill_down_navigates_skill_list() {
         let mut app = test_app();
         app.info_tab = 0;
+        app.active_agent = "agent".to_string();
         app.agents.push(agent_with_skills(3));
         app.skill_panel_index = 0;
         let (d, ev, m) = key(KeyCode::Down);
@@ -323,6 +348,7 @@ mod tests {
     fn info_tab_mcp_down_navigates_mcp_list() {
         let mut app = test_app();
         app.info_tab = 1;
+        app.active_agent = "agent".to_string();
         app.agents.push(agent_with_mcps(3));
         app.mcp_panel_index = 0;
         let (d, ev, m) = key(KeyCode::Down);

@@ -67,6 +67,7 @@ impl LlmProvider for BedrockProvider {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::types::RetryConfig;
     use super::*;
     use crate::llm::types::CacheControl;
 
@@ -82,6 +83,7 @@ mod tests {
             output_price_per_million: 15.0,
             cache_control: CacheControl::Auto,
             thinking_budget_tokens: None,
+            retry: RetryConfig::default(),
         };
         let provider = BedrockProvider::new(&config);
         assert_eq!(provider.context_window(), 200_000);
@@ -100,6 +102,7 @@ mod tests {
             output_price_per_million: 15.0,
             cache_control: CacheControl::Auto,
             thinking_budget_tokens: None,
+            retry: RetryConfig::default(),
         };
         let provider = BedrockProvider::new(&config);
         // The inner OpenAI-compatible provider should have a Bedrock base URL.

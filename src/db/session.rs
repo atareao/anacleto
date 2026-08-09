@@ -159,6 +159,21 @@ impl Database {
             .await?;
         self.ensure_column("sessions", "parent_id", "TEXT").await?;
 
+        // Workspace settings table for per-workspace preferences
+        // (e.g. active agent, theme, etc.)
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS workspace_settings (
+                workspace_path TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (workspace_path, key)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -506,6 +521,72 @@ impl Database {
     pub async fn close(self) -> Result<()> {
         self.pool.close().await;
         Ok(())
+    }
+
+    // ── Workspace settings ────────────────────────────────────────────
+
+    /// Get a workspace setting by key.
+    pub async fn get_workspace_setting(
+        &self,
+        workspace_path: &str,
+        key: &str,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            "SELECT value FROM workspace_settings WHERE workspace_path = ? AND key = ?",
+        )
+        .bind(workspace_path)
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| r.get("value")))
+    }
+
+    /// Set a workspace setting (insert or replace).
+    pub async fn set_workspace_setting(
+        &self,
+        workspace_path: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO workspace_settings (workspace_path, key, value)
+            VALUES (?, ?, ?)
+            "#,
+        )
+        .bind(workspace_path)
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete a workspace setting.
+    pub async fn delete_workspace_setting(&self, workspace_path: &str, key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM workspace_settings WHERE workspace_path = ? AND key = ?")
+            .bind(workspace_path)
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Get the active agent name for a workspace.
+    pub async fn get_workspace_active_agent(&self, workspace_path: &str) -> Result<Option<String>> {
+        self.get_workspace_setting(workspace_path, "active_agent")
+            .await
+    }
+
+    /// Set the active agent name for a workspace.
+    pub async fn set_workspace_active_agent(
+        &self,
+        workspace_path: &str,
+        agent_name: &str,
+    ) -> Result<()> {
+        self.set_workspace_setting(workspace_path, "active_agent", agent_name)
+            .await
     }
 }
 

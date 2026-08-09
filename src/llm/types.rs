@@ -1,3 +1,4 @@
+use crate::config::types::RetryConfig;
 use serde::{Deserialize, Serialize};
 
 /// Role of a message in a conversation.
@@ -137,4 +138,8 @@ pub struct LlmProviderConfig {
     /// Anthropic extended thinking budget (tokens). When `Some`, the request
     /// enables extended thinking with this budget. Ignored by other providers.
     pub thinking_budget_tokens: Option<u32>,
+
+    /// Retry configuration for this provider. Used for LLM completions,
+    /// streaming, and summarization calls.
+    pub retry: RetryConfig,
 }

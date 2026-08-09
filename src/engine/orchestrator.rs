@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::agent::lifecycle::{AgentHandle, SpawnAgentConfig, spawn_agent};
 use crate::agent::types::{Agent, AgentId, AgentMessage, AgentMode, AgentRole, AgentStatus};
 use crate::config::Config;
-use crate::config::types::{CacheMode, OllamaConfig, ProviderConfig};
+use crate::config::types::{CacheMode, OllamaConfig, ProviderConfig, RetryConfig};
 use crate::db::models::{Snapshot, StoredMessage};
 use crate::db::session::Database;
 use crate::engine::jobs::JobRegistry;
@@ -182,6 +182,39 @@ impl Engine {
         self.database = Some(db.clone());
         self.active_session_id = Some(session_id);
 
+        // Try to load the persisted active agent for this workspace.
+        // If found and the agent still exists in config, override the default.
+        {
+            let workspace_str = self.workspace.to_string_lossy().to_string();
+            if let Ok(Some(persisted)) = db.get_workspace_active_agent(&workspace_str).await {
+                if self
+                    .config
+                    .agents
+                    .iter()
+                    .any(|a| a.name == persisted && a.role == AgentRole::Root)
+                {
+                    self.active_agent = persisted.clone();
+                    // Update current_model to match the persisted agent
+                    if let Some(agent) = self.config.agents.iter().find(|a| a.name == persisted) {
+                        self.current_model = agent.model.clone();
+                    }
+                    // Re-notify TUI with the persisted overrides
+                    self.event_tx
+                        .send(EngineEvent::AgentSwitched {
+                            name: persisted.clone(),
+                        })
+                        .await
+                        .ok();
+                    self.event_tx
+                        .send(EngineEvent::ModelChanged {
+                            model: self.current_model.clone(),
+                        })
+                        .await
+                        .ok();
+                }
+            }
+        }
+
         // Load plugins from the global plugins directory.
         let plugins_dir = crate::config::paths::global_plugins_dir();
         let mut plugins = PluginRegistry::new();
@@ -199,7 +232,7 @@ impl Engine {
         let cache: CacheControl = self.config.models.cache.mode.into();
 
         if let Some(ref cfg) = self.config.models.anthropic {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Anthropic, cache);
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Anthropic, cache, &self.config.session.retry);
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -207,7 +240,7 @@ impl Engine {
             llm_registry.register("anthropic".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.openai {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::OpenAI, cache);
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::OpenAI, cache, &self.config.session.retry);
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -215,7 +248,7 @@ impl Engine {
             llm_registry.register("openai".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.openrouter {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::OpenRouter, cache);
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::OpenRouter, cache, &self.config.session.retry);
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -223,7 +256,7 @@ impl Engine {
             llm_registry.register("openrouter".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.ollama {
-            let llm_cfg = ollama_config_to_llm(cfg, cache);
+            let llm_cfg = ollama_config_to_llm(cfg, cache, &self.config.session.retry);
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -231,7 +264,7 @@ impl Engine {
             llm_registry.register("ollama".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.bedrock {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Bedrock, cache);
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Bedrock, cache, &self.config.session.retry);
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -239,7 +272,7 @@ impl Engine {
             llm_registry.register("bedrock".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.azure {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Azure, cache);
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Azure, cache, &self.config.session.retry);
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -247,7 +280,7 @@ impl Engine {
             llm_registry.register("azure".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.google {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Google, cache);
+            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Google, cache, &self.config.session.retry);
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -276,20 +309,63 @@ impl Engine {
             None
         };
 
-        // Load all skills into the central registry once
+        // Load all skills into the central registry once.
+        // Includes skills from agent config paths AND from $HOME/.agents/skills.
         {
-            let all_skill_paths: Vec<PathBuf> = self
+            let mut all_skill_paths: Vec<PathBuf> = self
                 .config
                 .agents
                 .iter()
                 .flat_map(|a| a.skills.clone())
                 .collect();
+            // Auto-discover skills from $HOME/.agents/skills
+            // The directory contains subdirectories, one per skill (e.g.
+            // shell/, code-review/), so we MUST iterate its children
+            // rather than push the parent directory directly.
+            let home_skills_dir = crate::config::paths::global_skills_dir();
+            if home_skills_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&home_skills_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            all_skill_paths.push(path);
+                        }
+                    }
+                }
+            }
+
+            // Auto-discover skills from <project_root>/.agents/skills
+            // Same structure: one subdirectory per skill with a SKILL.md file.
+            let project_skills_dir = crate::config::paths::project_skills_dir(None);
+            if project_skills_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&project_skills_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            all_skill_paths.push(path);
+                        }
+                    }
+                }
+            }
             if !all_skill_paths.is_empty() {
                 let mut reg = self.skill_registry.write().await;
                 if let Err(e) = reg.load_from_paths(&all_skill_paths) {
                     eprintln!("Warning: Failed to load some skills: {e}");
                 }
             }
+
+            // Emit SkillsDiscovered so the TUI knows all available skills
+            // immediately (not just after an explicit ScanSkills command).
+            let skill_names: Vec<String> = {
+                let reg = self.skill_registry.read().await;
+                reg.list().iter().map(|s| s.name.clone()).collect()
+            };
+            self.event_tx
+                .send(EngineEvent::SkillsDiscovered {
+                    skills: skill_names,
+                })
+                .await
+                .ok();
         }
 
         // Merge auto-detected, plugin, and skill hooks into the hook registry.
@@ -658,6 +734,15 @@ impl Engine {
                                     .await;
                             }
                             EngineCommand::Shutdown => unreachable!(),
+                            EngineCommand::UpdateAgentConfig {
+                                name,
+                                skills,
+                                mcps,
+                                subagents,
+                            } => {
+                                self.handle_update_agent_config(name, skills, mcps, subagents)
+                                    .await?;
+                            }
                             EngineCommand::ReloadConfig => {
                                 match crate::config::loader::load_config(None) {
                                     Ok(new_config) => {
@@ -676,6 +761,9 @@ impl Engine {
                                             .await;
                                     }
                                 }
+                            }
+                            EngineCommand::ScanSkills => {
+                                self.handle_scan_skills().await;
                             }
                         }
                         Ok(())
@@ -764,6 +852,12 @@ impl Engine {
         let name = name.to_string();
         self.active_agent = name.clone();
         self.current_model = agent.model.clone();
+
+        // Persist the active agent for this workspace so it survives restarts.
+        if let Some(db) = &self.database {
+            let workspace_str = self.workspace.to_string_lossy().to_string();
+            let _ = db.set_workspace_active_agent(&workspace_str, &name).await;
+        }
 
         self.event_tx
             .send(EngineEvent::AgentSwitched { name })
@@ -955,6 +1049,157 @@ impl Engine {
         }
         Ok(())
     }
+
+    /// Handle an `UpdateAgentConfig` command from the TUI.
+    ///
+    /// Updates the in-memory agent configuration (skills, MCPs, subagents)
+    /// and, if the agent is currently running, respawns it so the changes
+    /// take effect immediately.
+    async fn handle_update_agent_config(
+        &mut self,
+        name: String,
+        skills: Vec<String>,
+        mcps: Vec<String>,
+        subagents: Option<Vec<String>>,
+    ) -> Result<()> {
+        // Update the in-memory AgentConfig
+        if let Some(agent_config) = self.config.agents.iter_mut().find(|a| a.name == name) {
+            // Resolve skill names to paths using the skill registry
+            let reg = self.skill_registry.read().await;
+            let skill_paths: Vec<PathBuf> = skills
+                .iter()
+                .filter_map(|s| reg.get_source_path(s).cloned())
+                .collect();
+            drop(reg);
+
+            agent_config.skills = skill_paths;
+            agent_config.mcps = mcps;
+            if let Some(subagents) = subagents {
+                agent_config.subagents = subagents;
+            }
+        }
+
+        // If the agent is currently running, respawn it to pick up changes
+        if self.agents.contains_key(&name) {
+            // Check if it's the active agent (use the existing respawn path)
+            let was_active = self.active_agent == name;
+            if was_active {
+                self.respawn_active_agent().await?;
+            } else {
+                // For non-active running agents, kill and respawn them
+                if let Some(old_id) = self.agents.remove(&name) {
+                    if let Some(old_handle) = self.handles.remove(&old_id) {
+                        let _ = old_handle.sender.send(AgentMessage::Shutdown).await;
+                    }
+                }
+                // Re-spawn from updated config
+                if let Some(agent_config) = self.config.agents.iter().find(|a| a.name == name) {
+                    let agent = Agent::from_config(agent_config, AgentRole::Root);
+                    let new_name = agent.name.clone();
+                    let new_id = agent.id.clone();
+
+                    let provider = self.resolve_agent_provider(&agent)?;
+
+                    let skill_names: Vec<String> = agent
+                        .skills
+                        .iter()
+                        .filter_map(|p| {
+                            p.file_stem()
+                                .and_then(|f| f.to_str().map(|s| s.to_string()))
+                        })
+                        .collect();
+
+                    let config_by_name: std::collections::HashMap<
+                        String,
+                        &crate::config::AgentConfig,
+                    > = self
+                        .config
+                        .agents
+                        .iter()
+                        .map(|a| (a.name.clone(), a))
+                        .collect();
+                    let my_subagent_configs: Vec<crate::config::AgentConfig> = agent_config
+                        .subagents
+                        .iter()
+                        .filter_map(|sub| config_by_name.get(sub).map(|c| (*c).clone()))
+                        .collect();
+
+                    let cancel_flag = Arc::new(AtomicBool::new(false));
+                    self.cancel_flags
+                        .insert(new_name.clone(), cancel_flag.clone());
+
+                    let history_limit = self.config.session.history_limit_percent;
+                    let retry_cfg = self.config.session.retry.clone();
+                    let concurrency_semaphore = if self.config.session.max_concurrency > 0 {
+                        Some(Arc::new(tokio::sync::Semaphore::new(
+                            self.config.session.max_concurrency as usize,
+                        )))
+                    } else {
+                        None
+                    };
+
+                    let handle = spawn_agent(SpawnAgentConfig {
+                        agent,
+                        provider,
+                        skill_registry: self.skill_registry.clone(),
+                        skill_names,
+                        subagent_configs: my_subagent_configs,
+                        llm_registry: self.llm_registry.clone(),
+                        mcp_registry: Some(self.mcp_registry.clone()),
+                        mcp_enabled: Some(self.mcp_enabled.clone()),
+                        event_tx: self.event_tx.clone(),
+                        usage_tx: Some(self.usage_tx.clone()),
+                        retry_config: retry_cfg,
+                        db: self.database.clone(),
+                        session_id: self.active_session_id,
+                        pending_approvals: Some(self.pending_approvals.clone()),
+                        pending_questions: Some(self.pending_questions.clone()),
+                        history_limit_percent: history_limit,
+                        debug: self.debug.clone(),
+                        workspace: self.workspace.clone(),
+                        task_id: None,
+                        depth: 0,
+                        mode: AgentMode::Build,
+                        job_registry: Some(self.job_registry.clone()),
+                        plugins: Some(self.plugins.clone()),
+                        concurrency_semaphore: concurrency_semaphore.clone(),
+                        hook_registry: self.hook_registry.clone(),
+                        cancel_flag: Some(cancel_flag),
+                    })
+                    .await;
+
+                    self.agents.insert(new_name, new_id.clone());
+                    self.handles.insert(new_id, handle);
+                }
+            }
+        }
+
+        // Notify the TUI that configuration changed
+        self.event_tx.send(EngineEvent::ConfigReloaded).await.ok();
+
+        Ok(())
+    }
+    /// Re-discover skills on disk and reload the skill registry.
+    async fn handle_scan_skills(&mut self) {
+        {
+            let mut reg = self.skill_registry.write().await;
+            if let Err(e) = reg.discover_and_register() {
+                eprintln!("Warning: Failed to scan skills: {e}");
+                return;
+            }
+        }
+
+        // Notify the TUI with the updated list of skill names
+        let names: Vec<String> = {
+            let reg = self.skill_registry.read().await;
+            reg.list().iter().map(|s| s.name.clone()).collect()
+        };
+
+        self.event_tx
+            .send(EngineEvent::SkillsDiscovered { skills: names })
+            .await
+            .ok();
+    }
 }
 // ---------------------------------------------------------------------------
 // Conversion helpers: config types -> LLM provider config
@@ -964,6 +1209,7 @@ fn provider_config_to_llm(
     cfg: &ProviderConfig,
     ptype: LlmProviderType,
     cache: CacheControl,
+    session_retry: &RetryConfig,
 ) -> LlmProviderConfig {
     LlmProviderConfig {
         provider_type: ptype,
@@ -975,11 +1221,12 @@ fn provider_config_to_llm(
         output_price_per_million: cfg.output_price_per_million,
         cache_control: cache,
         thinking_budget_tokens: cfg.thinking_budget_tokens,
+        retry: cfg.retry.clone().unwrap_or_else(|| session_retry.clone()),
     }
 }
 
 /// Convert an `OllamaConfig` to `LlmProviderConfig`.
-fn ollama_config_to_llm(cfg: &OllamaConfig, cache: CacheControl) -> LlmProviderConfig {
+fn ollama_config_to_llm(cfg: &OllamaConfig, cache: CacheControl, session_retry: &RetryConfig) -> LlmProviderConfig {
     LlmProviderConfig {
         provider_type: LlmProviderType::Ollama,
         api_key: None,
@@ -990,6 +1237,7 @@ fn ollama_config_to_llm(cfg: &OllamaConfig, cache: CacheControl) -> LlmProviderC
         output_price_per_million: 0.0,
         cache_control: cache,
         thinking_budget_tokens: None,
+        retry: cfg.retry.clone().unwrap_or_else(|| session_retry.clone()),
     }
 }
 
@@ -1158,8 +1406,9 @@ mod tests {
             input_price_per_million: 3.0,
             output_price_per_million: 15.0,
             thinking_budget_tokens: None,
+            retry: Some(RetryConfig::default()),
         };
-        let llm_cfg = provider_config_to_llm(&cfg, LlmProviderType::OpenAI, CacheControl::Auto);
+        let llm_cfg = provider_config_to_llm(&cfg, LlmProviderType::OpenAI, CacheControl::Auto, &RetryConfig::default());
         assert_eq!(llm_cfg.api_key, Some("sk-test".into()));
         assert_eq!(llm_cfg.model, "gpt-4o");
         assert_eq!(llm_cfg.context_window, 128_000);
@@ -1171,8 +1420,9 @@ mod tests {
             base_url: "http://localhost:11434".into(),
             model: "llama3.2".into(),
             context_window: 8_192,
+            retry: None,
         };
-        let llm_cfg = ollama_config_to_llm(&cfg, CacheControl::Auto);
+        let llm_cfg = ollama_config_to_llm(&cfg, CacheControl::Auto, &RetryConfig::default());
         assert_eq!(llm_cfg.provider_type, LlmProviderType::Ollama);
         assert_eq!(llm_cfg.api_key, None);
         assert_eq!(llm_cfg.model, "llama3.2");
@@ -1196,6 +1446,7 @@ mod tests {
             output_price_per_million: 0.0,
             cache_control: CacheControl::Auto,
             thinking_budget_tokens: None,
+            retry: RetryConfig::default(),
         };
         engine
             .llm_registry

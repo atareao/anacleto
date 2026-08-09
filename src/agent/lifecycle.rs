@@ -336,6 +336,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                         &model,
                         false,
                         Some(&tool_store),
+                        Some(&retry_config),
                     )
                     .await;
 
@@ -382,6 +383,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                             &model,
                             false,
                             Some(&tool_store),
+                            Some(&retry_config),
                         )
                         .await;
 
@@ -557,11 +559,14 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             tool_call_id: None,
                                         });
                                     }
+                                    // The response was already streamed chunk-by-chunk via
+                                    // AgentStreamChunk events. Send empty content so the TUI
+                                    // does not duplicate the text (commit_stream + push_msg).
                                     let _ = event_tx
                                         .send(EngineEvent::AgentOutput {
                                             agent_id: agent_id.clone(),
                                             agent_name: agent_name.clone(),
-                                            content: full_response,
+                                            content: String::new(),
                                         })
                                         .await;
                                     // Emit status: Idle
@@ -1073,6 +1078,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                         &model,
                         true,
                         Some(&tool_store),
+                        Some(&retry_config),
                     )
                     .await;
                     let _ = event_tx

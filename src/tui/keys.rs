@@ -6,6 +6,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use crate::engine::orchestrator::EngineCommand;
 use crate::tui::app::App;
 use crate::tui::keymap::Action;
+use crate::tui::render::shift_char;
 use crate::tui::toast::ToastKind;
 use crate::tui::types::Focus;
 
@@ -257,6 +258,87 @@ impl App {
             return;
         }
 
+        // ── Edit agent/subagent dialog navigation ──────────────────
+        if self.edit_dialog.visible {
+            match key {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.edit_dialog.index > 0 {
+                        self.edit_dialog.index -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let len = self.edit_dialog.section_len();
+                    if len > 0 && self.edit_dialog.index + 1 < len {
+                        self.edit_dialog.index += 1;
+                    }
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if self.edit_dialog.section > 0 {
+                        self.edit_dialog.section -= 1;
+                        self.edit_dialog.index = 0;
+                    }
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    if self.edit_dialog.section + 1 < self.edit_dialog.section_count() {
+                        self.edit_dialog.section += 1;
+                        self.edit_dialog.index = 0;
+                    }
+                }
+                KeyCode::Char(' ') => {
+                    self.edit_dialog.toggle_current();
+                }
+                KeyCode::Enter => {
+                    // Confirm: send changes to engine
+                    let target_name = self.edit_dialog.target_name.clone();
+                    let skills: Vec<String> = self
+                        .edit_dialog
+                        .all_skills
+                        .iter()
+                        .zip(self.edit_dialog.skills_enabled.iter())
+                        .filter(|&(_, &enabled)| enabled)
+                        .map(|(s, _)| s.clone())
+                        .collect();
+                    let mcps: Vec<String> = self
+                        .edit_dialog
+                        .all_mcps
+                        .iter()
+                        .zip(self.edit_dialog.mcps_enabled.iter())
+                        .filter(|&(_, &enabled)| enabled)
+                        .map(|(m, _)| m.clone())
+                        .collect();
+                    let subagents: Option<Vec<String>> = if self.edit_dialog.is_root {
+                        Some(
+                            self.edit_dialog
+                                .all_subagents
+                                .iter()
+                                .zip(self.edit_dialog.subagents_enabled.iter())
+                                .filter(|&(_, &enabled)| enabled)
+                                .map(|(s, _)| s.clone())
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
+                    let _ = self.cmd_tx.try_send(EngineCommand::UpdateAgentConfig {
+                        name: target_name,
+                        skills,
+                        mcps,
+                        subagents,
+                    });
+                    self.edit_dialog.visible = false;
+                    self.toasts.push(
+                        "Configuración actualizada",
+                        crate::tui::toast::ToastKind::Success,
+                    );
+                }
+                KeyCode::Esc => {
+                    self.edit_dialog.visible = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // ── Diff viewer navigation ───────────────────────────────────
         if self.diff_viewer.visible {
             match key {
@@ -346,6 +428,55 @@ impl App {
         // input is empty (so plain characters can still be typed normally).
         // Alt+1..Alt+5 are modified keys, so they always apply; the legacy
         // letter bindings ('c'/'i') only switch focus when the input is empty.
+        //
+        // Ctrl+E is intercepted here, BEFORE the keymap dispatch, so that in
+        // the Agents panel or the SubAgents tab it opens the edit dialog
+        // instead of being swallowed by Action::OpenEditor (which launches the
+        // external text editor).
+        if key == KeyCode::Char('e')
+            && modifiers == KeyModifiers::CONTROL
+            && self.open_edit_dialog_for_focus()
+        {
+            return;
+        }
+
+        // / key from any panel switches focus to Input and inserts the slash
+        // so the user can immediately start typing a command.
+        //
+        // Without Kitty protocol: the terminal sends the actual character '/'
+        // (KeyModifiers::NONE on US layout, KeyModifiers::SHIFT on some
+        // terminals with Spanish layout where / is Shift+7).
+        //
+        // With Kitty protocol (kb_supported): the terminal sends the raw key
+        // (e.g. '7' on Spanish layout) and the SHIFT modifier; the application
+        // resolves the actual character via shift_char(). We use shift_char
+        // here too so the detection works regardless of keyboard layout.
+        if self.focus != Focus::Input {
+            let produces_slash = match key {
+                KeyCode::Char(c)
+                    if c == '/'
+                        && (modifiers == KeyModifiers::NONE
+                            || modifiers == KeyModifiers::SHIFT) =>
+                {
+                    true
+                }
+                KeyCode::Char(c)
+                    if self.kb_supported
+                        && modifiers == KeyModifiers::SHIFT
+                        && shift_char(c, &self.lang) == '/' =>
+                {
+                    true
+                }
+                _ => false,
+            };
+            if produces_slash {
+                self.focus = Focus::Input;
+                self.input = "/".to_string();
+                self.input_cursor = 1;
+                return;
+            }
+        }
+
         if self.keymap_applies(key_event) {
             if self.keymap.matches(key_event, Action::FocusChat) {
                 self.focus = Focus::Chat;
@@ -383,23 +514,24 @@ impl App {
             }
 
             // Tab / Shift+Tab cycle focus through panels.
+            // Order: Input(1) → Chat(2) → Info(3) → Agents(4) → Queue(5) → Input(1)
             if self.keymap.matches(key_event, Action::FocusNext) {
                 self.focus = match self.focus {
+                    Focus::Input => Focus::Chat,
                     Focus::Chat => Focus::Info,
                     Focus::Info => Focus::Agents,
                     Focus::Agents => Focus::Queue,
                     Focus::Queue => Focus::Input,
-                    Focus::Input => Focus::Chat,
                 };
                 return;
             }
             if self.keymap.matches(key_event, Action::FocusPrev) {
                 self.focus = match self.focus {
-                    Focus::Chat => Focus::Input,
                     Focus::Input => Focus::Queue,
                     Focus::Queue => Focus::Agents,
                     Focus::Agents => Focus::Info,
                     Focus::Info => Focus::Chat,
+                    Focus::Chat => Focus::Input,
                 };
                 return;
             }
@@ -450,7 +582,6 @@ impl App {
                 // Clear any in-progress streaming response
                 self.current_stream = None;
                 self.current_thinking = None;
-                self.stream_committed_index = None;
                 // Show a toast notification
                 self.toasts.push("⏹ Stopped", ToastKind::Info);
                 return;
@@ -485,12 +616,27 @@ impl App {
         }
     }
 
-    /// Handle a mouse click — set focus to the panel under the cursor.
+    /// Handle a mouse click or scroll — set focus to the panel under the cursor,
+    /// or scroll the chat with the mouse wheel.
     pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
-        // Only respond to left-click press events.
         use crossterm::event::MouseButton;
-        if mouse.kind != crossterm::event::MouseEventKind::Down(MouseButton::Left) {
-            return;
+        use crossterm::event::MouseEventKind;
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                // Scroll up (show older content)
+                self.chat_scroll = self.chat_scroll.saturating_add(3);
+                return;
+            }
+            MouseEventKind::ScrollDown => {
+                // Scroll down (show newer content)
+                self.chat_scroll = self.chat_scroll.saturating_sub(3);
+                return;
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Left-click: set focus to the panel under the cursor
+            }
+            _ => return,
         }
 
         let Ok((term_width, term_height)) = crossterm::terminal::size() else {
@@ -650,5 +796,202 @@ mod tests {
             vec!["second".to_string(), "first".to_string()]
         );
         assert_eq!(app.prompt_queue_index, 1);
+    }
+
+    #[test]
+    fn ctrl_e_in_agents_panel_opens_edit_dialog() {
+        use crate::agent::types::{AgentId, AgentRole, AgentStatus};
+        use crate::tui::types::AgentInfo;
+
+        let mut app = test_app();
+        app.focus = Focus::Agents;
+        app.agents.push(AgentInfo {
+            id: AgentId::new(),
+            name: "root".to_string(),
+            role: AgentRole::Root,
+            status: AgentStatus::Idle,
+            skills: vec!["skill1".to_string()],
+            mcps: vec!["mcp1".to_string()],
+            model: String::new(),
+            parent_id: None,
+            subagent_count: 0,
+            agent_type: None,
+            mode: None,
+        });
+        app.agent_panel_index = 0;
+
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+
+        assert!(app.edit_dialog.visible, "dialog should open on Ctrl+E");
+        assert_eq!(app.edit_dialog.target_name, "root");
+        assert!(app.edit_dialog.is_root);
+    }
+
+    #[test]
+    fn ctrl_e_in_subagent_tab_opens_edit_dialog() {
+        use crate::agent::types::{AgentId, AgentRole, AgentStatus};
+        use crate::tui::types::AgentInfo;
+
+        let mut app = test_app();
+        app.focus = Focus::Info;
+        app.info_tab = 2;
+        app.configured_subagents
+            .insert("root".to_string(), vec!["reviewer".to_string()]);
+        app.subagent_panel_index = 0;
+        // Provide an agent instance of that subagent type so skills/MCPs resolve.
+        app.agents.push(AgentInfo {
+            id: AgentId::new(),
+            name: "reviewer".to_string(),
+            role: AgentRole::SubAgent,
+            status: AgentStatus::Idle,
+            skills: vec!["code-review".to_string()],
+            mcps: vec!["filesystem".to_string()],
+            model: String::new(),
+            parent_id: None,
+            subagent_count: 0,
+            agent_type: Some("reviewer".to_string()),
+            mode: None,
+        });
+
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+
+        assert!(app.edit_dialog.visible, "dialog should open on Ctrl+E");
+        assert_eq!(app.edit_dialog.target_name, "reviewer");
+        assert!(!app.edit_dialog.is_root);
+    }
+
+    #[test]
+    fn slash_from_chat_focuses_input_and_inserts_slash() {
+        let mut app = test_app();
+        app.focus = Focus::Chat;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_from_info_focuses_input_and_inserts_slash() {
+        let mut app = test_app();
+        app.focus = Focus::Info;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_from_agents_focuses_input_and_inserts_slash() {
+        let mut app = test_app();
+        app.focus = Focus::Agents;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_from_queue_focuses_input_and_inserts_slash() {
+        let mut app = test_app();
+        app.focus = Focus::Queue;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_from_input_does_not_duplicate() {
+        // When already in Input, pressing / should just type the character
+        // (handled by handle_input_key), not trigger the focus switch.
+        let mut app = test_app();
+        app.focus = Focus::Input;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_with_alt_modifier_does_not_trigger_focus_switch() {
+        // Alt+/ should not switch focus (it might be used for something else).
+        let mut app = test_app();
+        app.focus = Focus::Chat;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::ALT);
+
+        // Focus should remain on Chat since Alt modifier is used
+        assert_eq!(app.focus, Focus::Chat);
+    }
+
+    #[test]
+    fn slash_with_shift_modifier_triggers_focus_switch() {
+        // Shift+/ (Spanish keyboard layout) should switch focus to Input.
+        let mut app = test_app();
+        app.focus = Focus::Chat;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::SHIFT);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_with_kitty_protocol_spanish_layout() {
+        // With Kitty protocol enabled and Spanish keyboard,
+        // Shift+7 arrives as Char('7') + SHIFT.
+        let mut app = test_app();
+        app.kb_supported = true;
+        app.lang = "es_ES.UTF-8".to_string();
+        app.focus = Focus::Chat;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('7'), KeyModifiers::SHIFT);
+
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input, "/");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn slash_kitty_protocol_no_false_positive() {
+        // With Kitty protocol, plain '7' without shift should NOT trigger.
+        let mut app = test_app();
+        app.kb_supported = true;
+        app.lang = "es_ES.UTF-8".to_string();
+        app.focus = Focus::Chat;
+        app.input.clear();
+        app.input_cursor = 0;
+
+        app.handle_key(KeyCode::Char('7'), KeyModifiers::NONE);
+
+        assert_eq!(app.focus, Focus::Chat);
+        assert!(app.input.is_empty());
     }
 }

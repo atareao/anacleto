@@ -1,4 +1,6 @@
+use crate::agent::retry::{error_message_is_retriable, retry_with_backoff_filtered};
 use crate::agent::tool_store::ToolOutputStore;
+use crate::config::types::RetryConfig;
 use crate::llm::provider::LlmProvider;
 use crate::llm::types::{LlmMessage, LlmRequest, MessageRole};
 
@@ -160,6 +162,7 @@ pub(crate) async fn summarize_conversation(
     model: &str,
     force: bool,
     tool_store: Option<&ToolOutputStore>,
+    retry_config: Option<&RetryConfig>,
 ) {
     // Quick check: if already under the compaction threshold, do nothing
     // (unless forced). The threshold is `max_tokens * COMPACTION_THRESHOLD_RATIO`.
@@ -222,7 +225,21 @@ pub(crate) async fn summarize_conversation(
         cache_control: None,
     };
 
-    match prov.complete(request).await {
+    // Wrap the summarization call with retry for transient errors
+    let default_retry = RetryConfig::default();
+    let retry_cfg = retry_config.unwrap_or(&default_retry);
+    let summarize_result = retry_with_backoff_filtered(
+        |_attempt| {
+            let req = request.clone();
+            async { prov.complete(req).await }
+        },
+        retry_cfg,
+        "summarize_conversation",
+        |e: &crate::error::Error| error_message_is_retriable(&e.to_string()),
+    )
+    .await;
+
+    match summarize_result {
         Ok(response) => {
             // Replace summarized messages with an anchored summary system message
             system_msgs.push(LlmMessage {
@@ -352,7 +369,7 @@ mod tests {
             },
         ];
         let original_len = msgs.len();
-        summarize_conversation(&mut msgs, 9999, None, "test", false, None).await;
+        summarize_conversation(&mut msgs, 9999, None, "test", false, None, None).await;
         assert_eq!(msgs.len(), original_len);
         assert_eq!(msgs[0].content, "hello");
     }
@@ -397,7 +414,7 @@ mod tests {
         let original_len = msgs.len();
         let provider = MockProvider;
         // Generous budget: without `force` nothing would change.
-        summarize_conversation(&mut msgs, 9999, Some(&provider), "test", true, None).await;
+        summarize_conversation(&mut msgs, 9999, Some(&provider), "test", true, None, None).await;
         // System preserved, oldest non-system replaced by a summary, last exchange kept.
         assert_eq!(msgs[0].role, MessageRole::System);
         assert!(msgs.len() < original_len);
@@ -442,7 +459,7 @@ mod tests {
             },
         ];
         let original_len = msgs.len();
-        summarize_conversation(&mut msgs, 9999, None, "test", false, None).await;
+        summarize_conversation(&mut msgs, 9999, None, "test", false, None, None).await;
         assert_eq!(msgs.len(), original_len);
     }
 
@@ -481,7 +498,7 @@ mod tests {
             },
         ];
         // Very tight budget: only system + last 2 messages fit
-        summarize_conversation(&mut msgs, 30, None, "test", false, None).await;
+        summarize_conversation(&mut msgs, 30, None, "test", false, None, None).await;
         // System should be preserved, oldest non-system dropped
         assert_eq!(msgs[0].role, MessageRole::System);
         assert!(msgs.len() >= 2); // at least system + last exchange
@@ -510,7 +527,7 @@ mod tests {
             },
         ];
         // Only 3 non-system messages (< 4), should fall back to trim
-        summarize_conversation(&mut msgs, 5, None, "test", false, None).await;
+        summarize_conversation(&mut msgs, 5, None, "test", false, None, None).await;
         // Should still have at least 2 messages (last exchange)
         assert!(msgs.len() >= 2);
     }

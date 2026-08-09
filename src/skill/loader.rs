@@ -54,7 +54,7 @@ pub fn parse_skill(content: &str) -> Result<Skill> {
         name: String,
         description: String,
         #[serde(default)]
-        metadata: std::collections::HashMap<String, String>,
+        metadata: Option<serde_yaml::Value>,
         #[serde(default)]
         hooks: std::collections::HashMap<String, Vec<HookActionConfig>>,
     }
@@ -62,13 +62,31 @@ pub fn parse_skill(content: &str) -> Result<Skill> {
     let frontmatter: Frontmatter = serde_yaml::from_str(frontmatter_str)
         .map_err(|e| Error::Skill(format!("Invalid frontmatter: {}", e)))?;
 
+    let metadata = extract_string_metadata(frontmatter.metadata);
+
     Ok(Skill {
         name: frontmatter.name,
         description: frontmatter.description,
         instructions,
-        metadata: frontmatter.metadata,
+        metadata,
         hooks: frontmatter.hooks,
     })
+}
+
+/// Extract only string-valued entries from an optional YAML mapping value.
+/// Non-string values (maps, sequences, numbers, booleans, null) are silently skipped.
+fn extract_string_metadata(
+    value: Option<serde_yaml::Value>,
+) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Some(serde_yaml::Value::Mapping(mapping)) = value {
+        for (k, v) in mapping {
+            if let (serde_yaml::Value::String(key), serde_yaml::Value::String(val)) = (k, v) {
+                map.insert(key, val);
+            }
+        }
+    }
+    map
 }
 
 /// Load all skills from a directory (non-recursive).
@@ -172,6 +190,37 @@ Instructions here
         let skill = parse_skill(content).unwrap();
         assert_eq!(skill.metadata.get("version").unwrap(), "1.0");
         assert_eq!(skill.metadata.get("author").unwrap(), "test");
+    }
+
+    #[test]
+    fn test_parse_skill_nested_metadata() {
+        let content = r#"---
+name: blog-avoid-ai
+description: A skill with nested metadata
+metadata:
+  openclaw:
+    emoji: "✍️"
+  version: "1.0"
+  author: test
+  count: 42
+  enabled: true
+  tags:
+    - writing
+    - blog
+---
+Instructions here
+"#;
+        let skill = parse_skill(content).unwrap();
+        // String values are preserved
+        assert_eq!(skill.metadata.get("version").unwrap(), "1.0");
+        assert_eq!(skill.metadata.get("author").unwrap(), "test");
+        // Non-string values (maps, numbers, booleans, sequences) are skipped
+        assert!(!skill.metadata.contains_key("openclaw"));
+        assert!(!skill.metadata.contains_key("count"));
+        assert!(!skill.metadata.contains_key("enabled"));
+        assert!(!skill.metadata.contains_key("tags"));
+        // Only the 2 string entries
+        assert_eq!(skill.metadata.len(), 2);
     }
 
     #[test]

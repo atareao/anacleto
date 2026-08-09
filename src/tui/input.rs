@@ -10,7 +10,7 @@ use super::render::shift_char;
 use crate::tui::keymap::Action;
 
 impl App {
-    /// Handle a key while the Input window (5) has focus.
+    /// Handle a key while the Input window (1) has focus.
     pub(crate) fn handle_input_key(
         &mut self,
         key: KeyCode,

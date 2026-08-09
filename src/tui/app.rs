@@ -20,7 +20,8 @@ use crate::tui::render::render;
 use crate::tui::theme::Theme;
 use crate::tui::toast::ToastQueue;
 use crate::tui::types::{
-    AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, Focus, InitFlow, QuestionState, SearchState,
+    AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, EditDialogState, Focus, InitFlow, QuestionState,
+    SearchState,
 };
 use crate::tui::which_key::WhichKeyPopup;
 
@@ -42,6 +43,8 @@ pub struct App {
     pub(crate) mcp_panel_index: usize,
     /// Selected index in the Skills sidebar panel.
     pub(crate) skill_panel_index: usize,
+    /// Selected index in the SubAgents sidebar panel.
+    pub(crate) subagent_panel_index: usize,
     /// Selected index in the Agents sidebar panel.
     pub(crate) agent_panel_index: usize,
     /// History of previously submitted inputs (for Up/Down arrow navigation).
@@ -54,12 +57,6 @@ pub struct App {
     pub current_stream: Option<String>,
     /// Current streaming thinking/reasoning being accumulated.
     pub current_thinking: Option<String>,
-    /// Index (into `messages`) of the in-progress stream that was already
-    /// committed via `commit_stream`, so that `AgentOutput` replaces exactly
-    /// that message instead of duplicating the partial content. Using the index
-    /// (rather than `last_mut()`) keeps the replacement correct even if other
-    /// messages are pushed in between.
-    pub(crate) stream_committed_index: Option<usize>,
     /// Whether the app should exit.
     pub should_exit: bool,
     /// Error message to display.
@@ -85,6 +82,11 @@ pub struct App {
     /// Configured subagent names per root agent (from config frontmatter),
     /// used to show subagents in `/subagents` even before they are spawned.
     pub(crate) configured_subagents: HashMap<String, Vec<String>>,
+    /// All available agent names from the merged config (workspace + global),
+    /// used to populate the subagent picker in the edit dialog so the user
+    /// can add any existing agent as a subagent, even if no root agent
+    /// currently references it.
+    pub(crate) all_agent_names: Vec<String>,
 
     // ── Human-in-the-loop approval ────────────────────────────────────
     /// Pending approval request (None if no pending request).
@@ -163,6 +165,8 @@ pub struct App {
     pub(crate) stash_stack: Vec<String>,
     /// Skills listed by the engine (`/skills`).
     pub(crate) skills_list: Vec<SkillInfo>,
+    /// All skills discovered on disk (workspace + global), for edit dialog.
+    pub(crate) all_discovered_skills: Vec<String>,
     /// MCP servers with on/off state (`/mcps`).
     pub(crate) mcps_list: Vec<McpStatus>,
     /// Engine status report (`/status`).
@@ -209,6 +213,8 @@ pub struct App {
     pub sent_message: bool,
     /// Search overlay state (Ctrl+R).
     pub(crate) search: SearchState,
+    /// Ctrl+E edit-agent/subagent dialog state.
+    pub(crate) edit_dialog: EditDialogState,
 }
 
 impl App {
@@ -255,6 +261,11 @@ impl App {
             .map(|a| (a.name.clone(), a.subagents.clone()))
             .collect::<HashMap<_, _>>();
 
+        // Collect all available agent names from the merged config
+        // (workspace .agents/agents/ + global $HOME/.agents/agents/)
+        // for the subagent picker in the edit dialog.
+        let all_agent_names: Vec<String> = config.agents.iter().map(|a| a.name.clone()).collect();
+
         Self {
             cmd_tx,
             event_rx,
@@ -264,13 +275,13 @@ impl App {
             info_tab: 0,
             mcp_panel_index: 0,
             skill_panel_index: 0,
+            subagent_panel_index: 0,
             agent_panel_index: 0,
             input_history: Vec::new(),
             history_index: None,
             messages: Vec::new(),
             current_stream: None,
             current_thinking: None,
-            stream_committed_index: None,
             should_exit: false,
             error: None,
             session_name: "default".into(),
@@ -282,6 +293,7 @@ impl App {
             show_subagents: false,
             active_agent: String::new(),
             configured_subagents,
+            all_agent_names,
             pending_approval: None,
             pending_question: None,
             total_tokens: 0,
@@ -326,6 +338,7 @@ impl App {
             message_timestamps: Vec::new(),
             stash_stack: Vec::new(),
             skills_list: Vec::new(),
+            all_discovered_skills: Vec::new(),
             mcps_list: Vec::new(),
             status_info: None,
             workspaces_list: Vec::new(),
@@ -348,6 +361,7 @@ impl App {
             prompt_queue_index: 0,
             sent_message: false,
             search: SearchState::default(),
+            edit_dialog: EditDialogState::new(),
         }
     }
 
@@ -363,7 +377,6 @@ impl App {
         if let Some(stream) = self.current_stream.take() {
             if !stream.is_empty() {
                 self.push_msg(stream);
-                self.stream_committed_index = Some(self.messages.len() - 1);
             }
         }
     }
@@ -445,6 +458,146 @@ impl App {
         // The exact value depends on terminal width, but we use the index
         // as a rough scroll offset so Enter jumps to the right area.
         msg_index as u16 * 3
+    }
+
+    /// Open the edit dialog for a given agent/subagent.
+    pub(crate) fn open_edit_dialog(
+        &mut self,
+        target_name: String,
+        is_root: bool,
+        skills: &[String],
+        mcps: &[String],
+        subagents: Option<&[String]>,
+    ) {
+        // Collect all unique skills across all agents AND from the skill registry
+        let all_skills: Vec<String> = {
+            let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for agent in &self.agents {
+                for s in &agent.skills {
+                    set.insert(s.clone());
+                }
+            }
+            // Also include skills from the registry (loaded from $HOME/.agents/skills etc.)
+            for skill in &self.skills_list {
+                set.insert(skill.name.clone());
+            }
+            // Include ALL skills discovered on disk (workspace + global)
+            for name in &self.all_discovered_skills {
+                set.insert(name.clone());
+            }
+            set.into_iter().collect()
+        };
+
+        let skills_enabled: Vec<bool> = all_skills.iter().map(|s| skills.contains(s)).collect();
+
+        // Collect all unique MCPs across all agents
+        let all_mcps: Vec<String> = {
+            let mut set: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            for agent in &self.agents {
+                for m in &agent.mcps {
+                    set.insert(m.as_str());
+                }
+            }
+            set.into_iter().map(String::from).collect()
+        };
+
+        let mcps_enabled: Vec<bool> = all_mcps.iter().map(|m| mcps.contains(m)).collect();
+
+        // Collect all unique subagent names from the merged config
+        // (workspace .agents/agents/ + global $HOME/.agents/agents/)
+        let all_subagents: Vec<String> = self.all_agent_names.clone();
+
+        let subagents_enabled: Vec<bool> = if let Some(sa) = subagents {
+            all_subagents.iter().map(|s| sa.contains(s)).collect()
+        } else {
+            vec![false; all_subagents.len()]
+        };
+
+        self.edit_dialog = EditDialogState::new_with(
+            target_name,
+            is_root,
+            all_skills,
+            skills_enabled,
+            all_mcps,
+            mcps_enabled,
+            all_subagents,
+            subagents_enabled,
+        );
+    }
+
+    /// Open the edit dialog for the currently focused panel's selection.
+    ///
+    /// Returns `true` if a dialog was opened. Used by the Ctrl+E handler in
+    /// `handle_key`, which runs before the keymap dispatch so that Ctrl+E is
+    /// not swallowed by `Action::OpenEditor`.
+    pub(crate) fn open_edit_dialog_for_focus(&mut self) -> bool {
+        match self.focus {
+            Focus::Agents => {
+                let selected = {
+                    let display_agents: Vec<&AgentInfo> = self
+                        .agents
+                        .iter()
+                        .filter(|a| a.status != AgentStatus::Completed)
+                        .collect();
+                    display_agents
+                        .get(self.agent_panel_index)
+                        .cloned()
+                        .map(|a| {
+                            let subagents = if a.role == AgentRole::Root {
+                                self.configured_subagents
+                                    .get(&a.name)
+                                    .cloned()
+                                    .unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
+                            (
+                                a.name.clone(),
+                                a.role == AgentRole::Root,
+                                a.skills.clone(),
+                                a.mcps.clone(),
+                                subagents,
+                            )
+                        })
+                };
+                if let Some((name, is_root, skills, mcps, subagents)) = selected {
+                    self.open_edit_dialog(
+                        name,
+                        is_root,
+                        &skills,
+                        &mcps,
+                        if is_root { Some(&subagents) } else { None },
+                    );
+                    true
+                } else {
+                    false
+                }
+            }
+            Focus::Info if self.info_tab == 2 => {
+                let unique_subagents: Vec<&str> = {
+                    let set: std::collections::BTreeSet<&str> = self
+                        .configured_subagents
+                        .values()
+                        .flat_map(|v| v.iter().map(|s| s.as_str()))
+                        .collect();
+                    set.into_iter().collect()
+                };
+                if let Some(&name) = unique_subagents.get(self.subagent_panel_index) {
+                    // Find the first agent that has this subagent type to get its skills/MCPs.
+                    let (skills, mcps) = self
+                        .agents
+                        .iter()
+                        .find(|a| a.agent_type.as_deref() == Some(name))
+                        .map(|a| (a.skills.clone(), a.mcps.clone()))
+                        .unwrap_or_default();
+                    self.open_edit_dialog(name.to_string(), false, &skills, &mcps, None);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 }
 
@@ -741,20 +894,20 @@ mod tests {
     }
 
     #[test]
-    fn alt_1_switches_focus_to_chat() {
+    fn alt_1_switches_focus_to_input() {
         let mut app = test_app();
         app.input = String::from("some text");
-        app.focus = Focus::Input;
+        app.focus = Focus::Chat;
         app.handle_key(KeyCode::Char('1'), KeyModifiers::ALT);
-        assert_eq!(app.focus, Focus::Chat);
+        assert_eq!(app.focus, Focus::Input);
     }
 
     #[test]
-    fn alt_5_switches_focus_to_input() {
+    fn alt_5_switches_focus_to_queue() {
         let mut app = test_app();
         app.focus = Focus::Chat;
         app.handle_key(KeyCode::Char('5'), KeyModifiers::ALT);
-        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.focus, Focus::Queue);
     }
 
     #[test]

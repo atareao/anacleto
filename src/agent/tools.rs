@@ -660,12 +660,16 @@ pub(crate) async fn execute_skill_tool(
         execute_filesystem_operation(task, hook_registry, agent_name, event_tx).await
     } else {
         Ok(format!(
-            r#"Executed skill "{}". Here are the skill instructions:
+            r#"📋 Loaded instructions from skill "{}". These are NOT the final result — they tell you HOW to fulfill the request.
 
+Follow the instructions below carefully. You may need to use other tools (like `shell`, `webfetch`, etc.) to actually fetch data or perform actions.
+
+--- Skill instructions for "{}" ---
 {}
+--- End of skill instructions ---
 
-The task requested was: {}"#,
-            skill.name, skill.instructions, task
+The original task was: {}"#,
+            skill.name, skill.name, skill.instructions, task
         ))
     };
 
@@ -708,10 +712,12 @@ async fn execute_shell_command(
 
     // Fire BeforeShell hook
     {
-        let mut ctx = HookContext::default();
-        ctx.tool_name = Some("shell".into());
-        ctx.shell_command = Some(command.clone());
-        ctx.agent_name = Some(agent_name.to_string());
+        let ctx = HookContext {
+            tool_name: Some("shell".into()),
+            shell_command: Some(command.clone()),
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        };
         let hook_results = hook_registry.run(HookPoint::BeforeShell, &ctx).await;
         for r in &hook_results {
             let _ = event_tx
@@ -861,6 +867,19 @@ fn looks_like_shell_command(line: &str) -> bool {
     {
         return true;
     }
+    // Path-based commands: relative paths (./, ../, .agents/...) and
+    // absolute paths (/usr/bin/...) are clearly commands, not prose.
+    // A first token containing '/' is almost always a path or script.
+    let first = line.split_whitespace().next().unwrap_or("");
+    if first.contains('/') {
+        return true;
+    }
+
+    // Executable scripts with a known extension are commands too.
+    if line.ends_with(".sh") || line.ends_with(".py") || line.ends_with(".rs") {
+        return true;
+    }
+
     // Starts with a common command word.
     const COMMANDS: &[&str] = &[
         "ls",
@@ -957,7 +976,6 @@ fn looks_like_shell_command(line: &str) -> bool {
         "cargo-expand",
         "cargo-fuzz",
     ];
-    let first = line.split_whitespace().next().unwrap_or("");
     COMMANDS.contains(&first)
 }
 
@@ -1630,6 +1648,7 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
                 &model,
                 false,
                 None, // subagents have no access to the parent's tool store
+                None, // use global default retry
             )
             .await;
 
@@ -1977,6 +1996,26 @@ mod tests {
         assert_eq!(
             extract_shell_command("echo 'hello from anacleto'"),
             "echo 'hello from anacleto'"
+        );
+    }
+
+    #[test]
+    fn test_extract_shell_command_relative_script_path() {
+        // A command that invokes a script by relative path must be recognised,
+        // even though '.' is not in the COMMANDS list.
+        let task = ".agents/skills/weather/weather.sh \"Silla,Valencia\"";
+        assert_eq!(
+            extract_shell_command(task),
+            ".agents/skills/weather/weather.sh \"Silla,Valencia\""
+        );
+    }
+
+    #[test]
+    fn test_extract_shell_command_absolute_script_path() {
+        let task = "/usr/local/bin/deploy.sh --prod";
+        assert_eq!(
+            extract_shell_command(task),
+            "/usr/local/bin/deploy.sh --prod"
         );
     }
 
