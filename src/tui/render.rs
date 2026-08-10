@@ -12,6 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Tabs, Wrap,
 };
+use ratatui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
@@ -1897,86 +1898,6 @@ fn render_subagent_tree(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_input(f: &mut Frame, area: Rect, app: &App) {
-    let input_style = Style::default()
-        .fg(app.theme.accent())
-        .add_modifier(Modifier::BOLD);
-    let prompt = Span::styled(" ❯ ", input_style);
-
-    // Split input into logical lines
-    let lines: Vec<&str> = app.input.split('\n').collect();
-
-    // Available widths (minus borders).
-    let inner_w = area.width.saturating_sub(2) as usize;
-    let first_row_text_w = inner_w.saturating_sub(3); // prompt/indent consumes 3 cols
-    let wrap_text_w = inner_w; // continuation rows have full width
-
-    // ── Manual character-wrap: build one Line per visual row ────────────
-    // We do our own wrapping (character-by-character, NOT word-wrap) so that
-    // cursor-position math matches the visual layout exactly.  Ratatui's
-    // built-in `Wrap` does word-wrap, which causes the cursor to land in the
-    // wrong column when long words straddle the wrap boundary.
-    let mut rendered: Vec<Line> = Vec::new();
-    // For cursor positioning: for each visual row, store its logical line
-    // index and the range of characters it displays.
-    struct VisRow {
-        line_idx: usize,
-        char_start: usize, // first character of this visual row in the logical line
-        char_count: usize, // how many characters this row shows
-    }
-    let mut vis_rows: Vec<VisRow> = Vec::new();
-
-    for (line_idx, line_text) in lines.iter().enumerate() {
-        let chars: Vec<char> = line_text.chars().collect();
-        let line_len = chars.len();
-
-        if line_len == 0 {
-            // Empty logical line still occupies one visual row.
-            let prefix = if line_idx == 0 {
-                prompt.clone()
-            } else {
-                Span::raw("   ")
-            };
-            rendered.push(Line::from(vec![prefix, Span::raw("")]));
-            vis_rows.push(VisRow {
-                line_idx,
-                char_start: 0,
-                char_count: 0,
-            });
-            continue;
-        }
-
-        let mut pos = 0usize;
-        let mut first = true;
-        while pos < line_len {
-            let row_width = if first { first_row_text_w } else { wrap_text_w };
-            let end = (pos + row_width).min(line_len);
-            let chunk: String = chars[pos..end].iter().collect();
-
-            let prefix = if line_idx == 0 && first {
-                prompt.clone()
-            } else if first {
-                Span::raw("   ")
-            } else {
-                Span::raw("")
-            };
-            rendered.push(Line::from(vec![prefix, Span::raw(chunk)]));
-            vis_rows.push(VisRow {
-                line_idx,
-                char_start: pos,
-                char_count: end - pos,
-            });
-
-            pos = end;
-            first = false;
-        }
-    }
-
-    let total_visual = rendered.len();
-
-    // Bottom-anchored scroll: show last N visual rows
-    let visible_rows = (area.height.saturating_sub(2)) as usize; // 2 for borders
-    let scroll_offset = total_visual.saturating_sub(visible_rows);
-
     let title = if let Some(flow) = &app.init_flow {
         format!(" Init — {} ", flow.prompt())
     } else {
@@ -1988,71 +1909,15 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
         Color::DarkGray
     };
 
-    // NOTE: no `.wrap()` — we already did character-level wrapping above.
-    let paragraph = Paragraph::new(rendered)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(input_border))
-                .title(title),
-        )
-        .scroll((scroll_offset as u16, 0))
-        .style(Style::default().fg(Color::White));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(input_border))
+        .title(title);
 
-    f.render_widget(paragraph, area);
-
-    // ── Cursor positioning ──────────────────────────────────────────────
-    // Find which logical line contains `input_cursor`.
-    let cursor_char = app.input_cursor.min(app.input.chars().count());
-    let mut remaining = cursor_char;
-    let mut cursor_line_idx = 0usize;
-    let mut col_in_line = 0usize;
-    for (i, line) in lines.iter().enumerate() {
-        let line_chars = line.chars().count();
-        if remaining <= line_chars {
-            cursor_line_idx = i;
-            col_in_line = remaining;
-            break;
-        }
-        remaining = remaining.saturating_sub(line_chars + 1); // +1 for '\n'
-        cursor_line_idx = i + 1;
-    }
-
-    // Walk the manually-built visual rows to find which row has this
-    // character, and what column within that row.
-    let mut cursor_vis_idx = 0usize;
-    let mut cursor_col_in_row = 0usize;
-    for (vi, vr) in vis_rows.iter().enumerate() {
-        if vr.line_idx == cursor_line_idx
-            && vr.char_start <= col_in_line
-            && col_in_line < vr.char_start + vr.char_count
-        {
-            cursor_vis_idx = vi;
-            cursor_col_in_row = col_in_line - vr.char_start;
-            break;
-        }
-        // If we reach the last visual row of this line and didn't match,
-        // the cursor is past the end — place it at the end of the last row.
-        if vr.line_idx == cursor_line_idx
-            && (vi + 1 >= vis_rows.len() || vis_rows[vi + 1].line_idx != cursor_line_idx)
-        {
-            cursor_vis_idx = vi;
-            cursor_col_in_row = vr.char_count;
-            break;
-        }
-    }
-
-    let cursor_row = area.y + 1 + (cursor_vis_idx.saturating_sub(scroll_offset)) as u16;
-
-    // Column offset: first visual row of its logical line has prompt/indent (3).
-    let is_first = vis_rows
-        .get(cursor_vis_idx)
-        .map(|vr| vr.char_start == 0)
-        .unwrap_or(true);
-    let col_offset: u16 = if is_first { 3 } else { 0 };
-    let cursor_col = area.x + 1 + col_offset + cursor_col_in_row as u16;
-    f.set_cursor_position((cursor_col, cursor_row));
+    let mut textarea = app.textarea.clone();
+    textarea.set_block(block);
+    f.render_widget(&textarea, area);
 }
 
 /// Render the human-in-the-loop approval dialog as a centered overlay.
