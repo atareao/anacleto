@@ -89,7 +89,7 @@ skills:                           # Optional. List of paths to skill directories
   - .agents/skills/<name>/
 mcps: [<mcp-name>]                # Optional. List of MCP server names (from config).
 permissions:                      # Optional. Allow/deny rules.
-  allow: []                       #   Vacío = allow-by-default. Si se lista algo → deny-by-default.
+  allow: []                       #   Empty = allow-by-default. If anything is listed → deny-by-default.
   deny:                           #   Solo acepta: fs.read, fs.write, fs.external, net.http,
     - command.run                 #   command.run, mcp.use, env.read, skill.use
                                   #   Sub-permisos tipo "command.run.sudo" se ignoran silenciosamente
@@ -211,15 +211,18 @@ Ensure the agent is discoverable by the engine:
 
 1. The file is at `.agents/agents/<name>.md` (project) or `~/.config/anacleto/agents/<name>.md` (global).
 2. If it's a root agent, `role: root` is set.
-3. If it's a subagent, its parent agent lists it in the `subagents:` field.
+3. If it's a subagent and has been explicitly assigned to a parent, that parent lists it in the `subagents:` field. (Orphan subagents are valid but remain inactive.)
 4. The engine discovers agents by scanning `agents/` directories.
 
 ### Phase 5 — Test the agent
 
 Suggest 2-3 test prompts the user can run in the TUI to verify the agent works.
 
-For subagents, the test involves invoking the parent agent with a task that
-triggers delegation to the new subagent.
+For subagents that have been assigned to a parent, the test involves invoking the parent agent
+with a task that triggers delegation to the new subagent.
+
+For subagents without a parent (orphans), testing directly is not possible until they are
+assigned to a parent agent. Indicate to the user that the subagent is ready but inactive.
 
 ---
 
@@ -324,6 +327,12 @@ yq '.mcps | keys | .[]' ~/.config/anacleto/config.yaml 2>/dev/null
 
 ## Workflow: Creating a subagent for an existing agent
 
+> ⚠️ **By default, subagents are NOT assigned to any parent.**  
+> When creating a subagent with `role: subagent`, DO NOT add it to any agent's `subagents:` list (neither `root` nor any other) **unless the user explicitly requests it**.  
+> A subagent without a parent cannot be invoked by anyone — neither by the user nor by any agent. It remains "inactive" until assigned to a parent later.
+> 
+> **Rule:** Create the subagent as an orphan (no parent) by default. Only link it if the user says: "add it to X" or "make it a subagent of Y".
+
 ### Step 1 — Design the subagent
 
 Subagents are **fully independent** (no inheritance). They need their own:
@@ -366,7 +375,10 @@ You are a <role> specialized in <purpose>.
 - <constraint 1>
 ```
 
-### Step 3 — Register in the parent
+### Step 3 — Register in the parent (only if the user asked for it)
+
+> ⚠️ **This step is OPTIONAL.** Only do it if the user explicitly told you which parent agent to link the subagent to.
+> If the user didn't mention a parent, **skip this step** — the subagent stays orphaned and will be assigned a parent later.
 
 Edit the parent agent's frontmatter, adding the subagent name to `subagents:`:
 
@@ -415,26 +427,26 @@ You can also delegate tasks to your subagents:
 | Environment read | Read environment variables | `env.read` |
 | Skill usage | Invoke skills | `skill.use` |
 
-### ⚠️ Importante: No existe "scoped deny"
+### ⚠️ Important: "Scoped deny" does not exist
 
-El enum `Permission` solo acepta 8 valores exactos:
+The `Permission` enum only accepts exactly 8 values:
 `fs.read`, `fs.write`, `fs.external`, `net.http`, `command.run`, `mcp.use`, `env.read`, `skill.use`.
 
-Cadenas como `command.run.sudo`, `net.http.delete` o `fs.write./etc/` **no son permisos válidos**
-y se **ignoran silenciosamente** al parsear. No filtran nada.
+Strings like `command.run.sudo`, `net.http.delete` or `fs.write./etc/` **are not valid permissions**
+and are **silently ignored** during parsing. They filter nothing.
 
-### Cómo funciona realmente
+### How it actually works
 
-| `allow` | Modo | Efecto |
+| `allow` | Mode | Effect |
 |---------|------|--------|
-| `[]` (vacío) | **Allow-by-default** ✅ | Todo permitido excepto lo denegado |
-| `[comando.run, ...]` | **Deny-by-default** ❌ | Solo se permite lo listado en `allow` |
+| `[]` (empty) | **Allow-by-default** ✅ | Everything allowed except denied items |
+| `[command.run, ...]` | **Deny-by-default** ❌ | Only items listed in `allow` are permitted |
 
-### Consejo práctico
+### Practical advice
 
-Usa `allow: []` (allow-by-default) y deniega solo los permisos válidos que quieras
-bloquear. La seguridad ante operaciones peligrosas (sudo, `rm -rf`, rutas del sistema)
-ya la gestiona el sistema de aprobación humana.
+Use `allow: []` (allow-by-default) and deny only the valid permissions you want to
+block. Safety against dangerous operations (sudo, `rm -rf`, system paths) is already
+handled by the human approval system.
 
 ### Common patterns
 

@@ -65,8 +65,8 @@ impl LlmProvider for GoogleProvider {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::types::RetryConfig;
     use super::*;
+    use crate::config::types::RetryConfig;
     use crate::llm::types::CacheControl;
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 name: agent-manager
 description: Specialista en gestionar el ciclo de vida de agentes, subagentes y skills en el ecosistema Anacleto
-role: subagent
+role: root
 model: deepseek/deepseek-v4-flash
 skills:
   - .agents/skills/agent-creator/

@@ -186,8 +186,8 @@ impl Engine {
         // If found and the agent still exists in config, override the default.
         {
             let workspace_str = self.workspace.to_string_lossy().to_string();
-            if let Ok(Some(persisted)) = db.get_workspace_active_agent(&workspace_str).await {
-                if self
+            if let Ok(Some(persisted)) = db.get_workspace_active_agent(&workspace_str).await
+                && self
                     .config
                     .agents
                     .iter()
@@ -212,7 +212,6 @@ impl Engine {
                         .await
                         .ok();
                 }
-            }
         }
 
         // Load plugins from the global plugins directory.
@@ -232,7 +231,12 @@ impl Engine {
         let cache: CacheControl = self.config.models.cache.mode.into();
 
         if let Some(ref cfg) = self.config.models.anthropic {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Anthropic, cache, &self.config.session.retry);
+            let llm_cfg = provider_config_to_llm(
+                cfg,
+                LlmProviderType::Anthropic,
+                cache,
+                &self.config.session.retry,
+            );
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -240,7 +244,12 @@ impl Engine {
             llm_registry.register("anthropic".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.openai {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::OpenAI, cache, &self.config.session.retry);
+            let llm_cfg = provider_config_to_llm(
+                cfg,
+                LlmProviderType::OpenAI,
+                cache,
+                &self.config.session.retry,
+            );
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -248,7 +257,12 @@ impl Engine {
             llm_registry.register("openai".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.openrouter {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::OpenRouter, cache, &self.config.session.retry);
+            let llm_cfg = provider_config_to_llm(
+                cfg,
+                LlmProviderType::OpenRouter,
+                cache,
+                &self.config.session.retry,
+            );
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -264,7 +278,12 @@ impl Engine {
             llm_registry.register("ollama".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.bedrock {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Bedrock, cache, &self.config.session.retry);
+            let llm_cfg = provider_config_to_llm(
+                cfg,
+                LlmProviderType::Bedrock,
+                cache,
+                &self.config.session.retry,
+            );
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -272,7 +291,12 @@ impl Engine {
             llm_registry.register("bedrock".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.azure {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Azure, cache, &self.config.session.retry);
+            let llm_cfg = provider_config_to_llm(
+                cfg,
+                LlmProviderType::Azure,
+                cache,
+                &self.config.session.retry,
+            );
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -280,7 +304,12 @@ impl Engine {
             llm_registry.register("azure".into(), provider);
         }
         if let Some(ref cfg) = self.config.models.google {
-            let llm_cfg = provider_config_to_llm(cfg, LlmProviderType::Google, cache, &self.config.session.retry);
+            let llm_cfg = provider_config_to_llm(
+                cfg,
+                LlmProviderType::Google,
+                cache,
+                &self.config.session.retry,
+            );
             let provider: Arc<dyn LlmProvider> = Arc::from(create_provider(&llm_cfg));
             if let Ok(cw) = provider.fetch_context_window().await {
                 provider.set_context_window(cw);
@@ -323,8 +352,8 @@ impl Engine {
             // shell/, code-review/), so we MUST iterate its children
             // rather than push the parent directory directly.
             let home_skills_dir = crate::config::paths::global_skills_dir();
-            if home_skills_dir.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(&home_skills_dir) {
+            if home_skills_dir.is_dir()
+                && let Ok(entries) = std::fs::read_dir(&home_skills_dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if path.is_dir() {
@@ -332,13 +361,12 @@ impl Engine {
                         }
                     }
                 }
-            }
 
             // Auto-discover skills from <project_root>/.agents/skills
             // Same structure: one subdirectory per skill with a SKILL.md file.
             let project_skills_dir = crate::config::paths::project_skills_dir(None);
-            if project_skills_dir.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(&project_skills_dir) {
+            if project_skills_dir.is_dir()
+                && let Ok(entries) = std::fs::read_dir(&project_skills_dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if path.is_dir() {
@@ -346,7 +374,6 @@ impl Engine {
                         }
                     }
                 }
-            }
             if !all_skill_paths.is_empty() {
                 let mut reg = self.skill_registry.write().await;
                 if let Err(e) = reg.load_from_paths(&all_skill_paths) {
@@ -1087,11 +1114,10 @@ impl Engine {
                 self.respawn_active_agent().await?;
             } else {
                 // For non-active running agents, kill and respawn them
-                if let Some(old_id) = self.agents.remove(&name) {
-                    if let Some(old_handle) = self.handles.remove(&old_id) {
+                if let Some(old_id) = self.agents.remove(&name)
+                    && let Some(old_handle) = self.handles.remove(&old_id) {
                         let _ = old_handle.sender.send(AgentMessage::Shutdown).await;
                     }
-                }
                 // Re-spawn from updated config
                 if let Some(agent_config) = self.config.agents.iter().find(|a| a.name == name) {
                     let agent = Agent::from_config(agent_config, AgentRole::Root);
@@ -1226,7 +1252,11 @@ fn provider_config_to_llm(
 }
 
 /// Convert an `OllamaConfig` to `LlmProviderConfig`.
-fn ollama_config_to_llm(cfg: &OllamaConfig, cache: CacheControl, session_retry: &RetryConfig) -> LlmProviderConfig {
+fn ollama_config_to_llm(
+    cfg: &OllamaConfig,
+    cache: CacheControl,
+    session_retry: &RetryConfig,
+) -> LlmProviderConfig {
     LlmProviderConfig {
         provider_type: LlmProviderType::Ollama,
         api_key: None,
@@ -1408,7 +1438,12 @@ mod tests {
             thinking_budget_tokens: None,
             retry: Some(RetryConfig::default()),
         };
-        let llm_cfg = provider_config_to_llm(&cfg, LlmProviderType::OpenAI, CacheControl::Auto, &RetryConfig::default());
+        let llm_cfg = provider_config_to_llm(
+            &cfg,
+            LlmProviderType::OpenAI,
+            CacheControl::Auto,
+            &RetryConfig::default(),
+        );
         assert_eq!(llm_cfg.api_key, Some("sk-test".into()));
         assert_eq!(llm_cfg.model, "gpt-4o");
         assert_eq!(llm_cfg.context_window, 128_000);
