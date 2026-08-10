@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyEventKind};
-use ratatui::style::{Modifier, Style};
 use ratatui::Terminal;
+use ratatui::style::{Modifier, Style};
 use ratatui_textarea::TextArea;
 use tokio::sync::mpsc;
 
@@ -657,6 +657,7 @@ mod tests {
     use crate::agent::types::{AgentId, AgentStatus};
     use crate::tui::state::fuzzy_score;
     use crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui_textarea::CursorMove;
 
     #[test]
     fn fuzzy_matches_subsequence() {
@@ -707,6 +708,7 @@ mod tests {
         // already has text.
         let mut app = test_app();
         app.textarea = TextArea::from(["he"]);
+        app.textarea.move_cursor(CursorMove::End);
         app.focus = Focus::Input;
         app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
         assert_eq!(app.textarea.lines().join("\n"), "hec");

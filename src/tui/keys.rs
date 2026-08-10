@@ -727,7 +727,8 @@ impl App {
                 if self.focus == Focus::Input && key_event.modifiers == KeyModifiers::NONE {
                     return false;
                 }
-                key_event.modifiers != KeyModifiers::NONE || self.textarea.lines().join("\n").is_empty()
+                key_event.modifiers != KeyModifiers::NONE
+                    || self.textarea.lines().join("\n").is_empty()
             }
             _ => true,
         }

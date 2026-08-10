@@ -21,7 +21,12 @@ impl App {
     ) {
         if self.keymap.matches(key_event, Action::TabComplete) {
             // Reset matches if the input has changed since last Tab
-            if !self.textarea.lines().first().map_or(true, |l| !l.starts_with('/')) {
+            if !self
+                .textarea
+                .lines()
+                .first()
+                .is_none_or(|l| !l.starts_with('/'))
+            {
                 return;
             }
             let current_text = self.textarea.lines().join("\n");

@@ -9,13 +9,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use ratatui_textarea::TextArea;
 use super::app::App;
 use super::render::copy_to_clipboard;
 use super::types::InitFlow;
 use crate::db::models::SessionSummary;
 use crate::engine::orchestrator::{EngineCommand, ExportFormat, InitAnswers};
 use crate::engine::template::expand_vars;
+use ratatui_textarea::TextArea;
 
 impl App {
     /// Process a line of input — check for slash commands or send to engine.

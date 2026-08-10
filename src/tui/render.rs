@@ -12,7 +12,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Tabs, Wrap,
 };
-use ratatui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
