@@ -33,7 +33,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App) {
             [
                 Constraint::Length(1), // status bar
                 Constraint::Min(1),    // main content
-                Constraint::Length(4), // input
+                Constraint::Length(5), // input
                 Constraint::Length(1), // working directory
             ]
             .as_ref(),

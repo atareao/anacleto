@@ -81,6 +81,10 @@ impl App {
             self.textarea.move_cursor(CursorMove::Back);
         } else if self.keymap.matches(key_event, Action::CursorRight) {
             self.textarea.move_cursor(CursorMove::Forward);
+        } else if self.keymap.matches(key_event, Action::CursorUp) {
+            self.textarea.move_cursor(CursorMove::Up);
+        } else if self.keymap.matches(key_event, Action::CursorDown) {
+            self.textarea.move_cursor(CursorMove::Down);
         } else if self.keymap.matches(key_event, Action::DeleteChar) {
             self.textarea.delete_next_char();
             self.update_command_palette();
