@@ -1,9 +1,11 @@
-//! Input-box key handling and cursor editing helpers.
+//! Input-box key handling using ratatui-textarea's TextArea widget.
 //!
 //! Contains the `App` methods that handle keys while the Input window has
-//! focus, plus the shell-style cursor/word editing helpers they rely on.
+//! focus, delegating text editing to `TextArea` and handling custom actions
+//! (Tab completion, history, palettes) on top.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui_textarea::{CursorMove, TextArea};
 
 use super::app::App;
 use super::render::shift_char;
@@ -19,10 +21,11 @@ impl App {
     ) {
         if self.keymap.matches(key_event, Action::TabComplete) {
             // Reset matches if the input has changed since last Tab
-            if !self.input.starts_with('/') {
+            if !self.textarea.lines().first().map_or(true, |l| !l.starts_with('/')) {
                 return;
             }
-            let prefix = self.input.to_lowercase();
+            let current_text = self.textarea.lines().join("\n");
+            let prefix = current_text.to_lowercase();
             if self.tab_index == 0 || self.tab_matches.is_empty() {
                 self.tab_matches = self
                     .commands
@@ -35,52 +38,51 @@ impl App {
                 return;
             }
             let idx = self.tab_index % self.tab_matches.len();
-            self.input = self.tab_matches[idx].clone();
-            self.input_cursor = self.input.chars().count();
+            let completed = self.tab_matches[idx].clone();
+            // Replace textarea content with the completed command
+            self.textarea = TextArea::from([completed.as_str()]);
             self.tab_index += 1;
         } else if self.keymap.matches(key_event, Action::InsertNewline) {
             self.reset_tab_state();
-            self.input_insert_char('\n');
+            self.textarea.insert_newline();
         } else if self.keymap.matches(key_event, Action::ClearInput) {
             self.reset_tab_state();
-            self.input.clear();
-            self.input_cursor = 0;
+            self.textarea = TextArea::default();
         } else if self.keymap.matches(key_event, Action::DeleteToStart) {
             self.reset_tab_state();
-            self.input_delete_to_start();
+            self.textarea.delete_line_by_head();
             self.update_command_palette();
         } else if self.keymap.matches(key_event, Action::DeleteWordBefore) {
             self.reset_tab_state();
-            self.input_delete_word_before();
+            self.textarea.delete_word();
             self.update_command_palette();
         } else if self.keymap.matches(key_event, Action::DeleteToEnd) {
             self.reset_tab_state();
-            self.input_delete_to_end();
+            self.textarea.delete_line_by_end();
             self.update_command_palette();
         } else if self.keymap.matches(key_event, Action::CursorHome) {
             self.reset_tab_state();
-            self.input_cursor = 0;
+            self.textarea.move_cursor(CursorMove::Head);
         } else if self.keymap.matches(key_event, Action::CursorEnd) {
             self.reset_tab_state();
-            self.input_cursor = self.input.chars().count();
+            self.textarea.move_cursor(CursorMove::End);
         } else if self.keymap.matches(key_event, Action::CursorWordLeft) {
             self.reset_tab_state();
-            self.input_move_word_left();
+            self.textarea.move_cursor(CursorMove::WordBack);
         } else if self.keymap.matches(key_event, Action::CursorWordRight) {
             self.reset_tab_state();
-            self.input_move_word_right();
+            self.textarea.move_cursor(CursorMove::WordForward);
         } else if self.keymap.matches(key_event, Action::CursorLeft) {
-            self.input_cursor = self.input_cursor.saturating_sub(1);
+            self.textarea.move_cursor(CursorMove::Back);
         } else if self.keymap.matches(key_event, Action::CursorRight) {
-            let len = self.input.chars().count();
-            self.input_cursor = (self.input_cursor + 1).min(len);
+            self.textarea.move_cursor(CursorMove::Forward);
         } else if self.keymap.matches(key_event, Action::DeleteChar) {
-            self.input_delete_at();
+            self.textarea.delete_next_char();
             self.update_command_palette();
         } else if self.keymap.matches(key_event, Action::DeleteCharBefore) {
             self.tab_matches.clear();
             self.tab_index = 0;
-            self.input_delete_before();
+            self.textarea.delete_char();
             self.update_command_palette();
         } else if self.keymap.matches(key_event, Action::HistoryUp) {
             if self.show_model_palette && !self.model_matches.is_empty() {
@@ -106,8 +108,7 @@ impl App {
                     None => self.input_history.len() - 1,
                 };
                 self.history_index = Some(next);
-                self.input = self.input_history[next].clone();
-                self.input_cursor = self.input.chars().count();
+                self.textarea = TextArea::from([self.input_history[next].as_str()]);
                 self.tab_matches.clear();
                 self.tab_index = 0;
             }
@@ -123,14 +124,13 @@ impl App {
                 match self.history_index {
                     Some(i) if i + 1 < self.input_history.len() => {
                         self.history_index = Some(i + 1);
-                        self.input = self.input_history[i + 1].clone();
+                        self.textarea = TextArea::from([self.input_history[i + 1].as_str()]);
                     }
                     _ => {
                         self.history_index = None;
-                        self.input.clear();
+                        self.textarea = TextArea::default();
                     }
                 }
-                self.input_cursor = self.input.chars().count();
                 self.tab_matches.clear();
                 self.tab_index = 0;
             }
@@ -143,8 +143,7 @@ impl App {
                 self.show_model_palette = false;
                 self.model_matches.clear();
                 self.model_index = 0;
-                self.input.clear();
-                self.input_cursor = 0;
+                self.textarea = TextArea::default();
                 self.handle_command(format!("/models {}", name));
             } else if self.show_agent_palette && !self.agent_matches.is_empty() {
                 // Execute `/agent <selected>` from the agent combo.
@@ -152,8 +151,7 @@ impl App {
                 self.show_agent_palette = false;
                 self.agent_matches.clear();
                 self.agent_index = 0;
-                self.input.clear();
-                self.input_cursor = 0;
+                self.textarea = TextArea::default();
                 self.handle_command(format!("/agent {}", name));
             } else if self.show_command_palette && !self.palette_matches.is_empty() {
                 // Execute the highlighted command from the palette.
@@ -162,22 +160,18 @@ impl App {
                 self.show_command_palette = false;
                 self.palette_matches.clear();
                 self.palette_index = 0;
-                self.input.clear();
-                self.input_cursor = 0;
+                self.textarea = TextArea::default();
                 self.handle_command(cmd);
             } else {
-                let input = std::mem::take(&mut self.input);
-                self.input_cursor = 0;
+                let input = self.textarea.lines().join("\n");
+                self.textarea = TextArea::default();
                 if !input.is_empty() {
                     // Record in input history (dedupe consecutive repeats).
                     if self.input_history.last() != Some(&input) {
                         self.input_history.push(input.clone());
                     }
                     self.history_index = None;
-                    // Auto-scroll al final al enviar: cuando el usuario escribe
-                    // y envía un mensaje (incluso si había hecho scroll arriba),
-                    // el chat debe saltar al final para mostrar el mensaje
-                    // y seguir el streaming de la respuesta.
+                    // Auto-scroll al final al enviar
                     self.chat_scroll = 0;
                     self.process_input(input);
                 }
@@ -207,8 +201,7 @@ impl App {
                 self.show_subagents = false;
             } else {
                 // No overlay open — clear input
-                self.input.clear();
-                self.input_cursor = 0;
+                self.textarea = TextArea::default();
             }
         } else if let KeyCode::Char(c) = key {
             // Any non-Tab key resets autocomplete state
@@ -217,121 +210,17 @@ impl App {
             if self.kb_supported && modifiers.contains(KeyModifiers::SHIFT) {
                 // Kitty protocol: shift is reported as a modifier;
                 // apply keyboard-appropriate shift mapping
-                self.input_insert_char(shift_char(c, &self.lang));
+                self.textarea.insert_char(shift_char(c, &self.lang));
             } else {
-                self.input_insert_char(c);
+                self.textarea.insert_char(c);
             }
             self.update_command_palette();
         }
     }
 
     /// Reset the Tab-completion autocomplete state.
-    ///
-    /// Any non-Tab key that edits the input should clear the cached matches so
-    /// the next Tab press recomputes them from the current input.
     pub(crate) fn reset_tab_state(&mut self) {
         self.tab_matches.clear();
         self.tab_index = 0;
-    }
-
-    /// Convert a character index into a byte index within `input`.
-    pub(crate) fn input_char_to_byte(&self, char_idx: usize) -> usize {
-        self.input
-            .char_indices()
-            .nth(char_idx)
-            .map(|(b, _)| b)
-            .unwrap_or(self.input.len())
-    }
-
-    /// Insert a character at the cursor position and advance the cursor.
-    pub(crate) fn input_insert_char(&mut self, c: char) {
-        let byte_idx = self.input_char_to_byte(self.input_cursor);
-        self.input.insert(byte_idx, c);
-        self.input_cursor += 1;
-    }
-
-    /// Delete the character before the cursor (Backspace).
-    pub(crate) fn input_delete_before(&mut self) {
-        if self.input_cursor == 0 {
-            return;
-        }
-        let byte_idx = self.input_char_to_byte(self.input_cursor);
-        let prev_len = self.input[..byte_idx]
-            .chars()
-            .next_back()
-            .map(|c| c.len_utf8())
-            .unwrap_or(0);
-        self.input.replace_range(byte_idx - prev_len..byte_idx, "");
-        self.input_cursor -= 1;
-    }
-
-    /// Delete the character at the cursor (Delete).
-    pub(crate) fn input_delete_at(&mut self) {
-        let byte_idx = self.input_char_to_byte(self.input_cursor);
-        if byte_idx >= self.input.len() {
-            return;
-        }
-        let next_len = self.input[byte_idx..]
-            .chars()
-            .next()
-            .map(|c| c.len_utf8())
-            .unwrap_or(0);
-        self.input.replace_range(byte_idx..byte_idx + next_len, "");
-    }
-
-    /// Move the cursor to the start of the previous word.
-    pub(crate) fn input_move_word_left(&mut self) {
-        let byte_idx = self.input_char_to_byte(self.input_cursor);
-        let before: Vec<char> = self.input[..byte_idx].chars().collect();
-        let mut i = before.len();
-        // Skip trailing whitespace.
-        while i > 0 && before[i - 1].is_whitespace() {
-            i -= 1;
-        }
-        // Skip the word.
-        while i > 0 && !before[i - 1].is_whitespace() {
-            i -= 1;
-        }
-        self.input_cursor = i;
-    }
-
-    /// Move the cursor to the start of the next word.
-    pub(crate) fn input_move_word_right(&mut self) {
-        let byte_idx = self.input_char_to_byte(self.input_cursor);
-        let after: Vec<char> = self.input[byte_idx..].chars().collect();
-        let mut i = 0;
-        // Skip the current word.
-        while i < after.len() && !after[i].is_whitespace() {
-            i += 1;
-        }
-        // Skip whitespace.
-        while i < after.len() && after[i].is_whitespace() {
-            i += 1;
-        }
-        self.input_cursor = (self.input_cursor + i).min(self.input.chars().count());
-    }
-
-    /// Delete the word before the cursor (Ctrl+W).
-    pub(crate) fn input_delete_word_before(&mut self) {
-        let old_cursor = self.input_cursor;
-        self.input_move_word_left();
-        let new_cursor = self.input_cursor;
-        let start_byte = self.input_char_to_byte(new_cursor);
-        let end_byte = self.input_char_to_byte(old_cursor);
-        self.input.replace_range(start_byte..end_byte, "");
-        self.input_cursor = new_cursor;
-    }
-
-    /// Delete from the start of the line to the cursor (Ctrl+U).
-    pub(crate) fn input_delete_to_start(&mut self) {
-        let byte_idx = self.input_char_to_byte(self.input_cursor);
-        self.input.replace_range(0..byte_idx, "");
-        self.input_cursor = 0;
-    }
-
-    /// Delete from the cursor to the end of the line (Ctrl+K).
-    pub(crate) fn input_delete_to_end(&mut self) {
-        let byte_idx = self.input_char_to_byte(self.input_cursor);
-        self.input.truncate(byte_idx);
     }
 }
