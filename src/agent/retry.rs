@@ -1,5 +1,4 @@
-use rand::Rng;
-use rand::rngs::OsRng;
+use rand::RngExt;
 use tokio::time::{Duration, sleep};
 
 use crate::config::types::RetryConfig;
@@ -134,8 +133,7 @@ where
             let delay = delay.min(config.max_delay_ms as f64);
 
             // Add 25% random jitter (0.75x to 1.25x)
-            let mut rng = OsRng;
-            let jitter = rng.gen_range(0.75..1.25);
+            let jitter = rand::rng().random_range(0.75..1.25);
             let delay_ms = (delay * jitter) as u64;
 
             tracing::warn!(
@@ -153,11 +151,10 @@ where
             Ok(value) => return Ok(value),
             Err(e) => {
                 // If we have a predicate and the error is NOT retriable, bail immediately
-                if let Some(ref pred) = should_retry {
-                    if !pred(&e) {
+                if let Some(ref pred) = should_retry
+                    && !pred(&e) {
                         return Err(e);
                     }
-                }
                 last_error = Some(e);
             }
         }
@@ -178,12 +175,16 @@ mod tests {
     #[test]
     fn test_retriable_timeout() {
         assert!(error_message_is_retriable("request timed out after 30s"));
-        assert!(error_message_is_retriable("timeout: connection to api.openai.com"));
+        assert!(error_message_is_retriable(
+            "timeout: connection to api.openai.com"
+        ));
     }
 
     #[test]
     fn test_retriable_connection() {
-        assert!(error_message_is_retriable("connection refused: 127.0.0.1:11434"));
+        assert!(error_message_is_retriable(
+            "connection refused: 127.0.0.1:11434"
+        ));
         assert!(error_message_is_retriable("connection reset by peer"));
         assert!(error_message_is_retriable("broken pipe"));
         assert!(error_message_is_retriable("no route to host"));
@@ -193,8 +194,12 @@ mod tests {
     #[test]
     fn test_retriable_rate_limit() {
         assert!(error_message_is_retriable("HTTP 429: Too Many Requests"));
-        assert!(error_message_is_retriable("rate limit exceeded, please slow down"));
-        assert!(error_message_is_retriable("too many requests, retry after 60s"));
+        assert!(error_message_is_retriable(
+            "rate limit exceeded, please slow down"
+        ));
+        assert!(error_message_is_retriable(
+            "too many requests, retry after 60s"
+        ));
     }
 
     #[test]
@@ -208,21 +213,35 @@ mod tests {
 
     #[test]
     fn test_non_retriable_auth() {
-        assert!(!error_message_is_retriable("401 Unauthorized: invalid API key"));
-        assert!(!error_message_is_retriable("403 Forbidden: insufficient permissions"));
+        assert!(!error_message_is_retriable(
+            "401 Unauthorized: invalid API key"
+        ));
+        assert!(!error_message_is_retriable(
+            "403 Forbidden: insufficient permissions"
+        ));
     }
 
     #[test]
     fn test_non_retriable_bad_request() {
-        assert!(!error_message_is_retriable("400 Bad Request: invalid model"));
-        assert!(!error_message_is_retriable("404 Not Found: model not available"));
-        assert!(!error_message_is_retriable("422 Unprocessable Entity: invalid schema"));
+        assert!(!error_message_is_retriable(
+            "400 Bad Request: invalid model"
+        ));
+        assert!(!error_message_is_retriable(
+            "404 Not Found: model not available"
+        ));
+        assert!(!error_message_is_retriable(
+            "422 Unprocessable Entity: invalid schema"
+        ));
     }
 
     #[test]
     fn test_non_retriable_parse_error() {
-        assert!(!error_message_is_retriable("JSON parse error: expected value at line 1"));
-        assert!(!error_message_is_retriable("failed to deserialize response"));
+        assert!(!error_message_is_retriable(
+            "JSON parse error: expected value at line 1"
+        ));
+        assert!(!error_message_is_retriable(
+            "failed to deserialize response"
+        ));
     }
 
     // -----------------------------------------------------------------------

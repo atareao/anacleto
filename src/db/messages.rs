@@ -184,7 +184,7 @@ impl Database {
             let ids: Vec<String> = messages.iter().map(|m| m.id.to_string()).collect();
             let placeholders = vec!["?"; ids.len()].join(",");
             let sql = format!("DELETE FROM messages WHERE id IN ({})", placeholders);
-            let mut q = sqlx::query(&sql);
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
             for id in &ids {
                 q = q.bind(id);
             }
