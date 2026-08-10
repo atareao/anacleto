@@ -150,20 +150,18 @@ pub async fn web_search(query: &str) -> Result<String, String> {
         .map_err(|e| format!("Failed to parse search response: {e}"))?;
 
     let mut out = String::new();
-    if let Some(abstract_text) = json.get("AbstractText").and_then(|v| v.as_str()) {
-        if !abstract_text.is_empty() {
+    if let Some(abstract_text) = json.get("AbstractText").and_then(|v| v.as_str())
+        && !abstract_text.is_empty() {
             out.push_str("Summary: ");
             out.push_str(abstract_text);
             out.push('\n');
         }
-    }
-    if let Some(abstract_url) = json.get("AbstractURL").and_then(|v| v.as_str()) {
-        if !abstract_url.is_empty() {
+    if let Some(abstract_url) = json.get("AbstractURL").and_then(|v| v.as_str())
+        && !abstract_url.is_empty() {
             out.push_str("Source: ");
             out.push_str(abstract_url);
             out.push('\n');
         }
-    }
 
     // Collect related topics (name + URL) up to a reasonable limit.
     let mut topics: Vec<String> = Vec::new();

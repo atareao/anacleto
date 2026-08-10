@@ -256,11 +256,10 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                 let collected = reg.collect_tools(&agent_mcp_names).await;
                 for (server_name, original_name, tool_def) in collected {
                     // Skip servers that have been disabled via `/mcps`.
-                    if let Some(ref enabled_map) = mcp_enabled {
-                        if !*enabled_map.lock().await.get(&server_name).unwrap_or(&true) {
+                    if let Some(ref enabled_map) = mcp_enabled
+                        && !*enabled_map.lock().await.get(&server_name).unwrap_or(&true) {
                             continue;
                         }
-                    }
                     let prefixed_name = tool_def.name.clone();
                     map.insert(prefixed_name, (server_name, original_name));
                     tools.push(tool_def);

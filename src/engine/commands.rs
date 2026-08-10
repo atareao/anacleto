@@ -462,11 +462,10 @@ impl Engine {
 
     /// Handle `/clear`: discard the staged snapshot.
     pub(crate) async fn handle_clear(&mut self) -> Result<()> {
-        if let Some(staged) = self.staged_snapshot.take() {
-            if let Some(ref db) = self.database {
+        if let Some(staged) = self.staged_snapshot.take()
+            && let Some(ref db) = self.database {
                 db.delete_snapshot(staged.id).await?;
             }
-        }
         Ok(())
     }
 

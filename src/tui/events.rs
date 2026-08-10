@@ -62,14 +62,13 @@ impl App {
                 // new content doesn't start with a newline, insert one to prevent
                 // the agent's response text from being concatenated to the same
                 // line as the tool result.
-                if !content.starts_with('\n') {
-                    if let Some(last_line) = stream.rsplit('\n').next() {
+                if !content.starts_with('\n')
+                    && let Some(last_line) = stream.rsplit('\n').next() {
                         let trimmed = last_line.trim_start();
                         if trimmed.starts_with("\u{2705}") || trimmed.starts_with("\u{274c}") {
                             stream.push('\n');
                         }
                     }
-                }
                 stream.push_str(&content);
             }
             EngineEvent::AgentThinkingChunk { content, .. } => {
@@ -527,20 +526,18 @@ impl App {
 /// Commit any pending thinking block as a separate message, wrapped in
 /// `[thinking]`/`[/thinking]` markers so the renderer can style it.
 fn commit_thinking_block(app: &mut App) {
-    if let Some(thinking) = app.current_thinking.take() {
-        if !thinking.trim().is_empty() {
+    if let Some(thinking) = app.current_thinking.take()
+        && !thinking.trim().is_empty() {
             app.push_msg(format!("[thinking]\n{}\n[/thinking]", thinking.trim()));
         }
-    }
 }
 
 /// Commit the current stream block as a message.
 fn commit_stream_block(app: &mut App) {
-    if let Some(stream) = app.current_stream.take() {
-        if !stream.trim().is_empty() {
+    if let Some(stream) = app.current_stream.take()
+        && !stream.trim().is_empty() {
             app.push_msg(stream);
         }
-    }
 }
 
 /// Collapse a string to a single line (newlines become spaces) and truncate

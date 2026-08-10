@@ -9,7 +9,7 @@ homepage = "https://github.com/atareao/anacleto"
 readme = "README.md"
 keywords = ["agent", "orchestration", "tui", "llm", "mcp"]
 categories = ["command-line-utilities", "development-tools"]
-rust-version = "1.86"
+rust-version = "1.97"
 
 [dependencies]
 # Async runtime
