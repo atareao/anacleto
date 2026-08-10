@@ -379,11 +379,10 @@ impl App {
     /// Commit any in-progress streaming response to the message log so that a
     /// newly submitted user message appears AFTER it, preserving chat order.
     pub(crate) fn commit_stream(&mut self) {
-        if let Some(stream) = self.current_stream.take() {
-            if !stream.is_empty() {
+        if let Some(stream) = self.current_stream.take()
+            && !stream.is_empty() {
                 self.push_msg(stream);
             }
-        }
     }
 
     /// Whether the active agent is currently busy (working or waiting for a

@@ -182,14 +182,13 @@ impl App {
                 .iter()
                 .filter(|a| a.status != crate::agent::types::AgentStatus::Completed)
                 .collect();
-            if let Some(agent) = display_agents.get(self.agent_panel_index) {
-                if agent.name != self.active_agent {
+            if let Some(agent) = display_agents.get(self.agent_panel_index)
+                && agent.name != self.active_agent {
                     let name = agent.name.clone();
                     let _ = self.cmd_tx.try_send(
                         crate::engine::orchestrator::EngineCommand::SwitchAgent(name),
                     );
                 }
-            }
         }
     }
 

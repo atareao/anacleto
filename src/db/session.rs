@@ -183,7 +183,7 @@ impl Database {
     /// versions, so we inspect `PRAGMA table_info` first and only issue the
     /// `ALTER TABLE` when the column is missing.
     async fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<()> {
-        let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA table_info({table})")))
             .fetch_all(&self.pool)
             .await?;
 
@@ -192,9 +192,9 @@ impl Database {
             .any(|row| row.get::<String, _>("name") == column);
 
         if !exists {
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "ALTER TABLE {table} ADD COLUMN {column} {definition}"
-            ))
+            )))
             .execute(&self.pool)
             .await?;
         }

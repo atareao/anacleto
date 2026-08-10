@@ -136,32 +136,28 @@ impl App {
                     }
                 }
                 KeyCode::Up => {
-                    if let Some(q) = self.pending_question.as_mut() {
-                        if !q.options.is_empty() {
+                    if let Some(q) = self.pending_question.as_mut()
+                        && !q.options.is_empty() {
                             q.selected = q.selected.saturating_sub(1);
                         }
-                    }
                 }
                 KeyCode::Down => {
-                    if let Some(q) = self.pending_question.as_mut() {
-                        if !q.options.is_empty() {
+                    if let Some(q) = self.pending_question.as_mut()
+                        && !q.options.is_empty() {
                             q.selected = (q.selected + 1) % q.options.len();
                         }
-                    }
                 }
                 KeyCode::Char(c) => {
-                    if let Some(q) = self.pending_question.as_mut() {
-                        if q.options.is_empty() {
+                    if let Some(q) = self.pending_question.as_mut()
+                        && q.options.is_empty() {
                             q.answer_input.push(c);
                         }
-                    }
                 }
                 KeyCode::Backspace => {
-                    if let Some(q) = self.pending_question.as_mut() {
-                        if q.options.is_empty() {
+                    if let Some(q) = self.pending_question.as_mut()
+                        && q.options.is_empty() {
                             q.answer_input.pop();
                         }
-                    }
                 }
                 _ => {}
             }

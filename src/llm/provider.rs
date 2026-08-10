@@ -612,8 +612,8 @@ impl Default for LlmProviderRegistry {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::types::RetryConfig;
     use super::*;
+    use crate::config::types::RetryConfig;
     use crate::llm::anthropic::{AnthropicCacheControl, AnthropicRequest, AnthropicResponse};
 
     #[test]
@@ -643,7 +643,7 @@ mod tests {
                 output_price_per_million: 15.0,
                 cache_control: CacheControl::Auto,
                 thinking_budget_tokens: None,
-            retry: RetryConfig::default(),
+                retry: RetryConfig::default(),
             };
             let provider = create_provider(&config);
             assert_eq!(
