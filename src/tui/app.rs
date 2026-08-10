@@ -3,7 +3,9 @@ use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyEventKind};
+use ratatui::style::{Modifier, Style};
 use ratatui::Terminal;
+use ratatui_textarea::TextArea;
 use tokio::sync::mpsc;
 
 use crate::agent::types::{AgentRole, AgentStatus};
@@ -31,10 +33,8 @@ pub struct App {
     pub cmd_tx: mpsc::Sender<EngineCommand>,
     /// Channel to receive events from the engine.
     pub event_rx: mpsc::Receiver<EngineEvent>,
-    /// Current user input buffer.
-    pub input: String,
-    /// Character index of the cursor within `input` (for shell-style editing).
-    pub(crate) input_cursor: usize,
+    /// TextArea widget state (buffer, cursor, selection, scroll).
+    pub(crate) textarea: TextArea<'static>,
     /// Which window currently has keyboard focus.
     pub(crate) focus: Focus,
     /// Active tab in the Info panel (0 = Skills, 1 = MCPs).
@@ -269,8 +269,12 @@ impl App {
         Self {
             cmd_tx,
             event_rx,
-            input: String::new(),
-            input_cursor: 0,
+            textarea: {
+                let mut ta = TextArea::default();
+                ta.set_placeholder_text(" ❯ ");
+                ta.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
+                ta
+            },
             focus: Focus::Input,
             info_tab: 0,
             mcp_panel_index: 0,
