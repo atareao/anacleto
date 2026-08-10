@@ -81,6 +81,10 @@ pub enum Action {
     CursorHome,
     /// Move the cursor to the end of the line.
     CursorEnd,
+    /// Move the cursor up by one line.
+    CursorUp,
+    /// Move the cursor down by one line.
+    CursorDown,
     /// Delete the character at the cursor.
     DeleteChar,
     /// Delete the character before the cursor.
@@ -341,12 +345,20 @@ impl Default for Keymap {
         km.bind(Action::DeleteToStart, vec![key_event('u', true)]);
         km.bind(Action::DeleteToEnd, vec![key_event('k', true)]);
         km.bind(
-            Action::HistoryUp,
+            Action::CursorUp,
             vec![KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)],
         );
         km.bind(
-            Action::HistoryDown,
+            Action::CursorDown,
             vec![KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
+        );
+        km.bind(
+            Action::HistoryUp,
+            vec![KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL)],
+        );
+        km.bind(
+            Action::HistoryDown,
+            vec![KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL)],
         );
         km.bind(
             Action::TabComplete,
@@ -576,10 +588,18 @@ mod tests {
         assert!(km.matches(key_event('k', true), Action::DeleteToEnd));
         assert!(km.matches(
             KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-            Action::HistoryUp
+            Action::CursorUp
         ));
         assert!(km.matches(
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            Action::CursorDown
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL),
+            Action::HistoryUp
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL),
             Action::HistoryDown
         ));
         assert!(km.matches(

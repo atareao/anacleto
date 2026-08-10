@@ -17,7 +17,9 @@ impl App {
     /// Recompute the fuzzy command palette matches based on the current input.
     /// The palette opens whenever the input starts with `/`.
     pub(crate) fn update_command_palette(&mut self) {
-        if !self.input.starts_with('/') {
+        let input_text = self.textarea.lines().join("\n");
+
+        if !input_text.starts_with('/') {
             self.show_command_palette = false;
             self.palette_matches.clear();
             self.palette_index = 0;
@@ -27,7 +29,7 @@ impl App {
         }
 
         // `/agent` uses its own agent-selection combo instead of the command list.
-        if self.input.starts_with("/agent") {
+        if input_text.starts_with("/agent") {
             self.show_command_palette = false;
             self.palette_matches.clear();
             self.palette_index = 0;
@@ -37,7 +39,7 @@ impl App {
         }
 
         // `/models` uses its own model-selection combo instead of the command list.
-        if self.input.starts_with("/models") {
+        if input_text.starts_with("/models") {
             self.show_command_palette = false;
             self.palette_matches.clear();
             self.palette_index = 0;
@@ -53,7 +55,7 @@ impl App {
         self.model_matches.clear();
         self.model_index = 0;
 
-        let query = self.input.trim_start_matches('/');
+        let query = input_text.trim_start_matches('/');
         let mut scored: Vec<(u32, String, usize)> = self
             .commands
             .iter()
@@ -74,7 +76,9 @@ impl App {
     /// Fuzzy agent-selection combo for `/agent`. Only root agents are
     /// switchable, so only those are offered.
     pub(crate) fn update_agent_palette(&mut self) {
-        if !self.input.starts_with("/agent") {
+        let input_text = self.textarea.lines().join("\n");
+
+        if !input_text.starts_with("/agent") {
             self.show_agent_palette = false;
             self.agent_matches.clear();
             self.agent_index = 0;
@@ -82,7 +86,7 @@ impl App {
         }
 
         // Query is the part after `/agent` (e.g. `/agent writ` → "writ").
-        let query = self.input.trim_start_matches("/agent").trim_start();
+        let query = input_text.trim_start_matches("/agent").trim_start();
 
         let mut scored: Vec<(u32, String)> = self
             .agents
@@ -102,7 +106,9 @@ impl App {
 
     /// Fuzzy model-selection combo for `/models`.
     pub(crate) fn update_model_palette(&mut self) {
-        if !self.input.starts_with("/models") {
+        let input_text = self.textarea.lines().join("\n");
+
+        if !input_text.starts_with("/models") {
             self.show_model_palette = false;
             self.model_matches.clear();
             self.model_index = 0;
@@ -110,7 +116,7 @@ impl App {
         }
 
         // Query is the part after `/models` (e.g. `/models gpt` → "gpt").
-        let query = self.input.trim_start_matches("/models").trim_start();
+        let query = input_text.trim_start_matches("/models").trim_start();
 
         let mut scored: Vec<(u32, String)> = self
             .model_picker

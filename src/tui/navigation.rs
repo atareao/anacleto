@@ -8,6 +8,7 @@
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui_textarea::TextArea;
 
 use super::app::App;
 use super::types::Focus;
@@ -135,8 +136,7 @@ impl App {
                 // Edit: load the selected item into the input buffer, remove it
                 // from the queue, and move focus to Input.
                 if let Some(prompt) = self.prompt_queue.get(self.prompt_queue_index) {
-                    self.input = prompt.clone();
-                    self.input_cursor = self.input.chars().count();
+                    self.textarea = TextArea::from([prompt.as_str()]);
                     self.prompt_queue.remove(self.prompt_queue_index);
                     self.focus = Focus::Input;
                 }
@@ -410,8 +410,7 @@ mod tests {
         let (e, ev, m) = key(KeyCode::Char('e'));
         app.handle_queue_panel_key(e, m, ev);
 
-        assert_eq!(app.input, "second");
-        assert_eq!(app.input_cursor, 6);
+        assert_eq!(app.textarea.lines().join("\n"), "second");
         assert_eq!(app.prompt_queue, vec!["first".to_string()]);
         assert_eq!(app.focus, Focus::Input);
     }

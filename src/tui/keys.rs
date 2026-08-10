@@ -2,6 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui_textarea::TextArea;
 
 use crate::engine::orchestrator::EngineCommand;
 use crate::tui::app::App;
@@ -175,16 +176,13 @@ impl App {
                 }
                 KeyCode::Esc => {
                     self.init_flow = None;
-                    self.input.clear();
-                    self.input_cursor = 0;
+                    self.textarea = TextArea::default();
                 }
                 KeyCode::Char(c) => {
-                    self.input.push(c);
-                    self.input_cursor = self.input.chars().count();
+                    self.textarea.insert_char(c);
                 }
                 KeyCode::Backspace => {
-                    self.input.pop();
-                    self.input_cursor = self.input.chars().count();
+                    self.textarea.delete_char();
                 }
                 _ => {}
             }
@@ -393,8 +391,7 @@ impl App {
                     // Edit: load the selected item into the input buffer,
                     // remove it from the queue and close the popup.
                     if let Some(prompt) = self.prompt_queue.get(self.prompt_queue_index) {
-                        self.input = prompt.clone();
-                        self.input_cursor = self.input.chars().count();
+                        self.textarea = TextArea::from([prompt.as_str()]);
                         self.prompt_queue.remove(self.prompt_queue_index);
                         self.show_prompt_queue = false;
                     }
@@ -471,8 +468,7 @@ impl App {
             };
             if produces_slash {
                 self.focus = Focus::Input;
-                self.input = "/".to_string();
-                self.input_cursor = 1;
+                self.textarea = TextArea::from(["/"]);
                 return;
             }
         }
@@ -731,7 +727,8 @@ impl App {
                 if self.focus == Focus::Input && key_event.modifiers == KeyModifiers::NONE {
                     return false;
                 }
-                key_event.modifiers != KeyModifiers::NONE || self.input.is_empty()
+                key_event.modifiers != KeyModifiers::NONE
+                    || self.textarea.lines().join("\n").is_empty()
             }
             _ => true,
         }
@@ -760,8 +757,7 @@ mod tests {
         app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
 
         // Item loaded into input, removed from queue, popup closed.
-        assert_eq!(app.input, "second");
-        assert_eq!(app.input_cursor, 6);
+        assert_eq!(app.textarea.lines().join("\n"), "second");
         assert_eq!(app.prompt_queue, vec!["first".to_string()]);
         assert!(!app.show_prompt_queue);
     }
@@ -864,56 +860,48 @@ mod tests {
     fn slash_from_chat_focuses_input_and_inserts_slash() {
         let mut app = test_app();
         app.focus = Focus::Chat;
-        app.input.clear();
-        app.input_cursor = 0;
+        app.textarea = TextArea::default();
 
         app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
 
         assert_eq!(app.focus, Focus::Input);
-        assert_eq!(app.input, "/");
-        assert_eq!(app.input_cursor, 1);
+        assert_eq!(app.textarea.lines().join("\n"), "/");
     }
 
     #[test]
     fn slash_from_info_focuses_input_and_inserts_slash() {
         let mut app = test_app();
         app.focus = Focus::Info;
-        app.input.clear();
-        app.input_cursor = 0;
+        app.textarea = TextArea::default();
 
         app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
 
         assert_eq!(app.focus, Focus::Input);
-        assert_eq!(app.input, "/");
-        assert_eq!(app.input_cursor, 1);
+        assert_eq!(app.textarea.lines().join("\n"), "/");
     }
 
     #[test]
     fn slash_from_agents_focuses_input_and_inserts_slash() {
         let mut app = test_app();
         app.focus = Focus::Agents;
-        app.input.clear();
-        app.input_cursor = 0;
+        app.textarea = TextArea::default();
 
         app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
 
         assert_eq!(app.focus, Focus::Input);
-        assert_eq!(app.input, "/");
-        assert_eq!(app.input_cursor, 1);
+        assert_eq!(app.textarea.lines().join("\n"), "/");
     }
 
     #[test]
     fn slash_from_queue_focuses_input_and_inserts_slash() {
         let mut app = test_app();
         app.focus = Focus::Queue;
-        app.input.clear();
-        app.input_cursor = 0;
+        app.textarea = TextArea::default();
 
         app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
 
         assert_eq!(app.focus, Focus::Input);
-        assert_eq!(app.input, "/");
-        assert_eq!(app.input_cursor, 1);
+        assert_eq!(app.textarea.lines().join("\n"), "/");
     }
 
     #[test]
@@ -922,14 +910,12 @@ mod tests {
         // (handled by handle_input_key), not trigger the focus switch.
         let mut app = test_app();
         app.focus = Focus::Input;
-        app.input.clear();
-        app.input_cursor = 0;
+        app.textarea = TextArea::default();
 
         app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
 
         assert_eq!(app.focus, Focus::Input);
-        assert_eq!(app.input, "/");
-        assert_eq!(app.input_cursor, 1);
+        assert_eq!(app.textarea.lines().join("\n"), "/");
     }
 
     #[test]
@@ -937,8 +923,7 @@ mod tests {
         // Alt+/ should not switch focus (it might be used for something else).
         let mut app = test_app();
         app.focus = Focus::Chat;
-        app.input.clear();
-        app.input_cursor = 0;
+        app.textarea = TextArea::default();
 
         app.handle_key(KeyCode::Char('/'), KeyModifiers::ALT);
 
@@ -951,14 +936,12 @@ mod tests {
         // Shift+/ (Spanish keyboard layout) should switch focus to Input.
         let mut app = test_app();
         app.focus = Focus::Chat;
-        app.input.clear();
-        app.input_cursor = 0;
+        app.textarea = TextArea::default();
 
         app.handle_key(KeyCode::Char('/'), KeyModifiers::SHIFT);
 
         assert_eq!(app.focus, Focus::Input);
-        assert_eq!(app.input, "/");
-        assert_eq!(app.input_cursor, 1);
+        assert_eq!(app.textarea.lines().join("\n"), "/");
     }
 
     #[test]
@@ -969,14 +952,12 @@ mod tests {
         app.kb_supported = true;
         app.lang = "es_ES.UTF-8".to_string();
         app.focus = Focus::Chat;
-        app.input.clear();
-        app.input_cursor = 0;
+        app.textarea = TextArea::default();
 
         app.handle_key(KeyCode::Char('7'), KeyModifiers::SHIFT);
 
         assert_eq!(app.focus, Focus::Input);
-        assert_eq!(app.input, "/");
-        assert_eq!(app.input_cursor, 1);
+        assert_eq!(app.textarea.lines().join("\n"), "/");
     }
 
     #[test]
@@ -986,12 +967,11 @@ mod tests {
         app.kb_supported = true;
         app.lang = "es_ES.UTF-8".to_string();
         app.focus = Focus::Chat;
-        app.input.clear();
-        app.input_cursor = 0;
+        app.textarea = TextArea::default();
 
         app.handle_key(KeyCode::Char('7'), KeyModifiers::NONE);
 
         assert_eq!(app.focus, Focus::Chat);
-        assert!(app.input.is_empty());
+        assert!(app.textarea.lines().join("\n").is_empty());
     }
 }

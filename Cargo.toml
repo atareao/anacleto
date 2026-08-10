@@ -1,6 +1,6 @@
 [package]
 name = "anacleto"
-version = "0.20.0"
+version = "0.21.0"
 edition = "2024"
 description = "Agent orchestration engine in Rust — agents, subagents, skills, and MCPs"
 license = "MIT"
@@ -9,7 +9,7 @@ homepage = "https://github.com/atareao/anacleto"
 readme = "README.md"
 keywords = ["agent", "orchestration", "tui", "llm", "mcp"]
 categories = ["command-line-utilities", "development-tools"]
-rust-version = "1.85"
+rust-version = "1.86"
 
 [dependencies]
 # Async runtime
@@ -17,6 +17,7 @@ tokio = { version = "1", features = ["full"] }
 
 # TUI
 ratatui = "0.30"
+ratatui-textarea = "0.9.2"
 crossterm = "0.28"
 unicode-width = "0.2"
 
