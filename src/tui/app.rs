@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::style::{Modifier, Style};
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{TextArea, WrapMode};
 use tokio::sync::mpsc;
 
 use crate::agent::types::{AgentRole, AgentStatus};
@@ -271,8 +271,9 @@ impl App {
             event_rx,
             textarea: {
                 let mut ta = TextArea::default();
-                ta.set_placeholder_text(" ❯ ");
                 ta.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
+                ta.set_cursor_line_style(Style::default());
+                ta.set_wrap_mode(WrapMode::Word);
                 ta
             },
             focus: Focus::Input,
