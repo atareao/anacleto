@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use ratatui_textarea::TextArea;
 use super::app::App;
 use super::render::copy_to_clipboard;
 use super::types::InitFlow;
@@ -438,8 +439,7 @@ impl App {
             "/stash" => match parts.get(1) {
                 Some(&"pop") => {
                     if let Some(saved) = self.stash_stack.pop() {
-                        self.input = saved;
-                        self.input_cursor = self.input.chars().count();
+                        self.textarea = TextArea::from([saved.as_str()]);
                         self.push_msg("> /stash pop — restored prompt.");
                     } else {
                         self.push_msg("> /stash pop — nothing stashed.");
@@ -456,12 +456,11 @@ impl App {
                     }
                 }
                 _ => {
-                    if self.input.trim().is_empty() {
+                    if self.textarea.lines().join("\n").trim().is_empty() {
                         self.push_msg("> /stash — nothing to stash.");
                     } else {
-                        self.stash_stack.push(self.input.clone());
-                        self.input.clear();
-                        self.input_cursor = 0;
+                        self.stash_stack.push(self.textarea.lines().join("\n"));
+                        self.textarea = TextArea::default();
                         self.push_msg(format!(
                             "> /stash — saved ({} stashed).",
                             self.stash_stack.len()
@@ -526,14 +525,13 @@ impl App {
     /// Open the external editor ($EDITOR) with the current input buffer.
     pub(crate) fn open_editor(&mut self) {
         let tmp = std::env::temp_dir().join(format!("anacleto-edit-{}.txt", std::process::id()));
-        if std::fs::write(&tmp, &self.input).is_err() {
+        if std::fs::write(&tmp, self.textarea.lines().join("\n")).is_err() {
             self.push_msg("Error: could not write temp file for editor".to_string());
             return;
         }
         self.open_file_in_editor(&tmp);
         if let Ok(contents) = std::fs::read_to_string(&tmp) {
-            self.input = contents.trim_end_matches('\n').to_string();
-            self.input_cursor = self.input.chars().count();
+            self.textarea = TextArea::from([contents.trim_end_matches('\n')]);
         }
         let _ = std::fs::remove_file(&tmp);
     }
@@ -585,7 +583,8 @@ impl App {
         let Some(mut flow) = self.init_flow.take() else {
             return;
         };
-        let answer = std::mem::take(&mut self.input);
+        let answer = self.textarea.lines().join("\n");
+        self.textarea = TextArea::default();
         match flow.step {
             0 => flow.name = answer,
             1 => flow.description = answer,
