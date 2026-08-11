@@ -239,6 +239,19 @@ pub(crate) enum Focus {
     Queue,
 }
 
+/// Represents a single collapsible section in the chat render.
+#[derive(Debug, Clone)]
+pub(crate) struct CollapsedSection {
+    /// Unique identifier: "{type}_{counter}" e.g. "thinking_1"
+    pub(crate) id: String,
+    /// Section type: "thinking", "tool", "normal", "user", "command"
+    pub(crate) section_type: String,
+    /// Index of the first line (the ▐ border) in rendered_chat_lines
+    pub(crate) start_line: usize,
+    /// Number of content lines (excluding the header ▐)
+    pub(crate) line_count: usize,
+}
+
 /// State for the conversation history search overlay (Ctrl+R).
 #[derive(Debug, Clone, Default)]
 pub struct SearchState {
