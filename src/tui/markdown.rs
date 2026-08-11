@@ -8,6 +8,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
+use crate::tui::code_block::CodeBlockHighlighter;
+
 /// Parse a line of text for inline markdown and return styled Spans.
 /// Uses COLOR changes (not modifiers) for italic since color is
 /// far more visible in terminals than font-weight/italic.
@@ -15,6 +17,7 @@ use unicode_width::UnicodeWidthStr;
 ///   `**bold**`  -> bright white foreground
 ///   `*italic*`  -> warm yellow foreground
 ///   `` `code` `` -> amber on dark background
+#[cfg(test)]
 pub(crate) fn render_markdown_line(text: &str, base_style: Style) -> Line<'static> {
     if text.is_empty() {
         return Line::from("");
@@ -52,6 +55,137 @@ pub(crate) fn render_markdown_line(text: &str, base_style: Style) -> Line<'stati
 
     // Regular paragraph line
     Line::from(parse_inline(text, base_style))
+}
+
+/// Same as [`render_markdown_line`] but uses syntect-based highlighting for inline
+/// code (backtick spans) via the provided [`CodeBlockHighlighter`].
+pub(crate) fn render_markdown_line_with_syntect(
+    text: &str,
+    base_style: Style,
+    hl: &CodeBlockHighlighter,
+    is_dark: bool,
+) -> Line<'static> {
+    if text.is_empty() {
+        return Line::from("");
+    }
+
+    let trimmed = text.trim_start();
+
+    // Line-level constructs (must be at start of trimmed line)
+    if let Some(content) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+    {
+        let bullet = Span::styled(" \u{2022} ", base_style.fg(Color::Rgb(255, 180, 100)));
+        let mut spans = vec![bullet];
+        spans.extend(parse_inline_with_syntect(content, base_style, hl, is_dark));
+        return Line::from(spans);
+    }
+
+    if let Some(content) = trimmed.strip_prefix("> ") {
+        let bar = Span::styled(" \u{2502} ", base_style.fg(Color::Rgb(100, 120, 140)));
+        let quote_style = base_style
+            .fg(Color::Rgb(140, 160, 180))
+            .add_modifier(Modifier::DIM);
+        let mut spans = vec![bar];
+        spans.extend(parse_inline_with_syntect(content, quote_style, hl, is_dark));
+        return Line::from(spans);
+    }
+
+    if let Some(content) = trimmed.strip_prefix("### ") {
+        return Line::from(Span::styled(
+            content.to_string(),
+            base_style.fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    // Regular paragraph line
+    Line::from(parse_inline_with_syntect(text, base_style, hl, is_dark))
+}
+
+/// Parse inline markdown tokens with syntect-based highlighting for inline code.
+///
+/// Like [`parse_inline`] but passes backtick content through
+/// [`CodeBlockHighlighter::highlight_inline`] for theme-aware coloring.
+pub(crate) fn parse_inline_with_syntect(
+    text: &str,
+    base_style: Style,
+    hl: &CodeBlockHighlighter,
+    is_dark: bool,
+) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Check for `code` first (backtick) — use syntect for inline code
+        if chars[i] == '`' {
+            let mut content = String::new();
+            i += 1;
+            while i < len && chars[i] != '`' {
+                content.push(chars[i]);
+                i += 1;
+            }
+            if i < len {
+                i += 1;
+            }
+            let colored = hl.highlight_inline(&content, is_dark, base_style);
+            spans.extend(colored);
+            continue;
+        }
+
+        // Check for **bold**
+        if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
+            let mut content = String::new();
+            i += 2;
+            while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '*') {
+                content.push(chars[i]);
+                i += 1;
+            }
+            if i + 1 < len {
+                i += 2;
+            }
+            spans.push(Span::styled(
+                content,
+                base_style
+                    .fg(Color::Rgb(255, 255, 255))
+                    .add_modifier(Modifier::BOLD),
+            ));
+            continue;
+        }
+
+        // Check for *italic*
+        if chars[i] == '*' {
+            let mut content = String::new();
+            i += 1;
+            while i < len && chars[i] != '*' {
+                content.push(chars[i]);
+                i += 1;
+            }
+            if i < len {
+                i += 1;
+            }
+            // Italic = warm yellow (more visible than italic modifier)
+            spans.push(Span::styled(
+                content,
+                base_style.fg(Color::Rgb(255, 220, 120)),
+            ));
+            continue;
+        }
+
+        // Regular character
+        let mut plain = String::new();
+        while i < len && chars[i] != '*' && chars[i] != '`' {
+            plain.push(chars[i]);
+            i += 1;
+        }
+        if !plain.is_empty() {
+            spans.push(Span::styled(plain, base_style));
+        }
+    }
+
+    spans
 }
 
 /// Parse inline markdown tokens: `**bold**`, `*italic*`, `` `code` ``
@@ -426,6 +560,19 @@ pub(crate) fn visual_line_count(line: &Line, content_width: usize) -> usize {
     rows as usize
 }
 
+/// Result of [`select_visible_start`]: the first logical line to display and
+/// the number of visual rows of that line that are hidden above the visible
+/// area (0 when the line is fully visible or all lines fit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VisibleStart {
+    pub(crate) start_idx: u16,
+    /// Visual rows of the first line that are ABOVE the visible area.
+    /// Only non-zero when the first line is partially visible (wrapping
+    /// overflow). The click handler adds this to `start_visual` so that
+    /// `click_visual = start_visual + row` maps correctly.
+    pub(crate) visual_offset: usize,
+}
+
 /// Walk backwards through `lines` accumulating visual row counts (accounting for
 /// wrapping at `content_width` columns) and return the index of the first logical
 /// line to display so that the bottommost content fits in `visible_rows`.
@@ -437,14 +584,18 @@ pub(crate) fn select_visible_start(
     visible_rows: usize,
     content_width: usize,
     chat_scroll: u16,
-) -> u16 {
+) -> VisibleStart {
     if lines.is_empty() {
-        return 0;
+        return VisibleStart {
+            start_idx: 0,
+            visual_offset: 0,
+        };
     }
 
     // Walk backwards, accumulating visual rows until we fill the visible area
     let mut remaining = visible_rows;
     let mut bottom: usize = 0;
+    let mut visual_offset: usize = 0;
 
     'walk: for (i, line) in lines.iter().enumerate().rev() {
         let visual = visual_line_count(line, content_width);
@@ -456,8 +607,11 @@ pub(crate) fn select_visible_start(
         }
 
         if visual > remaining {
-            // This line overflows but must be partially shown
+            // This line overflows but must be partially shown.
+            // `remaining` visual rows of this line are visible at the top;
+            // the rest (`visual - remaining`) are hidden above.
             bottom = i;
+            visual_offset = visual - remaining;
             break 'walk;
         }
 
@@ -467,8 +621,17 @@ pub(crate) fn select_visible_start(
 
     // Apply manual scroll offset (if any)
     let scroll = bottom.saturating_sub(chat_scroll as usize);
-    scroll as u16
+    VisibleStart {
+        start_idx: scroll as u16,
+        visual_offset,
+    }
 }
+
+/// Given a visual row offset from `start_idx`, return the corresponding logical
+/// line index, accounting for soft-wrapping (where one logical line may occupy
+/// This is the inverse of the visual-row accumulation in `select_visible_start`:
+/// it walks forward from `start_idx` accumulating visual rows until reaching
+/// `visual_offset`, then returns the logical line at that position.
 
 #[cfg(test)]
 mod tests {
@@ -500,7 +663,7 @@ mod tests {
     /// number of rows actually occupied by non-empty content (excluding the
     /// border rows).
     fn actual_used_rows(lines: &[Line], content_width: usize, visible: usize) -> usize {
-        let start_idx = select_visible_start(lines, visible, content_width, 0);
+        let start_idx = select_visible_start(lines, visible, content_width, 0).start_idx;
         let display: Vec<Line> = lines.iter().skip(start_idx as usize).cloned().collect();
         let paragraph = Paragraph::new(display)
             .block(Block::default().borders(Borders::ALL))

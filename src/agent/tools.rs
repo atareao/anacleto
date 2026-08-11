@@ -675,7 +675,7 @@ The original task was: {}"#,
 
     // Emit tool result tracing event
     let summary = match &result {
-        Ok(r) => truncate_output(r, 120),
+        Ok(r) => truncate_output(r, 5000),
         Err(e) => e.clone(),
     };
     let _ = event_tx

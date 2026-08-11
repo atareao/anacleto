@@ -2,7 +2,6 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui_textarea::TextArea;
 
 use crate::engine::orchestrator::EngineCommand;
 use crate::tui::app::App;
@@ -10,6 +9,8 @@ use crate::tui::keymap::Action;
 use crate::tui::render::shift_char;
 use crate::tui::toast::ToastKind;
 use crate::tui::types::Focus;
+#[cfg(test)]
+use ratatui_textarea::TextArea;
 
 impl App {
     /// Handle a key event.
@@ -137,27 +138,31 @@ impl App {
                 }
                 KeyCode::Up => {
                     if let Some(q) = self.pending_question.as_mut()
-                        && !q.options.is_empty() {
-                            q.selected = q.selected.saturating_sub(1);
-                        }
+                        && !q.options.is_empty()
+                    {
+                        q.selected = q.selected.saturating_sub(1);
+                    }
                 }
                 KeyCode::Down => {
                     if let Some(q) = self.pending_question.as_mut()
-                        && !q.options.is_empty() {
-                            q.selected = (q.selected + 1) % q.options.len();
-                        }
+                        && !q.options.is_empty()
+                    {
+                        q.selected = (q.selected + 1) % q.options.len();
+                    }
                 }
                 KeyCode::Char(c) => {
                     if let Some(q) = self.pending_question.as_mut()
-                        && q.options.is_empty() {
-                            q.answer_input.push(c);
-                        }
+                        && q.options.is_empty()
+                    {
+                        q.answer_input.push(c);
+                    }
                 }
                 KeyCode::Backspace => {
                     if let Some(q) = self.pending_question.as_mut()
-                        && q.options.is_empty() {
-                            q.answer_input.pop();
-                        }
+                        && q.options.is_empty()
+                    {
+                        q.answer_input.pop();
+                    }
                 }
                 _ => {}
             }
@@ -172,7 +177,7 @@ impl App {
                 }
                 KeyCode::Esc => {
                     self.init_flow = None;
-                    self.textarea = TextArea::default();
+                    self.reset_textarea();
                 }
                 KeyCode::Char(c) => {
                     self.textarea.insert_char(c);
@@ -387,7 +392,8 @@ impl App {
                     // Edit: load the selected item into the input buffer,
                     // remove it from the queue and close the popup.
                     if let Some(prompt) = self.prompt_queue.get(self.prompt_queue_index) {
-                        self.textarea = TextArea::from([prompt.as_str()]);
+                        let prompt = prompt.clone();
+                        self.set_textarea_text(prompt.as_str());
                         self.prompt_queue.remove(self.prompt_queue_index);
                         self.show_prompt_queue = false;
                     }
@@ -464,7 +470,7 @@ impl App {
             };
             if produces_slash {
                 self.focus = Focus::Input;
-                self.textarea = TextArea::from(["/"]);
+                self.set_textarea_text("/");
                 return;
             }
         }
@@ -642,7 +648,7 @@ impl App {
             .constraints([
                 Constraint::Length(1), // status bar
                 Constraint::Min(1),    // main content
-                Constraint::Length(4), // input
+                Constraint::Length(5), // input
                 Constraint::Length(1), // working directory
             ])
             .split(area);
@@ -679,6 +685,10 @@ impl App {
             // Left panel (chat / overlays)
             if x < horiz[0].x + horiz[0].width {
                 self.focus = Focus::Chat;
+                // Check for a click on a code block's `[copy]` line.
+                // Pass the LEFT panel area (horiz[0]), NOT main_area, so
+                // content_x/y and content_width match the render.
+                self.handle_code_block_click(x, y, horiz[0]);
                 return;
             }
 
@@ -707,6 +717,51 @@ impl App {
         } else {
             // Sidebar hidden: left panel takes full width.
             self.focus = Focus::Chat;
+            self.handle_code_block_click(mouse.column, y, main_area);
+        }
+    }
+
+    /// If the click lands on a code block's `[copy]` line, copy that block.
+    /// `main_area` is the chat panel area (before borders).
+    fn handle_code_block_click(&mut self, x: u16, y: u16, main_area: Rect) {
+        // The chat content is inset by a 1-cell border on each side.
+        let content_x = main_area.x + 1;
+        let content_y = main_area.y + 1;
+        if x < content_x || y < content_y {
+            return;
+        }
+        let row = (y - content_y) as usize;
+
+        // Recompute the visible start index the same way render does.
+        let content_width = (main_area.width.saturating_sub(2)).max(1) as usize;
+        let visible = (main_area.height.max(2) as usize) - 2;
+        let vs = crate::tui::markdown::select_visible_start(
+            &self.rendered_chat_lines,
+            visible,
+            content_width,
+            self.chat_scroll,
+        );
+
+        // Check code block copy (match on logical line index — copy buttons
+        // are short, never wrap, so this is reliable even with wrapping elsewhere).
+        for block in &self.code_block_positions {
+            if block.copy_line == vs.start_idx as usize + row {
+                match crate::tui::render::copy_to_clipboard(&block.code) {
+                    Ok(()) => self.toasts.push(
+                        format!(
+                            "Código '{}' copiado al portapapeles ({} líneas)",
+                            block.lang,
+                            block.code.lines().count()
+                        ),
+                        crate::tui::toast::ToastKind::Success,
+                    ),
+                    Err(e) => self.toasts.push(
+                        format!("Error al copiar: {}", e),
+                        crate::tui::toast::ToastKind::Error,
+                    ),
+                }
+                return;
+            }
         }
     }
 

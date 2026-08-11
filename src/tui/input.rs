@@ -5,7 +5,7 @@
 //! (Tab completion, history, palettes) on top.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui_textarea::{CursorMove, TextArea};
+use ratatui_textarea::CursorMove;
 
 use super::app::App;
 use super::render::shift_char;
@@ -31,7 +31,7 @@ impl App {
             }
             let current_text = self.textarea.lines().join("\n");
             let prefix = current_text.to_lowercase();
-            if self.tab_index == 0 || self.tab_matches.is_empty() {
+            if self.tab_matches.is_empty() {
                 self.tab_matches = self
                     .commands
                     .iter()
@@ -45,14 +45,14 @@ impl App {
             let idx = self.tab_index % self.tab_matches.len();
             let completed = self.tab_matches[idx].clone();
             // Replace textarea content with the completed command
-            self.textarea = TextArea::from([completed.as_str()]);
+            self.set_textarea_text(completed.as_str());
             self.tab_index += 1;
         } else if self.keymap.matches(key_event, Action::InsertNewline) {
             self.reset_tab_state();
             self.textarea.insert_newline();
         } else if self.keymap.matches(key_event, Action::ClearInput) {
             self.reset_tab_state();
-            self.textarea = TextArea::default();
+            self.reset_textarea();
         } else if self.keymap.matches(key_event, Action::DeleteToStart) {
             self.reset_tab_state();
             self.textarea.delete_line_by_head();
@@ -117,7 +117,8 @@ impl App {
                     None => self.input_history.len() - 1,
                 };
                 self.history_index = Some(next);
-                self.textarea = TextArea::from([self.input_history[next].as_str()]);
+                let text = self.input_history[next].clone();
+                self.set_textarea_text(text.as_str());
                 self.tab_matches.clear();
                 self.tab_index = 0;
             }
@@ -133,11 +134,12 @@ impl App {
                 match self.history_index {
                     Some(i) if i + 1 < self.input_history.len() => {
                         self.history_index = Some(i + 1);
-                        self.textarea = TextArea::from([self.input_history[i + 1].as_str()]);
+                        let text = self.input_history[i + 1].clone();
+                        self.set_textarea_text(text.as_str());
                     }
                     _ => {
                         self.history_index = None;
-                        self.textarea = TextArea::default();
+                        self.reset_textarea();
                     }
                 }
                 self.tab_matches.clear();
@@ -152,7 +154,7 @@ impl App {
                 self.show_model_palette = false;
                 self.model_matches.clear();
                 self.model_index = 0;
-                self.textarea = TextArea::default();
+                self.reset_textarea();
                 self.handle_command(format!("/models {}", name));
             } else if self.show_agent_palette && !self.agent_matches.is_empty() {
                 // Execute `/agent <selected>` from the agent combo.
@@ -160,7 +162,7 @@ impl App {
                 self.show_agent_palette = false;
                 self.agent_matches.clear();
                 self.agent_index = 0;
-                self.textarea = TextArea::default();
+                self.reset_textarea();
                 self.handle_command(format!("/agent {}", name));
             } else if self.show_command_palette && !self.palette_matches.is_empty() {
                 // Execute the highlighted command from the palette.
@@ -169,11 +171,11 @@ impl App {
                 self.show_command_palette = false;
                 self.palette_matches.clear();
                 self.palette_index = 0;
-                self.textarea = TextArea::default();
+                self.reset_textarea();
                 self.handle_command(cmd);
             } else {
                 let input = self.textarea.lines().join("\n");
-                self.textarea = TextArea::default();
+                self.reset_textarea();
                 if !input.is_empty() {
                     // Record in input history (dedupe consecutive repeats).
                     if self.input_history.last() != Some(&input) {
@@ -210,7 +212,7 @@ impl App {
                 self.show_subagents = false;
             } else {
                 // No overlay open — clear input
-                self.textarea = TextArea::default();
+                self.reset_textarea();
             }
         } else if let KeyCode::Char(c) = key {
             // Any non-Tab key resets autocomplete state

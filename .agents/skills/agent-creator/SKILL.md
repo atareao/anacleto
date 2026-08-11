@@ -5,6 +5,12 @@ description: |
   Use when users want to create a new agent from scratch, edit an existing agent,
   add or remove skills and MCPs from an agent, or restructure subagent teams.
   Covers the full agent lifecycle: creation, configuration, review, and deletion.
+
+  ⚠️ IMPORTANTE: Este skill es el ÚNICO que debe usarse para crear o modificar
+  agentes. NO uses apply_patch, filesystem.write, shell ni ninguna otra
+  herramienta para crear o editar agentes directamente. Siempre invoca este
+  skill primero (agent-creator) y sigue sus instrucciones al pie de la letra.
+  Saltarse este skill provoca inconsistencias y errores en la configuración.
 metadata:
   version: "1.0"
   category: development

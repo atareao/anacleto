@@ -63,12 +63,13 @@ impl App {
                 // the agent's response text from being concatenated to the same
                 // line as the tool result.
                 if !content.starts_with('\n')
-                    && let Some(last_line) = stream.rsplit('\n').next() {
-                        let trimmed = last_line.trim_start();
-                        if trimmed.starts_with("\u{2705}") || trimmed.starts_with("\u{274c}") {
-                            stream.push('\n');
-                        }
+                    && let Some(last_line) = stream.rsplit('\n').next()
+                {
+                    let trimmed = last_line.trim_start();
+                    if trimmed.starts_with("\u{2705}") || trimmed.starts_with("\u{274c}") {
+                        stream.push('\n');
                     }
+                }
                 stream.push_str(&content);
             }
             EngineEvent::AgentThinkingChunk { content, .. } => {
@@ -247,8 +248,19 @@ impl App {
                 // timeline, rather than being pushed below it.
                 commit_thinking_block(self);
                 commit_stream_block(self);
-                let msg = format!("\u{1f527} {}: {}", tool_name, one_line(&task, 60));
-                self.push_msg(msg);
+                // Distinguish between executable tools (shell, filesystem, web)
+                // and passive skills that just load instructions.
+                let lower = tool_name.to_lowercase();
+                let is_tool = lower == "shell"
+                    || lower == "filesystem"
+                    || lower.contains("web")
+                    || lower.contains("research");
+                let msg = if is_tool {
+                    format!("\u{26a1} ejecutando: {}", one_line(&task, 500))
+                } else {
+                    format!("\u{1f4d6} leyendo: {}", tool_name)
+                };
+                self.pending_tool_lines.push(msg);
                 self.chat_scroll = 0;
             }
             EngineEvent::ToolResult {
@@ -260,14 +272,35 @@ impl App {
                 // Commit any thinking that arrived between ToolExecution
                 // and ToolResult, then push the result as its own message.
                 commit_thinking_block(self);
-                let icon = if success { "\u{2705}" } else { "\u{274c}" };
-                let summary = one_line(&summary, 60);
-                let msg = if success {
-                    format!("{} {} \u{2014} {}", icon, tool_name, summary)
+                // Distinguish between executable tools and passive skills.
+                let lower = tool_name.to_lowercase();
+                let is_tool = lower == "shell"
+                    || lower == "filesystem"
+                    || lower.contains("web")
+                    || lower.contains("research");
+                let msg = if is_tool {
+                    let icon = if success { "\u{2705}" } else { "\u{274c}" };
+                    if success {
+                        format!("{} {} \u{2014} {}", icon, tool_name, summary)
+                    } else {
+                        format!("{} {} failed: {}", icon, tool_name, summary)
+                    }
                 } else {
-                    format!("{} {} failed: {}", icon, tool_name, summary)
+                    // Skills just show a brief confirmation; the full
+                    // instructions are not displayed in the chat.
+                    format!("\u{1f4d6} {} cargado", tool_name)
                 };
-                self.push_msg(msg);
+                // Split header from output so the renderer can style
+                // the output (JSON, shell text) with a dimmed style.
+                let (header, rest) = match msg.split_once('\n') {
+                    Some((h, r)) => (h.to_string(), r.to_string()),
+                    None => (msg.clone(), String::new()),
+                };
+                self.pending_tool_lines.push(header);
+                if !rest.is_empty() {
+                    self.pending_tool_lines.push("[tool-output]".to_string());
+                    self.pending_tool_lines.push(rest);
+                }
                 self.chat_scroll = 0;
             }
             EngineEvent::LlmRequestDebug {
@@ -527,17 +560,19 @@ impl App {
 /// `[thinking]`/`[/thinking]` markers so the renderer can style it.
 fn commit_thinking_block(app: &mut App) {
     if let Some(thinking) = app.current_thinking.take()
-        && !thinking.trim().is_empty() {
-            app.push_msg(format!("[thinking]\n{}\n[/thinking]", thinking.trim()));
-        }
+        && !thinking.trim().is_empty()
+    {
+        app.push_msg(format!("[thinking]\n{}\n[/thinking]", thinking.trim()));
+    }
 }
 
 /// Commit the current stream block as a message.
 fn commit_stream_block(app: &mut App) {
     if let Some(stream) = app.current_stream.take()
-        && !stream.trim().is_empty() {
-            app.push_msg(stream);
-        }
+        && !stream.trim().is_empty()
+    {
+        app.push_msg(stream);
+    }
 }
 
 /// Collapse a string to a single line (newlines become spaces) and truncate
@@ -669,7 +704,7 @@ mod tests {
             app.messages,
             vec![
                 "[thinking]\nreasoning step\n[/thinking]".to_string(),
-                "hello world".to_string(),
+                "[normal]\nhello world\n[/normal]".to_string(),
             ]
         );
         assert!(app.current_thinking.is_none());
@@ -695,6 +730,9 @@ mod tests {
             content: "answer".to_string(),
         });
 
-        assert_eq!(app.messages, vec!["answer".to_string()]);
+        assert_eq!(
+            app.messages,
+            vec!["[normal]\nanswer\n[/normal]".to_string()]
+        );
     }
 }

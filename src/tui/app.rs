@@ -4,7 +4,7 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::Terminal;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui_textarea::{TextArea, WrapMode};
 use tokio::sync::mpsc;
 
@@ -15,6 +15,7 @@ use crate::db::models::SessionSummary;
 use crate::engine::orchestrator::{
     EngineCommand, EngineEvent, McpStatus, SkillInfo, StatusInfo, TimelineEntry,
 };
+use crate::tui::code_block::{CodeBlockHighlighter, CodeBlockPosition};
 use crate::tui::diff_viewer::DiffViewer;
 use crate::tui::keymap::Keymap;
 use crate::tui::model_picker::ModelPicker;
@@ -215,6 +216,18 @@ pub struct App {
     pub(crate) search: SearchState,
     /// Ctrl+E edit-agent/subagent dialog state.
     pub(crate) edit_dialog: EditDialogState,
+    /// Cached syntect highlighter (loaded once).
+    pub(crate) code_block_hl: CodeBlockHighlighter,
+    /// Positions of code block [copy] lines in the rendered chat, populated
+    /// each frame during render and used by mouse-click handling.
+    pub(crate) code_block_positions: Vec<CodeBlockPosition>,
+    /// Accumulates consecutive tool/skill lines so they render as a single
+    /// [tool] block without redundant borders between them.
+    pub(crate) pending_tool_lines: Vec<String>,
+    /// Monotonic counter for unique section IDs across all batches and renders.
+    /// The full rendered chat lines from the last frame, used by mouse-click
+    /// handling to map a click row back to an absolute rendered line.
+    pub(crate) rendered_chat_lines: Vec<ratatui::text::Line<'static>>,
 }
 
 impl App {
@@ -367,22 +380,84 @@ impl App {
             sent_message: false,
             search: SearchState::default(),
             edit_dialog: EditDialogState::new(),
+            code_block_hl: CodeBlockHighlighter::default(),
+            code_block_positions: Vec::new(),
+            pending_tool_lines: Vec::new(),
+            rendered_chat_lines: Vec::new(),
         }
     }
 
     /// Append a chat message, recording its timestamp for `/timestamps`.
+    /// Flushes any pending tool lines first so tool messages are always
+    /// batched together before non-tool content.
+    /// Wraps non-tool, non-thinking messages in [normal] markers so the
+    /// renderer can detect section transitions and add borders.
     pub(crate) fn push_msg(&mut self, msg: impl Into<String>) {
+        self.flush_tool_lines();
+        let msg = msg.into();
+        // Only wrap in [normal] if not already wrapped in a section marker.
+        let trimmed = msg.trim_start();
+        if !trimmed.starts_with("[thinking]")
+            && !trimmed.starts_with("[tool]")
+            && !trimmed.starts_with("[normal]")
+            && !trimmed.starts_with("[user]")
+            && !trimmed.starts_with("[command]")
+        {
+            self.message_timestamps.push(Utc::now());
+            // Slash-command echoes (`> /cmd`) get their own section type so
+            // they render with the command style (magenta border/text).
+            if trimmed.starts_with("> /") {
+                self.messages
+                    .push(format!("[command]\n{}\n[/command]", msg));
+            } else {
+                self.messages.push(format!("[normal]\n{}\n[/normal]", msg));
+            }
+        } else {
+            self.message_timestamps.push(Utc::now());
+            self.messages.push(msg);
+        }
+    }
+
+    /// Flush any accumulated tool lines as a single [tool] block.
+    /// Uses direct push to self.messages (not push_msg) to avoid recursion.
+    pub(crate) fn flush_tool_lines(&mut self) {
+        if self.pending_tool_lines.is_empty() {
+            return;
+        }
+        let block = format!("[tool]\n{}\n[/tool]", self.pending_tool_lines.join("\n"));
+        self.pending_tool_lines.clear();
         self.message_timestamps.push(Utc::now());
-        self.messages.push(msg.into());
+        self.messages.push(block);
     }
 
     /// Commit any in-progress streaming response to the message log so that a
     /// newly submitted user message appears AFTER it, preserving chat order.
     pub(crate) fn commit_stream(&mut self) {
         if let Some(stream) = self.current_stream.take()
-            && !stream.is_empty() {
-                self.push_msg(stream);
-            }
+            && !stream.is_empty()
+        {
+            self.push_msg(stream);
+        }
+    }
+
+    /// Replace the textarea with a new empty one, preserving standard
+    /// configuration (no underline on cursor line, word wrap).
+    pub(crate) fn reset_textarea(&mut self) {
+        let mut ta = TextArea::default();
+        ta.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
+        ta.set_cursor_line_style(Style::default());
+        ta.set_wrap_mode(WrapMode::Word);
+        self.textarea = ta;
+    }
+
+    /// Replace the textarea with one containing the given text, preserving
+    /// standard configuration (no underline on cursor line, word wrap).
+    pub(crate) fn set_textarea_text(&mut self, text: &str) {
+        let mut ta = TextArea::from([text]);
+        ta.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
+        ta.set_cursor_line_style(Style::default());
+        ta.set_wrap_mode(WrapMode::Word);
+        self.textarea = ta;
     }
 
     /// Whether the active agent is currently busy (working or waiting for a
@@ -428,7 +503,7 @@ impl App {
         }
         let item = self.prompt_queue.remove(0);
         if self.send_prompt(item.clone()) {
-            self.push_msg(format!("> {}", item));
+            self.push_msg(format!("[user]\n> {}\n[/user]", item));
         } else {
             // Channel full (or closed): put the prompt back at the front of
             // the queue so it is not lost; it will be retried on the next
@@ -462,6 +537,58 @@ impl App {
         // The exact value depends on terminal width, but we use the index
         // as a rough scroll offset so Enter jumps to the right area.
         msg_index as u16 * 3
+    }
+
+    // ── Code block helpers ───────────────────────────────────────────
+
+    /// Find all fenced code blocks in all stored messages.
+    /// Returns `(lang, code)` pairs in order of appearance.
+    pub(crate) fn find_code_blocks(&self) -> Vec<(String, String)> {
+        let mut blocks: Vec<(String, String)> = Vec::new();
+        for msg in &self.messages {
+            let mut in_block = false;
+            let mut lang = String::new();
+            let mut code_lines: Vec<String> = Vec::new();
+            for line in msg.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("```") && !in_block {
+                    in_block = true;
+                    lang = trimmed.trim_start_matches("```").trim().to_string();
+                    code_lines.clear();
+                } else if trimmed == "```" && in_block {
+                    in_block = false;
+                    blocks.push((lang.clone(), code_lines.join("\n")));
+                } else if in_block {
+                    code_lines.push(line.to_string());
+                }
+            }
+        }
+        blocks
+    }
+
+    /// Toggle expand/collapse of the last code block in the message log.
+    /// No-op since code blocks are always fully visible.
+    pub(crate) fn toggle_last_code_block(&mut self) {
+        // No-op: code blocks are always visible
+    }
+
+    /// Copy the content of the last code block to the clipboard.
+    /// Returns a user-facing status message.
+    pub(crate) fn copy_last_code_block(&self) -> Option<String> {
+        let blocks = self.find_code_blocks();
+        if let Some((lang, code)) = blocks.last() {
+            match crate::tui::render::copy_to_clipboard(code) {
+                Ok(()) => {
+                    return Some(format!(
+                        "Código '{}' copiado al portapapeles ({} líneas)",
+                        lang,
+                        code.lines().count()
+                    ));
+                }
+                Err(e) => return Some(format!("Error al copiar: {}", e)),
+            }
+        }
+        None // no code blocks found
     }
 
     /// Open the edit dialog for a given agent/subagent.
@@ -601,6 +728,19 @@ impl App {
                 }
             }
             _ => false,
+        }
+    }
+
+    /// Determine whether the current theme is a dark theme by checking the
+    /// brightness of the accent color. Darker themes have avg < 128 per
+    /// channel (total brightness < 384).
+    pub(crate) fn is_dark(&self) -> bool {
+        match self.theme.accent() {
+            Color::Rgb(r, g, b) => {
+                let brightness = r as u16 + g as u16 + b as u16;
+                brightness < 384
+            }
+            _ => true, // non-RGB colors default to dark
         }
     }
 }
