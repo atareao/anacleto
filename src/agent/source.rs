@@ -62,9 +62,10 @@ pub fn load_workspace_instructions(workspace: &Path) -> Vec<(String, String)> {
     for name in WORKSPACE_INSTRUCTION_FILES {
         let path = workspace.join(name);
         if path.is_file()
-            && let Ok(content) = std::fs::read_to_string(&path) {
-                loaded.push((name.to_string(), content));
-            }
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            loaded.push((name.to_string(), content));
+        }
     }
     loaded
 }

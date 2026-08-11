@@ -62,6 +62,33 @@ Las herramientas disponibles y las que faltan se reportan en el contexto de la h
 (inventario de herramientas). Si una herramienta moderna no está disponible, usa su
 equivalente clásico.
 
+### ⚠️ Nota sobre `yq`
+
+El `yq` instalado en el sistema es **Go yq** (mikefarah/yq) v4.45.1, ubicado en
+`~/.local/bin/yq`. NO es el Python yq (kislyuk/yq) que envuelve a jq.
+
+**Sintaxis correcta:**
+
+```bash
+# Para archivos YAML puro
+yq '.campo' archivo.yaml
+
+# Para archivos Markdown con frontmatter YAML (como .agents/agents/*.md o skills)
+yq --front-matter=extract '.campo' archivo.md
+
+yq --front-matter=extract '.subagents' .agents/agents/root.md
+yq --front-matter=extract '.description' .agents/skills/shell/SKILL.md
+```
+
+**Errores comunes:**
+
+| Comando incorrecto | Por qué falla | Alternativa correcta |
+|---|---|---|
+| `yq eval '.x' f.md` | `eval` es de Python yq, no de Go yq | `yq '.x' f.md` |
+| `yq --front-matter f.md` | Sin `=` o sin `extract|process` | `yq --front-matter=extract '.x' f.md` |
+| `yq '.x' archivo-con-frontmatter.md` | El markdown trunca el YAML | `yq --front-matter=extract '.x' archivo.md` |
+| `yq --front-matter '.x' f.md` | Go yq requiere `=extract` o `=process` | `yq --front-matter=extract '.x' f.md` |
+
 ## Output
 
 The raw stdout and stderr from the command execution. If the command exits with a

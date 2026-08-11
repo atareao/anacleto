@@ -14,7 +14,7 @@ pub fn webfetch_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "webfetch".to_string(),
         description: "Fetch the content of a URL over HTTP(S) and return it as \
-                       text. The response body is truncated to 10000 characters."
+                       text. The response body is truncated to 10000 bytes."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -87,10 +87,9 @@ pub async fn execute_webfetch_tool(
 
     let mut result = format!("Content from {url}:\n\n");
     if body.len() > MAX_BODY_BYTES {
-        result.push_str(&body[..MAX_BODY_BYTES]);
-        result.push_str(&format!(
-            "\n\n... (truncated at {MAX_BODY_BYTES} characters)"
-        ));
+        let end = body.floor_char_boundary(MAX_BODY_BYTES);
+        result.push_str(&body[..end]);
+        result.push_str(&format!("\n\n... (truncated at {end} bytes)"));
     } else {
         result.push_str(&body);
     }
@@ -151,17 +150,19 @@ pub async fn web_search(query: &str) -> Result<String, String> {
 
     let mut out = String::new();
     if let Some(abstract_text) = json.get("AbstractText").and_then(|v| v.as_str())
-        && !abstract_text.is_empty() {
-            out.push_str("Summary: ");
-            out.push_str(abstract_text);
-            out.push('\n');
-        }
+        && !abstract_text.is_empty()
+    {
+        out.push_str("Summary: ");
+        out.push_str(abstract_text);
+        out.push('\n');
+    }
     if let Some(abstract_url) = json.get("AbstractURL").and_then(|v| v.as_str())
-        && !abstract_url.is_empty() {
-            out.push_str("Source: ");
-            out.push_str(abstract_url);
-            out.push('\n');
-        }
+        && !abstract_url.is_empty()
+    {
+        out.push_str("Source: ");
+        out.push_str(abstract_url);
+        out.push('\n');
+    }
 
     // Collect related topics (name + URL) up to a reasonable limit.
     let mut topics: Vec<String> = Vec::new();

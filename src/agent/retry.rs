@@ -152,9 +152,10 @@ where
             Err(e) => {
                 // If we have a predicate and the error is NOT retriable, bail immediately
                 if let Some(ref pred) = should_retry
-                    && !pred(&e) {
-                        return Err(e);
-                    }
+                    && !pred(&e)
+                {
+                    return Err(e);
+                }
                 last_error = Some(e);
             }
         }

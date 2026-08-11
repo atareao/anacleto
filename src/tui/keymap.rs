@@ -101,6 +101,10 @@ pub enum Action {
     HistoryDown,
     /// Complete the current command from the palette.
     TabComplete,
+    /// Toggle expand/collapse of the current code block.
+    ToggleCodeBlock,
+    /// Copy the content of the current code block.
+    CopyCodeBlock,
     /// Insert a newline into the input.
     InsertNewline,
     /// Open the conversation history search overlay (Ctrl+R style).
@@ -375,6 +379,19 @@ impl Default for Keymap {
             ],
         );
 
+        // ── Code block actions ─────────────────────────────────────────
+        km.bind(
+            Action::ToggleCodeBlock,
+            vec![KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL)],
+        );
+        km.bind(
+            Action::CopyCodeBlock,
+            vec![KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            )],
+        );
+
         // ── History search ───────────────────────────────────────────
         km.bind(
             Action::ToggleSearch,
@@ -614,6 +631,17 @@ mod tests {
         assert!(km.matches(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
             Action::InsertNewline
+        ));
+        assert!(km.matches(
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            Action::ToggleCodeBlock
+        ));
+        assert!(km.matches(
+            KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ),
+            Action::CopyCodeBlock
         ));
     }
 

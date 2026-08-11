@@ -158,23 +158,6 @@ impl Engine {
             .await
             .ok();
 
-        // Notify the TUI of the active model at startup.
-        self.event_tx
-            .send(EngineEvent::ModelChanged {
-                model: self.current_model.clone(),
-            })
-            .await
-            .ok();
-
-        // Notify the TUI of the active root agent at startup so the status bar
-        // is populated before the first `/agent` switch.
-        self.event_tx
-            .send(EngineEvent::AgentSwitched {
-                name: self.active_agent.clone(),
-            })
-            .await
-            .ok();
-
         // Initialize database and create a session
         let db = Database::open(&self.config.session.database_path).await?;
         let session = db.create_session("default").await?;
@@ -192,27 +175,31 @@ impl Engine {
                     .agents
                     .iter()
                     .any(|a| a.name == persisted && a.role == AgentRole::Root)
-                {
-                    self.active_agent = persisted.clone();
-                    // Update current_model to match the persisted agent
-                    if let Some(agent) = self.config.agents.iter().find(|a| a.name == persisted) {
-                        self.current_model = agent.model.clone();
-                    }
-                    // Re-notify TUI with the persisted overrides
-                    self.event_tx
-                        .send(EngineEvent::AgentSwitched {
-                            name: persisted.clone(),
-                        })
-                        .await
-                        .ok();
-                    self.event_tx
-                        .send(EngineEvent::ModelChanged {
-                            model: self.current_model.clone(),
-                        })
-                        .await
-                        .ok();
+            {
+                self.active_agent = persisted.clone();
+                // Update current_model to match the persisted agent
+                if let Some(agent) = self.config.agents.iter().find(|a| a.name == persisted) {
+                    self.current_model = agent.model.clone();
                 }
+            }
         }
+
+        // Notify the TUI of the resolved active model and root agent at
+        // startup. Sent ONCE, after the persisted-agent override is applied,
+        // so the status bar is populated before the first `/agent` switch and
+        // no duplicate "Model changed to:" / "Agente activo:" messages appear.
+        self.event_tx
+            .send(EngineEvent::ModelChanged {
+                model: self.current_model.clone(),
+            })
+            .await
+            .ok();
+        self.event_tx
+            .send(EngineEvent::AgentSwitched {
+                name: self.active_agent.clone(),
+            })
+            .await
+            .ok();
 
         // Load plugins from the global plugins directory.
         let plugins_dir = crate::config::paths::global_plugins_dir();
@@ -353,27 +340,29 @@ impl Engine {
             // rather than push the parent directory directly.
             let home_skills_dir = crate::config::paths::global_skills_dir();
             if home_skills_dir.is_dir()
-                && let Ok(entries) = std::fs::read_dir(&home_skills_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_dir() {
-                            all_skill_paths.push(path);
-                        }
+                && let Ok(entries) = std::fs::read_dir(&home_skills_dir)
+            {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        all_skill_paths.push(path);
                     }
                 }
+            }
 
             // Auto-discover skills from <project_root>/.agents/skills
             // Same structure: one subdirectory per skill with a SKILL.md file.
             let project_skills_dir = crate::config::paths::project_skills_dir(None);
             if project_skills_dir.is_dir()
-                && let Ok(entries) = std::fs::read_dir(&project_skills_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_dir() {
-                            all_skill_paths.push(path);
-                        }
+                && let Ok(entries) = std::fs::read_dir(&project_skills_dir)
+            {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        all_skill_paths.push(path);
                     }
                 }
+            }
             if !all_skill_paths.is_empty() {
                 let mut reg = self.skill_registry.write().await;
                 if let Err(e) = reg.load_from_paths(&all_skill_paths) {
@@ -1115,9 +1104,10 @@ impl Engine {
             } else {
                 // For non-active running agents, kill and respawn them
                 if let Some(old_id) = self.agents.remove(&name)
-                    && let Some(old_handle) = self.handles.remove(&old_id) {
-                        let _ = old_handle.sender.send(AgentMessage::Shutdown).await;
-                    }
+                    && let Some(old_handle) = self.handles.remove(&old_id)
+                {
+                    let _ = old_handle.sender.send(AgentMessage::Shutdown).await;
+                }
                 // Re-spawn from updated config
                 if let Some(agent_config) = self.config.agents.iter().find(|a| a.name == name) {
                     let agent = Agent::from_config(agent_config, AgentRole::Root);
