@@ -7,7 +7,6 @@ max_steps: 25
 skills:
   - .agents/skills/shell/
   - .agents/skills/filesystem/
-  - .agents/skills/web-research/
 mcps: []
 permissions:
   deny:

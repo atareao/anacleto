@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -23,8 +23,8 @@ use crate::tui::render::render;
 use crate::tui::theme::Theme;
 use crate::tui::toast::ToastQueue;
 use crate::tui::types::{
-    AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, EditDialogState, Focus, InitFlow, QuestionState,
-    SearchState,
+    AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, CollapsedSection, EditDialogState, Focus,
+    InitFlow, QuestionState, SearchState,
 };
 use crate::tui::which_key::WhichKeyPopup;
 
@@ -228,6 +228,12 @@ pub struct App {
     /// The full rendered chat lines from the last frame, used by mouse-click
     /// handling to map a click row back to an absolute rendered line.
     pub(crate) rendered_chat_lines: Vec<ratatui::text::Line<'static>>,
+    /// Set of collapsed section IDs (ephemeral, per-session).
+    pub(crate) collapsed_sections: HashSet<String>,
+    /// Per-frame mapping: line index in rendered_chat_lines → section_id.
+    pub(crate) section_line_map: Vec<Option<String>>,
+    /// Per-frame section info for collapse rendering.
+    pub(crate) section_info: Vec<CollapsedSection>,
 }
 
 impl App {
@@ -384,6 +390,9 @@ impl App {
             code_block_positions: Vec::new(),
             pending_tool_lines: Vec::new(),
             rendered_chat_lines: Vec::new(),
+            collapsed_sections: HashSet::new(),
+            section_line_map: Vec::new(),
+            section_info: Vec::new(),
         }
     }
 

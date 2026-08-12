@@ -5,6 +5,7 @@ role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
   - .agents/skills/web-research/
+  - .agents/skills/searxng-search/
 mcps: []
 permissions:
   allow: []

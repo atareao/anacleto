@@ -689,6 +689,8 @@ impl App {
                 // Pass the LEFT panel area (horiz[0]), NOT main_area, so
                 // content_x/y and content_width match the render.
                 self.handle_code_block_click(x, y, horiz[0]);
+                // Check for a click on a collapsed section summary line.
+                self.handle_section_click(x, y, horiz[0]);
                 return;
             }
 
@@ -718,6 +720,68 @@ impl App {
             // Sidebar hidden: left panel takes full width.
             self.focus = Focus::Chat;
             self.handle_code_block_click(mouse.column, y, main_area);
+            self.handle_section_click(mouse.column, y, main_area);
+        }
+    }
+
+    /// Toggle collapse/expand for a section clicked in the chat area.
+    ///
+    /// Clicking on any line of a section collapses it (if not already collapsed)
+    /// or expands it back (if currently collapsed).
+    fn handle_section_click(&mut self, x: u16, y: u16, main_area: Rect) {
+        // The chat content is inset by a 1-cell border on each side.
+        let content_x = main_area.x + 1;
+        let content_y = main_area.y + 1;
+        if x < content_x || y < content_y {
+            return;
+        }
+        let row = (y - content_y) as usize;
+
+        // Recompute the visible start index the same way render does.
+        let content_width = (main_area.width.saturating_sub(2)).max(1) as usize;
+        let visible = (main_area.height.max(2) as usize) - 2;
+        let vs = crate::tui::markdown::select_visible_start(
+            &self.rendered_chat_lines,
+            visible,
+            content_width,
+            self.chat_scroll,
+        );
+
+        let abs_line = vs.start_idx as usize + row;
+
+        // Find which section (if any) this line belongs to.
+        let Some(section_id) = self.section_line_map.get(abs_line).and_then(|v| v.as_ref()) else {
+            return;
+        };
+
+        // Look up section info for the toast.
+        let Some(section) = self.section_info.iter().find(|s| s.id == *section_id) else {
+            return;
+        };
+
+        if self.collapsed_sections.contains(section_id) {
+            // ── Expand ──
+            self.collapsed_sections.remove(section_id);
+            self.toasts.push(
+                format!(
+                    "Expanded {} section ({} lines)",
+                    section.section_type, section.line_count
+                ),
+                crate::tui::toast::ToastKind::Info,
+            );
+        } else {
+            // ── Collapse (only if the section has meaningful content) ──
+            if section.line_count < 2 {
+                return;
+            }
+            self.collapsed_sections.insert(section_id.clone());
+            self.toasts.push(
+                format!(
+                    "Collapsed {} section ({} lines)",
+                    section.section_type, section.line_count
+                ),
+                crate::tui::toast::ToastKind::Info,
+            );
         }
     }
 

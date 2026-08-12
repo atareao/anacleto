@@ -5,6 +5,146 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-08-12
+
+### Added
+
+- **Collapsible sections** — Chat messages are organized into visual sections (`[thinking]`, `[tool]`, `[normal]`, `[user]`, `[command]`) with distinctive `▐` borders. Sections can be collapsed/expanded by clicking on any line inside them.
+- **Syntax highlighting** — Fenced code blocks (```` ```lang ````) are rendered with syntax highlighting via `syntect`, supporting dark and light themes.
+- **Click-to-copy code blocks** — Each code block appends a `[copy]` indicator; clicking it copies the block content to the clipboard with toast notification.
+- **Section markers** — Messages are automatically wrapped in `[normal]`/`[/normal]`, `[user]`/`[/user]`, and `[command]`/`[/command]` markers for proper section rendering. Tool execution is batched into single `[tool]` blocks.
+- **Pre-wrapped lines** — Soft-wrapped continuations keep the left border (`▐`) for visual continuity.
+
+### Changed
+
+- `src/tui/code_block.rs` (new): `CodeBlockHighlighter` with syntect, `CodeBlockPosition` for click tracking.
+- `src/tui/render.rs`: Section-based rendering with `flush_section()`, `apply_collapsed()`, `generate_section_id()`, syntect integration.
+- `src/tui/events.rs`: Tool execution display distinguishes executable tools (⚡) from passive skills (📖).
+- `src/tui/keys.rs`: `handle_section_click()` and `handle_code_block_click()` for mouse interaction.
+- `src/tui/keymap.rs`: New actions `ToggleCodeBlock` (Ctrl+E) and `CopyCodeBlock` (Ctrl+Shift+C).
+- `src/tui/app.rs`: `collapsed_sections`, `section_line_map`, `section_info`, `pending_tool_lines`, `code_block_hl`.
+- `src/tui/types.rs`: `CollapsedSection` struct.
+- `src/tui/theme.rs`: New section styles (`user_border`, `user_text`, `command_border`, `command_text`).
+- `src/tui/markdown.rs`: `visual_line_count()` helper, syntect-aware markdown rendering.
+- `src/tui/navigation.rs`, `diff_viewer.rs`, `commands.rs`: Updated section rendering.
+
+[0.24.0]: https://github.com/atareao/anacleto/releases/tag/v0.24.0
+
+## [0.22.0] - 2026-08-11
+
+### Added
+
+- **Dependency updates** — crossterm 0.29, sqlx 0.9, reqwest 0.13, rand 0.10.
+- **MSRV bump** — Minimum supported Rust version raised to 1.97.
+
+### Changed
+
+- Adapted to rand 0.10 and sqlx 0.9 API changes.
+
+[0.22.0]: https://github.com/atareao/anacleto/releases/tag/v0.22.0
+
+## [0.21.0] - 2026-08-11
+
+### Added
+
+- **TextArea input widget** — Replaced manual `Paragraph`-based input with `ratatui-textarea` (v0.9.2), providing consistent cursor handling, word wrap, and proper line editing.
+- **Up/Down cursor navigation** — Arrow keys navigate cursor lines in the input.
+- **Planner subagent** — Subagent for task decomposition and PLAN.md lifecycle management.
+- **Agent-manager subagent** — Subagent for agent and skill lifecycle management.
+
+### Changed
+
+- `src/tui/input.rs`: Rewritten to use `TextArea` widget, removed manual `input`/`input_cursor` fields.
+- `src/tui/keys.rs`: Updated cursor navigation methods.
+- `src/tui/app.rs`: All `app.input` references updated to use `textarea`.
+
+[0.21.0]: https://github.com/atareao/anacleto/releases/tag/v0.21.0
+
+## [0.20.0] - 2026-08-10
+
+### Added
+
+- **Item counts in panel titles** — Agent, MCP, and Skill panel headers now show item counts.
+- **Resilient skill loading** — Skill loading from workspace and global paths continues even if one path fails.
+
+### Changed
+
+- `src/tui/render.rs`: Panel titles include counts.
+- `src/skill/discovery.rs`: Graceful handling of missing/inaccessible directories.
+
+[0.20.0]: https://github.com/atareao/anacleto/releases/tag/v0.20.0
+
+## [0.19.0] - 2026-08-10
+
+### Added
+
+- **Configurable retry policy** — Retry policy with error classification for LLM providers. Supports exponential backoff with jitter, per-operation retry counts, and error classification (retryable vs. fatal).
+
+[0.19.0]: https://github.com/atareao/anacleto/releases/tag/v0.19.0
+
+## [0.18.0] - 2026-08-10
+
+### Added
+
+- **Skill discovery** — Automatic discovery of skills from workspace `.agents/skills/` and global `~/.config/anacleto/skills/`.
+- **Workspace persistence** — Session workspace paths are persisted and restored.
+- **TUI overhaul** — Refactored TUI rendering with improved layout, agent status panel, and skill panel.
+
+[0.18.0]: https://github.com/atareao/anacleto/releases/tag/v0.18.0
+
+## [0.17.1] - 2026-08-09
+
+### Added
+
+- **Updated find-skills skill** — v1.1 with skills.sh registry integration.
+
+### Fixed
+
+- **Thinking message ordering** — Thinking blocks are now persisted in the correct order within committed messages.
+
+[0.17.1]: https://github.com/atareao/anacleto/releases/tag/v0.17.1
+
+## [0.17.0] - 2026-08-09
+
+### Added
+
+- **Edit-agent dialog** — Ctrl+E dialog to edit agent/subagent skills, MCPs, and subagents.
+- **SubAgents tab** — New tab in the info panel showing subagent tree with type and mode.
+- **Agent switching** — Enter key switches to a selected agent.
+- **Config directory rename** — Project config directory renamed from `.anacleto/` to `.agents/`.
+
+[0.17.0]: https://github.com/atareao/anacleto/releases/tag/v0.17.0
+
+## [0.16.0] - 2026-08-09
+
+### Added
+
+- **Real-time thinking/reasoning display** — LLM providers' thinking/reasoning content is displayed in real time in the TUI, wrapped in `[thinking]`/`[/thinking]` markers.
+
+[0.16.0]: https://github.com/atareao/anacleto/releases/tag/v0.16.0
+
+## [0.15.1] - 2026-08-09
+
+### Changed
+
+- Refactored skill files from `skill.md` to `SKILL.md` naming convention.
+
+[0.15.1]: https://github.com/atareao/anacleto/releases/tag/v0.15.1
+
+## [0.15.0] - 2026-08-09
+
+### Added
+
+- **Git branch in TUI footer** — Current git branch name displayed in the status bar.
+- **`/reload` command** — Respawns the active agent mid-session, reloading config and skills.
+- **Emergency stop (Ctrl+C)** — Cancels in-flight agent activity via a direct cancel flag that bypasses the mpsc channel.
+- **Mouse click-to-select panels** — Click on any panel (Chat, Info, MCPs, Skills, Agents) to focus it directly.
+- **Focus cycling** — Tab/Shift+Tab to cycle focus between panels.
+- **Keymap module** — Centralized key-to-action mapping.
+- **Theme module** — Themed border colors for AI, tool, and status messages.
+
+[0.15.0]: https://github.com/atareao/anacleto/releases/tag/v0.15.0
+
 ## [0.14.0] - 2026-08-08
 
 ### Added

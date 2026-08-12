@@ -20,8 +20,9 @@ use super::markdown::{
     render_markdown_line_with_syntect, render_table_block, select_visible_start, visual_line_count,
 };
 use super::palette::{render_agent_palette, render_command_palette, render_model_palette};
-use super::types::{AgentInfo, Focus};
+use super::types::{AgentInfo, CollapsedSection, Focus};
 use crate::agent::types::{AgentRole, AgentStatus, TaskMode};
+use std::collections::{HashMap, HashSet};
 
 /// Render the TUI.
 pub(crate) fn render(f: &mut Frame, app: &mut App) {
@@ -993,11 +994,24 @@ fn flush_table(
 ///
 /// Consecutive lines starting with `|` are automatically detected and rendered
 /// as a table block using box-drawing characters.
+/// Generate a unique section ID from a type name and a per-type counter.
+/// Returns strings like "thinking_1", "tool_2", etc.
+pub(crate) fn generate_section_id(
+    section_type: &str,
+    counters: &mut HashMap<String, u32>,
+) -> String {
+    let entry = counters.entry(section_type.to_string()).or_insert(0);
+    *entry += 1;
+    format!("{}_{}", section_type, entry)
+}
+
 /// Flush a section (thinking/tool) into the output, always showing full content
 /// with a top border, content lines (each with a ▐ prefix from the caller),
 /// and a bottom border. No collapse/expand toggle.
 ///
 /// `cumulative_visual` is updated in-place as lines are emitted.
+/// When `section_line_map`, `section_info`, and `counters` are provided,
+/// this records section ID information for the collapse/expand feature.
 #[allow(clippy::too_many_arguments)]
 fn flush_section(
     out: &mut Vec<Line<'static>>,
@@ -1007,6 +1021,9 @@ fn flush_section(
     cumulative_visual: &mut usize,
     content_width: usize,
     last_flushed: &mut Option<&'static str>,
+    mut section_line_map: Option<&mut Vec<Option<String>>>,
+    mut section_info: Option<&mut Vec<CollapsedSection>>,
+    mut counters: Option<&mut HashMap<String, u32>>,
 ) {
     if buffer.is_empty() {
         return;
@@ -1020,13 +1037,44 @@ fn flush_section(
         _ => return,
     };
 
+    let slm = &mut section_line_map;
+    let si = &mut section_info;
+    let cnt = &mut counters;
+    let track = slm.is_some() && si.is_some() && cnt.is_some();
+
+    let mut section_id: Option<String> = None;
+    let start_line: usize;
+
     // Top border — skipped when the previous flushed section had the same
     // type, so consecutive blocks of the same kind read as one continuous
     // section (the previous block's bottom border acts as the separator).
     if *last_flushed != Some(section_type) {
         let top_line = Line::from(Span::styled("\u{2590}", border_style));
         *cumulative_visual += visual_line_count(&top_line, content_width);
+        start_line = out.len();
         out.push(top_line);
+
+        if track {
+            let slm_vec = slm.as_mut().unwrap();
+            let si_vec = si.as_mut().unwrap();
+            let cnt_vec = cnt.as_mut().unwrap();
+            let id = generate_section_id(section_type, cnt_vec);
+            section_id = Some(id.clone());
+            if slm_vec.len() <= start_line {
+                slm_vec.resize(start_line + 1, None);
+            }
+            slm_vec[start_line] = Some(id.clone());
+            si_vec.push(CollapsedSection {
+                id,
+                section_type: section_type.to_string(),
+                start_line,
+                line_count: 0,
+            });
+        }
+    } else {
+        // No new top border — section content follows from the previous
+        // same-type section's bottom border. The start is the last line.
+        start_line = out.len().saturating_sub(1);
     }
 
     // Emit content lines directly (each already has a ▐ prefix from the caller)
@@ -1041,10 +1089,31 @@ fn flush_section(
     *cumulative_visual += visual_line_count(&bottom_line, content_width);
     out.push(bottom_line);
 
+    // Update section_line_map and section_info with correct line_count
+    if track {
+        let slm_vec = slm.as_mut().unwrap();
+        let si_vec = si.as_mut().unwrap();
+        let total_lines = out.len() - start_line;
+        for i in start_line..out.len() {
+            if slm_vec.len() <= i {
+                slm_vec.resize(i + 1, None);
+            }
+            if slm_vec[i].is_none() {
+                slm_vec[i] = section_id.clone();
+            }
+        }
+        if let Some(ref sec_id) = section_id
+            && let Some(entry) = si_vec.iter_mut().rev().find(|s| s.id == *sec_id)
+        {
+            entry.line_count = total_lines;
+        }
+    }
+
     *last_flushed = Some(section_type);
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_option_as_deref)]
 fn render_sectioned_block(
     content: &str,
     ts: &str,
@@ -1057,7 +1126,11 @@ fn render_sectioned_block(
     is_dark: bool,
     cumulative_visual: &mut usize,
     content_width: usize,
+    mut section_line_map: Option<&mut Vec<Option<String>>>,
+    mut section_info: Option<&mut Vec<CollapsedSection>>,
+    mut counters: Option<&mut HashMap<String, u32>>,
 ) -> Vec<Line<'static>> {
+    // section_line_map, section_info, counters: Option<&mut ...> params passed below
     let mut out: Vec<Line> = Vec::new();
     let mut section: &str = "normal";
     let mut section_has_content = false;
@@ -1155,6 +1228,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "user" && section_has_content {
                 flush_section(
@@ -1165,6 +1241,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "command" && section_has_content {
                 flush_section(
@@ -1175,6 +1254,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "normal" && section_has_content {
                 flush_section(
@@ -1185,6 +1267,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             }
             section = "thinking";
@@ -1212,6 +1297,9 @@ fn render_sectioned_block(
                 cumulative_visual,
                 content_width,
                 &mut last_flushed,
+                section_line_map.as_deref_mut(),
+                section_info.as_deref_mut(),
+                counters.as_deref_mut(),
             );
             section = "normal";
             section_has_content = false;
@@ -1230,6 +1318,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "user" && section_has_content {
                 flush_section(
@@ -1240,6 +1331,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "command" && section_has_content {
                 flush_section(
@@ -1250,6 +1344,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "normal" && section_has_content {
                 flush_section(
@@ -1260,6 +1357,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             }
             section = "tool";
@@ -1277,6 +1377,9 @@ fn render_sectioned_block(
                 cumulative_visual,
                 content_width,
                 &mut last_flushed,
+                section_line_map.as_deref_mut(),
+                section_info.as_deref_mut(),
+                counters.as_deref_mut(),
             );
             section = "normal";
             section_has_content = false;
@@ -1310,6 +1413,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "tool" && section_has_content {
                 flush_section(
@@ -1320,6 +1426,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "user" && section_has_content {
                 flush_section(
@@ -1330,6 +1439,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "command" && section_has_content {
                 flush_section(
@@ -1340,6 +1452,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             }
             section = "normal";
@@ -1357,6 +1472,9 @@ fn render_sectioned_block(
                 cumulative_visual,
                 content_width,
                 &mut last_flushed,
+                section_line_map.as_deref_mut(),
+                section_info.as_deref_mut(),
+                counters.as_deref_mut(),
             );
             section = "normal";
             section_has_content = false;
@@ -1376,6 +1494,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "tool" && section_has_content {
                 flush_section(
@@ -1386,6 +1507,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "normal" && section_has_content {
                 flush_section(
@@ -1396,6 +1520,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "command" && section_has_content {
                 flush_section(
@@ -1406,6 +1533,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             }
             section = "user";
@@ -1422,6 +1552,9 @@ fn render_sectioned_block(
                 cumulative_visual,
                 content_width,
                 &mut last_flushed,
+                section_line_map.as_deref_mut(),
+                section_info.as_deref_mut(),
+                counters.as_deref_mut(),
             );
             section = "normal";
             section_has_content = false;
@@ -1441,6 +1574,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "tool" && section_has_content {
                 flush_section(
@@ -1451,6 +1587,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "normal" && section_has_content {
                 flush_section(
@@ -1461,6 +1600,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             } else if section == "user" && section_has_content {
                 flush_section(
@@ -1471,6 +1613,9 @@ fn render_sectioned_block(
                     cumulative_visual,
                     content_width,
                     &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
                 );
             }
             section = "command";
@@ -1487,6 +1632,9 @@ fn render_sectioned_block(
                 cumulative_visual,
                 content_width,
                 &mut last_flushed,
+                section_line_map.as_deref_mut(),
+                section_info.as_deref_mut(),
+                counters.as_deref_mut(),
             );
             section = "normal";
             section_has_content = false;
@@ -1594,6 +1742,9 @@ fn render_sectioned_block(
         cumulative_visual,
         content_width,
         &mut last_flushed,
+        section_line_map.as_deref_mut(),
+        section_info.as_deref_mut(),
+        counters.as_deref_mut(),
     );
     flush_section(
         &mut out,
@@ -1603,6 +1754,9 @@ fn render_sectioned_block(
         cumulative_visual,
         content_width,
         &mut last_flushed,
+        section_line_map.as_deref_mut(),
+        section_info.as_deref_mut(),
+        counters.as_deref_mut(),
     );
     flush_section(
         &mut out,
@@ -1612,6 +1766,9 @@ fn render_sectioned_block(
         cumulative_visual,
         content_width,
         &mut last_flushed,
+        section_line_map.as_deref_mut(),
+        section_info.as_deref_mut(),
+        counters.as_deref_mut(),
     );
     flush_section(
         &mut out,
@@ -1621,6 +1778,9 @@ fn render_sectioned_block(
         cumulative_visual,
         content_width,
         &mut last_flushed,
+        section_line_map.as_deref_mut(),
+        section_info.as_deref_mut(),
+        counters.as_deref_mut(),
     );
     flush_section(
         &mut out,
@@ -1630,6 +1790,9 @@ fn render_sectioned_block(
         cumulative_visual,
         content_width,
         &mut last_flushed,
+        section_line_map.as_deref_mut(),
+        section_info.as_deref_mut(),
+        counters.as_deref_mut(),
     );
 
     out
@@ -1638,12 +1801,16 @@ fn render_sectioned_block(
 /// Flush the accumulated AI message batch: join all messages and render them
 /// as a single sectioned block so that thinking → tool → response transitions
 /// produce only one `▐` separator between sections, not two.
+#[allow(clippy::too_many_arguments)]
 fn flush_ai_batch(
     lines: &mut Vec<Line<'static>>,
     batch: &mut Vec<(String, String)>,
     app: &mut App,
     cumulative_visual: &mut usize,
     content_width: usize,
+    section_line_map: Option<&mut Vec<Option<String>>>,
+    section_info: Option<&mut Vec<CollapsedSection>>,
+    counters: Option<&mut HashMap<String, u32>>,
 ) {
     if batch.is_empty() {
         return;
@@ -1698,6 +1865,9 @@ fn flush_ai_batch(
         is_dark,
         cumulative_visual,
         content_width,
+        section_line_map,
+        section_info,
+        counters,
     ));
 }
 /// Pre-wrap a single `Line` into multiple `Line`s, each at most `max_width`
@@ -1797,6 +1967,71 @@ fn split_str_at_width(s: &str, width: usize) -> (String, String) {
     (left, right)
 }
 
+/// Replace collapsed section lines with a single summary line each.
+///
+/// Sections whose `id` is in `collapsed` get their content lines removed and
+/// replaced by a single dimmed line showing `▶ type (N)`. Both `section_info`
+/// and `section_line_map` are updated to reflect the new indices.
+fn apply_collapsed(
+    lines: &mut Vec<Line<'static>>,
+    section_info: &mut [CollapsedSection],
+    section_line_map: &mut Vec<Option<String>>,
+    collapsed: &HashSet<String>,
+    styles: &SectionStyles,
+) {
+    // Pass 1: compute the cumulative line shift for each section.
+    // The shift is the total number of lines removed by collapsing sections
+    // that appear EARLIER in the vector (lower index).
+    let mut shifts: Vec<usize> = vec![0; section_info.len()];
+    let mut cum_shift: usize = 0;
+    for (i, sec) in section_info.iter().enumerate() {
+        shifts[i] = cum_shift;
+        if collapsed.contains(&sec.id) {
+            cum_shift += sec.line_count.saturating_sub(1);
+        }
+    }
+
+    // Pass 2: splice lines and update metadata (reverse to keep splice
+    // indices valid as we go).
+    for i in (0..section_info.len()).rev() {
+        let adj_start = section_info[i].start_line.saturating_sub(shifts[i]);
+
+        if collapsed.contains(&section_info[i].id) {
+            let end = adj_start + section_info[i].line_count;
+            let sec_type = section_info[i].section_type.as_str();
+            let n = section_info[i].line_count;
+
+            // Pick the border colour based on section type
+            let border_style = match sec_type {
+                "thinking" => styles.thinking_border,
+                "tool" => styles.tool_border,
+                "user" => styles.user_border,
+                "command" => styles.command_border,
+                _ => styles.border,
+            };
+
+            let summary = Line::from(Span::styled(
+                format!("\u{2590} \u{25b6} {} ({})  [click to expand]", sec_type, n),
+                border_style.add_modifier(Modifier::DIM),
+            ));
+
+            // Replace section lines with a single summary line
+            lines.splice(adj_start..end, std::iter::once(summary.clone()));
+
+            // Keep section_line_map in sync: remove the old entries, insert
+            // one entry for the summary line.
+            let section_id = section_info[i].id.clone();
+            section_line_map.splice(adj_start..end, std::iter::repeat_n(Some(section_id), 1));
+
+            // Update section metadata — keep original line_count for
+            // the click handler (toast) which reads it before next render.
+            section_info[i].start_line = adj_start;
+        } else {
+            section_info[i].start_line = adj_start;
+        }
+    }
+}
+
 fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
     if app.show_welcome {
         render_welcome_banner(f, area, app);
@@ -1813,6 +2048,9 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
     let mut lines: Vec<Line> = Vec::with_capacity(app.messages.len() + 4);
     let mut ai_batch: Vec<(String, String)> = Vec::new();
     let mut cumulative_visual: usize = 0;
+    let mut section_line_map: Vec<Option<String>> = Vec::new();
+    let mut section_info: Vec<CollapsedSection> = Vec::new();
+    let mut counters: HashMap<String, u32> = HashMap::new();
 
     for idx in 0..app.messages.len() {
         let msg = app.messages[idx].clone();
@@ -1849,6 +2087,9 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
             app,
             &mut cumulative_visual,
             content_width,
+            Some(&mut section_line_map),
+            Some(&mut section_info),
+            Some(&mut counters),
         );
 
         if msg.starts_with("> ") && !msg.starts_with("> /") {
@@ -1985,6 +2226,9 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
         app,
         &mut cumulative_visual,
         content_width,
+        Some(&mut section_line_map),
+        Some(&mut section_info),
+        Some(&mut counters),
     );
 
     // Add streaming indicator if active
@@ -2037,6 +2281,9 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
             is_dark,
             &mut cumulative_visual,
             content_width,
+            Some(&mut section_line_map),
+            Some(&mut section_info),
+            Some(&mut counters),
         ));
     }
 
@@ -2045,10 +2292,80 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
     // `Line` with the proper border prefix.  Without this, wrapped
     // continuation lines lose the "▐ " left border.
     let mut prewrapped: Vec<Line<'static>> = Vec::with_capacity(lines.len());
-    for line in lines {
-        prewrapped.extend(prewrap_line(line, content_width));
+    let mut line_orig_idx: Vec<usize> = Vec::new();
+    for (orig_idx, line) in lines.iter().enumerate() {
+        let wrapped = prewrap_line(line.clone(), content_width);
+        line_orig_idx.extend(std::iter::repeat_n(orig_idx, wrapped.len()));
+        prewrapped.extend(wrapped);
     }
     lines = prewrapped;
+
+    // Expand section_line_map to match prewrapped line indices
+    app.section_line_map = Vec::with_capacity(lines.len());
+    for &orig_idx in &line_orig_idx {
+        app.section_line_map
+            .push(section_line_map.get(orig_idx).cloned().flatten());
+    }
+    // Update section_info start_line indices for prewrapped positions
+    let mut updated_si: Vec<CollapsedSection> = Vec::new();
+    for section in &section_info {
+        let mut new_start = 0;
+        let mut new_line_count = lines.len(); // default: remaining lines
+        // Find first prewrapped line that belongs to this section
+        'outer: for (pw_idx, &orig_idx) in line_orig_idx.iter().enumerate() {
+            if orig_idx >= section.start_line {
+                new_start = pw_idx;
+                // Count consecutive prewrapped lines belonging to this section
+                let end_orig = section.start_line + section.line_count;
+                for (pw_idx2, &orig_idx2) in line_orig_idx.iter().enumerate().skip(pw_idx) {
+                    if orig_idx2 >= end_orig {
+                        new_line_count = pw_idx2 - pw_idx;
+                        break 'outer;
+                    }
+                }
+                new_line_count = lines.len() - pw_idx;
+                break 'outer;
+            }
+        }
+        updated_si.push(CollapsedSection {
+            start_line: new_start,
+            line_count: new_line_count,
+            ..section.clone()
+        });
+    }
+    app.section_info = updated_si;
+
+    // ── Apply collapsed sections ──
+    // If any sections are marked collapsed, replace their lines with a single
+    // summary line so the user sees a compact view.
+    if !app.collapsed_sections.is_empty() {
+        let themes = &app.theme;
+        let collapse_styles = SectionStyles {
+            border: Style::default().fg(themes.ai_border()),
+            thinking_border: Style::default().fg(themes.thinking_dim()),
+            thinking_text: Style::default()
+                .fg(themes.thinking())
+                .add_modifier(Modifier::DIM),
+            tool_border: Style::default().fg(themes.tool_border()),
+            tool_exec: Style::default().fg(themes.tool_text()),
+            tool_output: Style::default()
+                .fg(themes.tool_text())
+                .add_modifier(Modifier::DIM),
+            tool_success: Style::default().fg(themes.tool_ok()),
+            tool_error: Style::default().fg(themes.tool_err()),
+            user_border: Style::default().fg(themes.user_border()),
+            user_text: Style::default().fg(themes.user_text()),
+            command_border: Style::default().fg(themes.command_border()),
+            command_text: Style::default().fg(themes.command_text()),
+        };
+        apply_collapsed(
+            &mut lines,
+            &mut app.section_info,
+            &mut app.section_line_map,
+            &app.collapsed_sections,
+            &collapse_styles,
+        );
+    }
 
     let title = format!(" [2] \u{1f4ac} Chat [{}] ", app.session_name);
     let chat_border = if app.focus == Focus::Chat {
@@ -2951,8 +3268,12 @@ mod tests {
         let mut cv = 0usize;
         let mut last: Option<&'static str> = None;
 
-        flush_section(&mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last);
-        flush_section(&mut out, &mut buf2, "tool", &styles, &mut cv, 80, &mut last);
+        flush_section(
+            &mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+        flush_section(
+            &mut out, &mut buf2, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
         // Top border, content a, shared separator (bottom of first == no new
@@ -2969,9 +3290,11 @@ mod tests {
         let mut cv = 0usize;
         let mut last: Option<&'static str> = None;
 
-        flush_section(&mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last);
         flush_section(
-            &mut out, &mut buf2, "thinking", &styles, &mut cv, 80, &mut last,
+            &mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+        flush_section(
+            &mut out, &mut buf2, "thinking", &styles, &mut cv, 80, &mut last, None, None, None,
         );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
@@ -2988,7 +3311,7 @@ mod tests {
         let mut last: Option<&'static str> = None;
 
         flush_section(
-            &mut out, &mut empty, "tool", &styles, &mut cv, 80, &mut last,
+            &mut out, &mut empty, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
         );
         assert!(out.is_empty());
         assert_eq!(last, None);
@@ -3005,13 +3328,13 @@ mod tests {
         let mut last: Option<&'static str> = None;
 
         flush_section(
-            &mut out, &mut buf1, "normal", &styles, &mut cv, 80, &mut last,
+            &mut out, &mut buf1, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
         );
         flush_section(
-            &mut out, &mut buf2, "normal", &styles, &mut cv, 80, &mut last,
+            &mut out, &mut buf2, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
         );
         flush_section(
-            &mut out, &mut buf3, "normal", &styles, &mut cv, 80, &mut last,
+            &mut out, &mut buf3, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
         );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
@@ -3054,6 +3377,9 @@ mod tests {
             true,
             &mut cv,
             80,
+            None,
+            None,
+            None,
         );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
@@ -3071,6 +3397,16 @@ mod tests {
 
     /// `[command]` blocks render with the command border/text styles, and
     /// consecutive command blocks share a border like other sections.
+    #[test]
+    fn generate_section_id_increments_per_type() {
+        let mut counters = HashMap::new();
+        assert_eq!(generate_section_id("thinking", &mut counters), "thinking_1");
+        assert_eq!(generate_section_id("thinking", &mut counters), "thinking_2");
+        assert_eq!(generate_section_id("tool", &mut counters), "tool_1");
+        assert_eq!(generate_section_id("thinking", &mut counters), "thinking_3");
+        assert_eq!(generate_section_id("normal", &mut counters), "normal_1");
+    }
+
     #[test]
     fn command_sections_render_with_command_styles_and_merge() {
         let styles = test_styles();
@@ -3100,6 +3436,9 @@ mod tests {
             true,
             &mut cv,
             80,
+            None,
+            None,
+            None,
         );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
