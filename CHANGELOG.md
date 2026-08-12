@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-08-12
+
+### Fixed
+
+- **Table rendering order** — `render_sectioned_block` now flushes `normal_buffer` before entering table mode, so headings (`## Tabla de Subagentes`) and content before a table render in the correct order instead of appearing after the table.
+
+### Changed
+
+- **`flush_section` refactored**: removed shared-border logic between consecutive same-type sections; each section now always gets its own top border. Leading/trailing blank lines in section buffers are automatically trimmed.
+- **Agent panel**: aligned agent names with emoji-based status indicators (`🧠`/`🔧`, `⬆️`/`⬇️`) and prefix-width alignment.
+
 ## [0.24.0] - 2026-08-12
 
 ### Added
