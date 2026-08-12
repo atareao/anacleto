@@ -1,4 +1,5 @@
 pub mod app;
+pub(crate) mod code_block;
 mod commands;
 pub mod diff_viewer;
 mod events;

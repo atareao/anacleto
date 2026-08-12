@@ -5,6 +5,7 @@ role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
   - .agents/skills/web-research/
+  - .agents/skills/searxng-search/
 mcps: []
 permissions:
   allow: []
@@ -54,5 +55,5 @@ entregarlo.
 
 - Sé riguroso y específico: cita la sección y el dato concreto de cada hallazgo.
 - No reescribas el artículo: tu entregable es el informe de verificación.
-- Si necesitas contrastar un dato puntual, usa la skill `web-research`.
+- Si necesitas contrastar un dato puntual, usa `web-research` (URL concreta) o `searxng-search` (búsqueda web).
 - No escribas archivos ni ejecutes comandos.

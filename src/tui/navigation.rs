@@ -8,7 +8,6 @@
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui_textarea::TextArea;
 
 use super::app::App;
 use super::types::Focus;
@@ -38,6 +37,16 @@ impl App {
         } else if self.keymap.matches(key_event, Action::ChatBottom) {
             // End or G: jump to the bottom (auto-scroll).
             self.chat_scroll = 0;
+        } else if self.keymap.matches(key_event, Action::ToggleCodeBlock) {
+            self.toggle_last_code_block();
+        } else if self.keymap.matches(key_event, Action::CopyCodeBlock) {
+            match self.copy_last_code_block() {
+                Some(msg) => self.toasts.push(msg, crate::tui::toast::ToastKind::Info),
+                None => self.toasts.push(
+                    "No hay bloques expandidos para copiar",
+                    crate::tui::toast::ToastKind::Info,
+                ),
+            }
         } else if self.keymap.matches(key_event, Action::CancelInput) {
             self.focus = Focus::Input;
         }
@@ -136,7 +145,8 @@ impl App {
                 // Edit: load the selected item into the input buffer, remove it
                 // from the queue, and move focus to Input.
                 if let Some(prompt) = self.prompt_queue.get(self.prompt_queue_index) {
-                    self.textarea = TextArea::from([prompt.as_str()]);
+                    let prompt = prompt.clone();
+                    self.set_textarea_text(prompt.as_str());
                     self.prompt_queue.remove(self.prompt_queue_index);
                     self.focus = Focus::Input;
                 }
@@ -183,12 +193,15 @@ impl App {
                 .filter(|a| a.status != crate::agent::types::AgentStatus::Completed)
                 .collect();
             if let Some(agent) = display_agents.get(self.agent_panel_index)
-                && agent.name != self.active_agent {
-                    let name = agent.name.clone();
-                    let _ = self.cmd_tx.try_send(
-                        crate::engine::orchestrator::EngineCommand::SwitchAgent(name),
-                    );
-                }
+                && agent.name != self.active_agent
+            {
+                let name = agent.name.clone();
+                let _ =
+                    self.cmd_tx
+                        .try_send(crate::engine::orchestrator::EngineCommand::SwitchAgent(
+                            name,
+                        ));
+            }
         }
     }
 

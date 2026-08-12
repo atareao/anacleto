@@ -15,10 +15,14 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
-use super::markdown::{render_markdown_line, render_table_block, select_visible_start};
+use super::code_block::CodeBlockHighlighter;
+use super::markdown::{
+    render_markdown_line_with_syntect, render_table_block, select_visible_start, visual_line_count,
+};
 use super::palette::{render_agent_palette, render_command_palette, render_model_palette};
-use super::types::{AgentInfo, Focus};
+use super::types::{AgentInfo, CollapsedSection, Focus};
 use crate::agent::types::{AgentRole, AgentStatus, TaskMode};
+use std::collections::{HashMap, HashSet};
 
 /// Render the TUI.
 pub(crate) fn render(f: &mut Frame, app: &mut App) {
@@ -335,7 +339,7 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render the main content area: left (chat/overlays) and right (status panels).
-fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
+fn render_main_content(f: &mut Frame, area: Rect, app: &mut App) {
     if app.show_sidebar {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -351,7 +355,7 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render the left panel: session list, agent list, subagent tree, or chat.
-fn render_left_panel(f: &mut Frame, area: Rect, app: &App) {
+fn render_left_panel(f: &mut Frame, area: Rect, app: &mut App) {
     if app.show_timeline {
         render_timeline_panel(f, area, app);
     } else if app.show_mcps {
@@ -937,16 +941,18 @@ struct SectionStyles {
     thinking_text: Style,
     tool_border: Style,
     tool_exec: Style,
-    tool_ok: Style,
-    tool_err: Style,
+    tool_output: Style,
+    tool_success: Style,
+    tool_error: Style,
+    user_border: Style,
+    user_text: Style,
+    command_border: Style,
+    command_text: Style,
 }
 
 /// Configures whether/how the normal (non-thinking, non-tool) section draws
 /// its `▐` borders and which prefix to use on its lines.
 struct SectionConfig {
-    /// Emit `▐` top/bottom borders around the normal section (true for
-    /// committed messages, false for stream where normal is prefix-only).
-    normal_has_borders: bool,
     /// Prefix for the first normal line (e.g. "\u{258c}" for stream vs "▐ " for
     /// committed).
     first_normal_prefix: &'static str,
@@ -988,6 +994,126 @@ fn flush_table(
 ///
 /// Consecutive lines starting with `|` are automatically detected and rendered
 /// as a table block using box-drawing characters.
+/// Generate a unique section ID from a type name and a per-type counter.
+/// Returns strings like "thinking_1", "tool_2", etc.
+pub(crate) fn generate_section_id(
+    section_type: &str,
+    counters: &mut HashMap<String, u32>,
+) -> String {
+    let entry = counters.entry(section_type.to_string()).or_insert(0);
+    *entry += 1;
+    format!("{}_{}", section_type, entry)
+}
+
+/// Flush a section (thinking/tool) into the output, always showing full content
+/// with a top border, content lines (each with a ▐ prefix from the caller),
+/// and a bottom border. No collapse/expand toggle.
+///
+/// `cumulative_visual` is updated in-place as lines are emitted.
+/// When `section_line_map`, `section_info`, and `counters` are provided,
+/// this records section ID information for the collapse/expand feature.
+#[allow(clippy::too_many_arguments)]
+fn flush_section(
+    out: &mut Vec<Line<'static>>,
+    buffer: &mut Vec<Line<'static>>,
+    section_type: &'static str,
+    styles: &SectionStyles,
+    cumulative_visual: &mut usize,
+    content_width: usize,
+    last_flushed: &mut Option<&'static str>,
+    mut section_line_map: Option<&mut Vec<Option<String>>>,
+    mut section_info: Option<&mut Vec<CollapsedSection>>,
+    mut counters: Option<&mut HashMap<String, u32>>,
+) {
+    if buffer.is_empty() {
+        return;
+    }
+    let border_style = match section_type {
+        "thinking" => styles.thinking_border,
+        "tool" => styles.tool_border,
+        "normal" => styles.border,
+        "user" => styles.user_border,
+        "command" => styles.command_border,
+        _ => return,
+    };
+
+    let slm = &mut section_line_map;
+    let si = &mut section_info;
+    let cnt = &mut counters;
+    let track = slm.is_some() && si.is_some() && cnt.is_some();
+
+    let mut section_id: Option<String> = None;
+    let start_line: usize;
+
+    // Top border — skipped when the previous flushed section had the same
+    // type, so consecutive blocks of the same kind read as one continuous
+    // section (the previous block's bottom border acts as the separator).
+    if *last_flushed != Some(section_type) {
+        let top_line = Line::from(Span::styled("\u{2590}", border_style));
+        *cumulative_visual += visual_line_count(&top_line, content_width);
+        start_line = out.len();
+        out.push(top_line);
+
+        if track {
+            let slm_vec = slm.as_mut().unwrap();
+            let si_vec = si.as_mut().unwrap();
+            let cnt_vec = cnt.as_mut().unwrap();
+            let id = generate_section_id(section_type, cnt_vec);
+            section_id = Some(id.clone());
+            if slm_vec.len() <= start_line {
+                slm_vec.resize(start_line + 1, None);
+            }
+            slm_vec[start_line] = Some(id.clone());
+            si_vec.push(CollapsedSection {
+                id,
+                section_type: section_type.to_string(),
+                start_line,
+                line_count: 0,
+            });
+        }
+    } else {
+        // No new top border — section content follows from the previous
+        // same-type section's bottom border. The start is the last line.
+        start_line = out.len().saturating_sub(1);
+    }
+
+    // Emit content lines directly (each already has a ▐ prefix from the caller)
+    let lines: Vec<Line<'static>> = std::mem::take(buffer);
+    for l in &lines {
+        *cumulative_visual += visual_line_count(l, content_width);
+    }
+    out.extend(lines);
+
+    // Bottom border
+    let bottom_line = Line::from(Span::styled("\u{2590}", border_style));
+    *cumulative_visual += visual_line_count(&bottom_line, content_width);
+    out.push(bottom_line);
+
+    // Update section_line_map and section_info with correct line_count
+    if track {
+        let slm_vec = slm.as_mut().unwrap();
+        let si_vec = si.as_mut().unwrap();
+        let total_lines = out.len() - start_line;
+        for i in start_line..out.len() {
+            if slm_vec.len() <= i {
+                slm_vec.resize(i + 1, None);
+            }
+            if slm_vec[i].is_none() {
+                slm_vec[i] = section_id.clone();
+            }
+        }
+        if let Some(ref sec_id) = section_id
+            && let Some(entry) = si_vec.iter_mut().rev().find(|s| s.id == *sec_id)
+        {
+            entry.line_count = total_lines;
+        }
+    }
+
+    *last_flushed = Some(section_type);
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_option_as_deref)]
 fn render_sectioned_block(
     content: &str,
     ts: &str,
@@ -995,13 +1121,29 @@ fn render_sectioned_block(
     styles: &SectionStyles,
     table_cell_style: Style,
     normal_line_render: impl Fn(String, &'static str, Style) -> Line<'static>,
+    code_block_hl: &CodeBlockHighlighter,
+    code_block_positions: &mut Vec<crate::tui::code_block::CodeBlockPosition>,
+    is_dark: bool,
+    cumulative_visual: &mut usize,
+    content_width: usize,
+    mut section_line_map: Option<&mut Vec<Option<String>>>,
+    mut section_info: Option<&mut Vec<CollapsedSection>>,
+    mut counters: Option<&mut HashMap<String, u32>>,
 ) -> Vec<Line<'static>> {
+    // section_line_map, section_info, counters: Option<&mut ...> params passed below
     let mut out: Vec<Line> = Vec::new();
     let mut section: &str = "normal";
     let mut section_has_content = false;
     let mut awaiting_ts = !ts.is_empty();
     let mut first_normal = true;
     let mut table_buffer: Vec<String> = Vec::new();
+    let mut thinking_buffer: Vec<Line<'static>> = Vec::new();
+    let mut tool_buffer: Vec<Line<'static>> = Vec::new();
+    let mut normal_buffer: Vec<Line<'static>> = Vec::new();
+    let mut user_buffer: Vec<Line<'static>> = Vec::new();
+    let mut command_buffer: Vec<Line<'static>> = Vec::new();
+    let mut last_flushed: Option<&'static str> = None;
+    let mut tool_style = styles.tool_exec;
 
     // Helper to pick the right prefix
     let prefix = |first: bool| -> &'static str {
@@ -1012,38 +1154,131 @@ fn render_sectioned_block(
         }
     };
 
-    for line_text in content.split('\n') {
+    let mut lines_iter = content.split('\n').peekable();
+    while let Some(line_text) = lines_iter.next() {
         let marker = line_text.trim();
+
+        // ── Fenced code block detection ──
+        if marker.starts_with("```") {
+            let lang = marker.trim_start_matches("```").trim().to_string();
+
+            // Collect code content until closing ``` or end
+            let mut code_lines: Vec<String> = Vec::new();
+            for code_line in lines_iter.by_ref() {
+                if code_line.trim() == "```" {
+                    break;
+                }
+                code_lines.push(code_line.to_string());
+            }
+
+            let code = code_lines.join("\n");
+
+            let highlighted = code_block_hl.highlight_fenced_block(&lang, &code, is_dark);
+
+            // Record the block position (for mouse-click copy).
+            let block_idx = code_block_positions.len();
+            code_block_positions.push(crate::tui::code_block::CodeBlockPosition {
+                lang: lang.clone(),
+                code: code.clone(),
+                copy_line: 0,
+            });
+
+            // Emit code block content (no extra ▐ border — content lines
+            // already have a prefix from the highlighted rendering).
+            if first_normal {
+                first_normal = false;
+            }
+
+            for mut hl_line in highlighted {
+                let p = prefix(first_normal);
+                if first_normal {
+                    first_normal = false;
+                }
+                hl_line.spans.insert(0, Span::styled(p, styles.border));
+                hl_line.spans.insert(1, Span::styled(" ", Style::default()));
+                *cumulative_visual += visual_line_count(&hl_line, content_width);
+                out.push(hl_line);
+            }
+
+            // Find the [copy] line index for mouse-click handling
+            if let Some(block) = code_block_positions.get_mut(block_idx) {
+                let out_len = out.len();
+                for (offset, line) in out.iter().enumerate().rev().take(out_len) {
+                    let full: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                    if full.contains("[copy]") && block.copy_line == 0 {
+                        block.copy_line = offset;
+                        break;
+                    }
+                }
+            }
+
+            section_has_content = true;
+            continue;
+        }
 
         // ── [thinking] / [/thinking] markers ──
         if marker == "[thinking]" {
-            // Flush any pending table before switching sections
-            let p = prefix(first_normal);
-            flush_table(
-                &mut out,
-                &mut table_buffer,
-                &mut first_normal,
-                &mut section_has_content,
-                p,
-                styles.border,
-                table_cell_style,
-            );
-            // Close previous section only if it had actual content
-            if section_has_content {
-                let close_style = match section {
-                    "thinking" => styles.thinking_border,
-                    "tool" => styles.tool_border,
-                    _ => styles.border,
-                };
-                out.push(Line::from(Span::styled("\u{2590}", close_style)));
+            // Close previous section
+            if section == "tool" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut tool_buffer,
+                    "tool",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "user" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut user_buffer,
+                    "user",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "command" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut command_buffer,
+                    "command",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "normal" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut normal_buffer,
+                    "normal",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
             }
             section = "thinking";
             section_has_content = false;
-            out.push(Line::from(Span::styled("\u{2590}", styles.thinking_border)));
+            thinking_buffer.clear();
             continue;
         }
         if marker == "[/thinking]" {
-            // Flush any pending table before closing thinking section
+            // Flush any pending table
             let p = prefix(first_normal);
             flush_table(
                 &mut out,
@@ -1054,11 +1289,356 @@ fn render_sectioned_block(
                 styles.border,
                 table_cell_style,
             );
-            if section_has_content {
-                out.push(Line::from(Span::styled("\u{2590}", styles.thinking_border)));
+            flush_section(
+                &mut out,
+                &mut thinking_buffer,
+                "thinking",
+                styles,
+                cumulative_visual,
+                content_width,
+                &mut last_flushed,
+                section_line_map.as_deref_mut(),
+                section_info.as_deref_mut(),
+                counters.as_deref_mut(),
+            );
+            section = "normal";
+            section_has_content = false;
+            continue;
+        }
+
+        // ── [tool] / [/tool] markers ──
+        if marker == "[tool]" {
+            // Close previous section
+            if section == "thinking" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut thinking_buffer,
+                    "thinking",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "user" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut user_buffer,
+                    "user",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "command" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut command_buffer,
+                    "command",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "normal" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut normal_buffer,
+                    "normal",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            }
+            section = "tool";
+            section_has_content = false;
+            tool_buffer.clear();
+            tool_style = styles.tool_exec;
+            continue;
+        }
+        if marker == "[/tool]" {
+            flush_section(
+                &mut out,
+                &mut tool_buffer,
+                "tool",
+                styles,
+                cumulative_visual,
+                content_width,
+                &mut last_flushed,
+                section_line_map.as_deref_mut(),
+                section_info.as_deref_mut(),
+                counters.as_deref_mut(),
+            );
+            section = "normal";
+            section_has_content = false;
+            continue;
+        }
+        // ── [tool-output] marker: switch to dimmed style for output content ──
+        if marker == "[tool-output]" && section == "tool" {
+            tool_style = styles.tool_output;
+            continue;
+        }
+
+        // ── [tool-success] / [tool-error] markers ──
+        if marker == "[tool-success]" && section == "tool" {
+            tool_style = styles.tool_success;
+            continue;
+        }
+        if marker == "[tool-error]" && section == "tool" {
+            tool_style = styles.tool_error;
+            continue;
+        }
+
+        // ── [normal] / [/normal] markers ──
+        if marker == "[normal]" {
+            // Close previous section if it was thinking or tool
+            if section == "thinking" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut thinking_buffer,
+                    "thinking",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "tool" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut tool_buffer,
+                    "tool",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "user" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut user_buffer,
+                    "user",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "command" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut command_buffer,
+                    "command",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
             }
             section = "normal";
             section_has_content = false;
+            normal_buffer.clear();
+            first_normal = true;
+            continue;
+        }
+        if marker == "[/normal]" {
+            flush_section(
+                &mut out,
+                &mut normal_buffer,
+                "normal",
+                styles,
+                cumulative_visual,
+                content_width,
+                &mut last_flushed,
+                section_line_map.as_deref_mut(),
+                section_info.as_deref_mut(),
+                counters.as_deref_mut(),
+            );
+            section = "normal";
+            section_has_content = false;
+            first_normal = true;
+            continue;
+        }
+
+        // ── [user] / [/user] markers ──
+        if marker == "[user]" {
+            // Close previous section if it was thinking, tool, or normal
+            if section == "thinking" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut thinking_buffer,
+                    "thinking",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "tool" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut tool_buffer,
+                    "tool",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "normal" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut normal_buffer,
+                    "normal",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "command" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut command_buffer,
+                    "command",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            }
+            section = "user";
+            section_has_content = false;
+            user_buffer.clear();
+            continue;
+        }
+        if marker == "[/user]" {
+            flush_section(
+                &mut out,
+                &mut user_buffer,
+                "user",
+                styles,
+                cumulative_visual,
+                content_width,
+                &mut last_flushed,
+                section_line_map.as_deref_mut(),
+                section_info.as_deref_mut(),
+                counters.as_deref_mut(),
+            );
+            section = "normal";
+            section_has_content = false;
+            first_normal = true;
+            continue;
+        }
+
+        // ── [command] / [/command] markers ──
+        if marker == "[command]" {
+            // Close previous section if it was thinking, tool, normal, or user
+            if section == "thinking" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut thinking_buffer,
+                    "thinking",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "tool" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut tool_buffer,
+                    "tool",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "normal" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut normal_buffer,
+                    "normal",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            } else if section == "user" && section_has_content {
+                flush_section(
+                    &mut out,
+                    &mut user_buffer,
+                    "user",
+                    styles,
+                    cumulative_visual,
+                    content_width,
+                    &mut last_flushed,
+                    section_line_map.as_deref_mut(),
+                    section_info.as_deref_mut(),
+                    counters.as_deref_mut(),
+                );
+            }
+            section = "command";
+            section_has_content = false;
+            command_buffer.clear();
+            continue;
+        }
+        if marker == "[/command]" {
+            flush_section(
+                &mut out,
+                &mut command_buffer,
+                "command",
+                styles,
+                cumulative_visual,
+                content_width,
+                &mut last_flushed,
+                section_line_map.as_deref_mut(),
+                section_info.as_deref_mut(),
+                counters.as_deref_mut(),
+            );
+            section = "normal";
+            section_has_content = false;
+            first_normal = true;
             continue;
         }
 
@@ -1067,69 +1647,36 @@ fn render_sectioned_block(
         awaiting_ts = false;
         let full_line = format!("{}{}", ts_prefix, line_text);
 
-        // Detect tool markers (🔧 / ✅ / ❌ ) — only strip leading whitespace
-        let trimmed = line_text.trim_start();
-        let is_tool = trimmed.starts_with("\u{1f527}")
-            || trimmed.starts_with("\u{2705}")
-            || trimmed.starts_with("\u{274c}");
-
-        // ── Tool section transitions (only outside thinking blocks) ──
-        if section != "thinking" {
-            let from_normal_to_tool = is_tool && section != "tool";
-            let from_tool_to_normal = !is_tool && section == "tool";
-
-            if from_normal_to_tool {
-                // Flush any pending table before switching to tool section
-                let p = prefix(first_normal);
-                flush_table(
-                    &mut out,
-                    &mut table_buffer,
-                    &mut first_normal,
-                    &mut section_has_content,
-                    p,
-                    styles.border,
-                    table_cell_style,
-                );
-                // Close normal section only if it had content AND normal has borders
-                if section_has_content && config.normal_has_borders {
-                    out.push(Line::from(Span::styled("\u{2590}", styles.border)));
-                }
-                section = "tool";
-                out.push(Line::from(Span::styled("\u{2590}", styles.tool_border)));
-            } else if from_tool_to_normal {
-                if section_has_content {
-                    out.push(Line::from(Span::styled("\u{2590}", styles.tool_border)));
-                }
-                section = "normal";
-            }
-        }
-
         // ── Render the line ──
         if section == "thinking" {
-            out.push(Line::from(vec![
+            thinking_buffer.push(Line::from(vec![
                 Span::styled("\u{2590} ", styles.thinking_border),
                 Span::styled(full_line, styles.thinking_text),
             ]));
             section_has_content = true;
-        } else if is_tool {
-            let tool_style = if trimmed.starts_with("\u{1f527}") {
-                styles.tool_exec
-            } else if trimmed.starts_with("\u{2705}") {
-                styles.tool_ok
-            } else {
-                styles.tool_err
-            };
-            out.push(Line::from(vec![
+        } else if section == "user" {
+            user_buffer.push(Line::from(vec![
+                Span::styled("\u{2590} ", styles.user_border),
+                Span::styled(full_line, styles.user_text),
+            ]));
+            section_has_content = true;
+        } else if section == "command" {
+            command_buffer.push(Line::from(vec![
+                Span::styled("\u{2590} ", styles.command_border),
+                Span::styled(full_line, styles.command_text),
+            ]));
+            section_has_content = true;
+        } else if section == "tool" {
+            tool_buffer.push(Line::from(vec![
                 Span::styled("\u{2590} ", styles.tool_border),
                 Span::styled(full_line, tool_style),
             ]));
             section_has_content = true;
-        } else {
+        } else if section == "normal" {
             // ── Table detection (consecutive | lines) ──
             if marker.starts_with('|') {
-                // Entering table mode: emit normal top border if first content
-                if table_buffer.is_empty() && first_normal && config.normal_has_borders {
-                    out.push(Line::from(Span::styled("\u{2590}", styles.border)));
+                // Entering table mode
+                if table_buffer.is_empty() && first_normal {
                     first_normal = false;
                 }
                 table_buffer.push(line_text.to_string());
@@ -1149,13 +1696,18 @@ fn render_sectioned_block(
                 table_cell_style,
             );
 
-            // Normal line — delegate to caller for markdown / plain rendering
-            // Emit top border for normal section when the first normal line appears
-            // (not eagerly, so messages that start with [thinking] don't get a
-            // spurious normal border before the thinking section).
-            if first_normal && config.normal_has_borders {
-                out.push(Line::from(Span::styled("\u{2590}", styles.border)));
-            }
+            // Normal line — buffer for section rendering
+            let p = if first_normal {
+                first_normal = false;
+                config.first_normal_prefix
+            } else {
+                config.subsequent_normal_prefix
+            };
+            let rendered = normal_line_render(full_line, p, styles.border);
+            normal_buffer.push(rendered);
+            section_has_content = true;
+        } else {
+            // Unknown section — render inline as fallback
             let p = if first_normal {
                 first_normal = false;
                 config.first_normal_prefix
@@ -1180,16 +1732,68 @@ fn render_sectioned_block(
         table_cell_style,
     );
 
-    // Close the last section only if it had content
-    if section_has_content {
-        let close_style = match section {
-            "thinking" => styles.thinking_border,
-            "tool" => styles.tool_border,
-            _ if config.normal_has_borders => styles.border,
-            _ => return out,
-        };
-        out.push(Line::from(Span::styled("\u{2590}", close_style)));
-    }
+    // Flush any remaining section buffers (for sections that were never
+    // explicitly closed via [/thinking] or tool→normal transition).
+    flush_section(
+        &mut out,
+        &mut thinking_buffer,
+        "thinking",
+        styles,
+        cumulative_visual,
+        content_width,
+        &mut last_flushed,
+        section_line_map.as_deref_mut(),
+        section_info.as_deref_mut(),
+        counters.as_deref_mut(),
+    );
+    flush_section(
+        &mut out,
+        &mut tool_buffer,
+        "tool",
+        styles,
+        cumulative_visual,
+        content_width,
+        &mut last_flushed,
+        section_line_map.as_deref_mut(),
+        section_info.as_deref_mut(),
+        counters.as_deref_mut(),
+    );
+    flush_section(
+        &mut out,
+        &mut normal_buffer,
+        "normal",
+        styles,
+        cumulative_visual,
+        content_width,
+        &mut last_flushed,
+        section_line_map.as_deref_mut(),
+        section_info.as_deref_mut(),
+        counters.as_deref_mut(),
+    );
+    flush_section(
+        &mut out,
+        &mut user_buffer,
+        "user",
+        styles,
+        cumulative_visual,
+        content_width,
+        &mut last_flushed,
+        section_line_map.as_deref_mut(),
+        section_info.as_deref_mut(),
+        counters.as_deref_mut(),
+    );
+    flush_section(
+        &mut out,
+        &mut command_buffer,
+        "command",
+        styles,
+        cumulative_visual,
+        content_width,
+        &mut last_flushed,
+        section_line_map.as_deref_mut(),
+        section_info.as_deref_mut(),
+        counters.as_deref_mut(),
+    );
 
     out
 }
@@ -1197,7 +1801,17 @@ fn render_sectioned_block(
 /// Flush the accumulated AI message batch: join all messages and render them
 /// as a single sectioned block so that thinking → tool → response transitions
 /// produce only one `▐` separator between sections, not two.
-fn flush_ai_batch(lines: &mut Vec<Line<'static>>, batch: &mut Vec<(String, String)>, app: &App) {
+#[allow(clippy::too_many_arguments)]
+fn flush_ai_batch(
+    lines: &mut Vec<Line<'static>>,
+    batch: &mut Vec<(String, String)>,
+    app: &mut App,
+    cumulative_visual: &mut usize,
+    content_width: usize,
+    section_line_map: Option<&mut Vec<Option<String>>>,
+    section_info: Option<&mut Vec<CollapsedSection>>,
+    counters: Option<&mut HashMap<String, u32>>,
+) {
     if batch.is_empty() {
         return;
     }
@@ -1217,20 +1831,23 @@ fn flush_ai_batch(lines: &mut Vec<Line<'static>>, batch: &mut Vec<(String, Strin
             .fg(themes.thinking())
             .add_modifier(Modifier::DIM),
         tool_border: Style::default().fg(themes.tool_border()),
-        tool_exec: Style::default().fg(themes.tool_text_dim()),
-        tool_ok: Style::default()
-            .fg(themes.tool_ok_dim())
+        tool_exec: Style::default().fg(themes.tool_text()),
+        tool_output: Style::default()
+            .fg(themes.tool_text())
             .add_modifier(Modifier::DIM),
-        tool_err: Style::default()
-            .fg(themes.tool_err_dim())
-            .add_modifier(Modifier::DIM),
+        tool_success: Style::default().fg(themes.tool_ok()),
+        tool_error: Style::default().fg(themes.tool_err()),
+        user_border: Style::default().fg(themes.user_border()),
+        user_text: Style::default().fg(themes.user_text()),
+        command_border: Style::default().fg(themes.command_border()),
+        command_text: Style::default().fg(themes.command_text()),
     };
     let config = SectionConfig {
-        normal_has_borders: true,
         first_normal_prefix: "▐ ",
         subsequent_normal_prefix: "▐ ",
     };
     let base = Style::default().fg(Color::Rgb(200, 220, 255));
+    let is_dark = app.is_dark();
     lines.extend(render_sectioned_block(
         &combined,
         &ts,
@@ -1238,22 +1855,205 @@ fn flush_ai_batch(lines: &mut Vec<Line<'static>>, batch: &mut Vec<(String, Strin
         &styles,
         base,
         |full_line, prefix, border| {
-            let mut rendered = render_markdown_line(&full_line, base);
+            let mut rendered =
+                render_markdown_line_with_syntect(&full_line, base, &app.code_block_hl, is_dark);
             rendered.spans.insert(0, Span::styled(prefix, border));
             rendered
         },
+        &app.code_block_hl,
+        &mut app.code_block_positions,
+        is_dark,
+        cumulative_visual,
+        content_width,
+        section_line_map,
+        section_info,
+        counters,
     ));
 }
-fn render_chat(f: &mut Frame, area: Rect, app: &App) {
+/// Pre-wrap a single `Line` into multiple `Line`s, each at most `max_width`
+/// visual columns wide. Each resulting line keeps the first span (the border
+/// prefix, e.g. `"▐ "`) so that soft-wrapped continuation lines also show
+/// the left border.
+///
+/// When a line fits within `max_width` it is returned as-is (zero allocation).
+fn prewrap_line(line: Line<'static>, max_width: usize) -> Vec<Line<'static>> {
+    if line.spans.is_empty() || line.width() <= max_width {
+        return vec![line];
+    }
+
+    // The first span is the border prefix (e.g. "▐ " or "\u{258c}")
+    let prefix = line.spans[0].clone();
+    let prefix_w = prefix.width();
+    let available = max_width.saturating_sub(prefix_w);
+
+    if available == 0 {
+        // Degenerate case: prefix alone fills the width.
+        return vec![line];
+    }
+
+    let mut result: Vec<Line<'static>> = Vec::new();
+    let mut current: Vec<Span<'static>> = vec![prefix.clone()];
+    let mut current_w: usize = 0;
+
+    for span in &line.spans[1..] {
+        let style = span.style;
+        let text = span.content.as_ref();
+        let span_w = span.width();
+
+        if current_w + span_w <= available {
+            // Entire span fits on the current line.
+            current.push(span.clone());
+            current_w += span_w;
+        } else if current_w == 0 {
+            // Prefix + this span exceeds available width immediately.
+            // Split the span text across multiple lines.
+            let mut remaining = text.to_string();
+            while !remaining.is_empty() {
+                let (chunk, rest) = split_str_at_width(&remaining, available);
+                current.push(Span::styled(chunk, style));
+                result.push(Line::from(std::mem::take(&mut current)));
+                current.push(prefix.clone());
+                remaining = rest;
+            }
+            current_w = 0;
+        } else {
+            // Flush current line, start a new one with this span.
+            result.push(Line::from(std::mem::take(&mut current)));
+            current.push(prefix.clone());
+
+            if span_w <= available {
+                current.push(span.clone());
+                current_w = span_w;
+            } else {
+                // This span alone exceeds available width.
+                let mut remaining = text.to_string();
+                while !remaining.is_empty() {
+                    let (chunk, rest) = split_str_at_width(&remaining, available);
+                    current.push(Span::styled(chunk, style));
+                    result.push(Line::from(std::mem::take(&mut current)));
+                    current.push(prefix.clone());
+                    remaining = rest;
+                }
+                current_w = 0;
+            }
+        }
+    }
+
+    if current.len() > 1 {
+        result.push(Line::from(current));
+    }
+
+    result
+}
+
+/// Split a string at a given visual width (using `unicode-width`),
+/// returning `(left_part, right_part)`.  The left part is guaranteed to
+/// have a visual width ≤ `width`.
+fn split_str_at_width(s: &str, width: usize) -> (String, String) {
+    if s.is_empty() || width == 0 {
+        return (String::new(), s.to_string());
+    }
+    let mut left = String::new();
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = UnicodeWidthStr::width(c.to_string().as_str());
+        if w + cw > width {
+            break;
+        }
+        left.push(c);
+        w += cw;
+    }
+    let right = s[left.len()..].to_string();
+    (left, right)
+}
+
+/// Replace collapsed section lines with a single summary line each.
+///
+/// Sections whose `id` is in `collapsed` get their content lines removed and
+/// replaced by a single dimmed line showing `▶ type (N)`. Both `section_info`
+/// and `section_line_map` are updated to reflect the new indices.
+fn apply_collapsed(
+    lines: &mut Vec<Line<'static>>,
+    section_info: &mut [CollapsedSection],
+    section_line_map: &mut Vec<Option<String>>,
+    collapsed: &HashSet<String>,
+    styles: &SectionStyles,
+) {
+    // Pass 1: compute the cumulative line shift for each section.
+    // The shift is the total number of lines removed by collapsing sections
+    // that appear EARLIER in the vector (lower index).
+    let mut shifts: Vec<usize> = vec![0; section_info.len()];
+    let mut cum_shift: usize = 0;
+    for (i, sec) in section_info.iter().enumerate() {
+        shifts[i] = cum_shift;
+        if collapsed.contains(&sec.id) {
+            cum_shift += sec.line_count.saturating_sub(1);
+        }
+    }
+
+    // Pass 2: splice lines and update metadata (reverse to keep splice
+    // indices valid as we go).
+    for i in (0..section_info.len()).rev() {
+        let adj_start = section_info[i].start_line.saturating_sub(shifts[i]);
+
+        if collapsed.contains(&section_info[i].id) {
+            let end = adj_start + section_info[i].line_count;
+            let sec_type = section_info[i].section_type.as_str();
+            let n = section_info[i].line_count;
+
+            // Pick the border colour based on section type
+            let border_style = match sec_type {
+                "thinking" => styles.thinking_border,
+                "tool" => styles.tool_border,
+                "user" => styles.user_border,
+                "command" => styles.command_border,
+                _ => styles.border,
+            };
+
+            let summary = Line::from(Span::styled(
+                format!("\u{2590} \u{25b6} {} ({})  [click to expand]", sec_type, n),
+                border_style.add_modifier(Modifier::DIM),
+            ));
+
+            // Replace section lines with a single summary line
+            lines.splice(adj_start..end, std::iter::once(summary.clone()));
+
+            // Keep section_line_map in sync: remove the old entries, insert
+            // one entry for the summary line.
+            let section_id = section_info[i].id.clone();
+            section_line_map.splice(adj_start..end, std::iter::repeat_n(Some(section_id), 1));
+
+            // Update section metadata — keep original line_count for
+            // the click handler (toast) which reads it before next render.
+            section_info[i].start_line = adj_start;
+        } else {
+            section_info[i].start_line = adj_start;
+        }
+    }
+}
+
+fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
     if app.show_welcome {
         render_welcome_banner(f, area, app);
         return;
     }
 
+    // Reset per-frame code block positions so mouse clicks map to the
+    // current frame's rendered blocks only.
+    app.code_block_positions.clear();
+
+    // Compute content width early — needed for visual row tracking during render.
+    let content_width = (area.width.saturating_sub(2)).max(1) as usize;
+
     let mut lines: Vec<Line> = Vec::with_capacity(app.messages.len() + 4);
     let mut ai_batch: Vec<(String, String)> = Vec::new();
+    let mut cumulative_visual: usize = 0;
+    let mut section_line_map: Vec<Option<String>> = Vec::new();
+    let mut section_info: Vec<CollapsedSection> = Vec::new();
+    let mut counters: HashMap<String, u32> = HashMap::new();
 
-    for (idx, m) in app.messages.iter().enumerate() {
+    for idx in 0..app.messages.len() {
+        let msg = app.messages[idx].clone();
         let ts = if app.show_timestamps {
             app.message_timestamps
                 .get(idx)
@@ -1263,127 +2063,173 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
             String::new()
         };
 
-        // AI-batchable messages
-        if m.starts_with("[thinking]")
-            || m.starts_with("\u{1f527}")
-            || m.starts_with("\u{2705}")
-            || m.starts_with("\u{274c}")
+        // AI-batchable messages: thinking, tool activity, and sectioned
+        // messages ([normal]/[command]/[user]/[tool]) accumulate so that
+        // flush_ai_batch renders consecutive same-type sections as ONE block
+        // (sharing borders) instead of one block per message.
+        if msg.starts_with("[thinking]")
+            || msg.starts_with("[normal]")
+            || msg.starts_with("[command]")
+            || msg.starts_with("[user]")
+            || msg.starts_with("[tool]")
+            || msg.starts_with("\u{1f527}")
+            || msg.starts_with("\u{2705}")
+            || msg.starts_with("\u{274c}")
         {
-            ai_batch.push((m.clone(), ts));
+            ai_batch.push((msg.clone(), ts));
             continue;
         }
 
         // Every other message type flushes the AI batch first.
-        flush_ai_batch(&mut lines, &mut ai_batch, app);
+        flush_ai_batch(
+            &mut lines,
+            &mut ai_batch,
+            app,
+            &mut cumulative_visual,
+            content_width,
+            Some(&mut section_line_map),
+            Some(&mut section_info),
+            Some(&mut counters),
+        );
 
-        if m.starts_with("> ") && !m.starts_with("> /") {
+        if msg.starts_with("> ") && !msg.starts_with("> /") {
             let content_style = Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD);
 
             // Top border extension
-            lines.push(Line::from(Span::styled(
+            let top_line = Line::from(Span::styled(
                 "\u{2590}",
                 Style::default().fg(Color::Rgb(60, 80, 60)),
-            )));
+            ));
+            cumulative_visual += visual_line_count(&top_line, content_width);
+            lines.push(top_line);
 
-            for line_text in m.split("\n") {
-                lines.push(Line::from(vec![
+            for line_text in msg.split("\n") {
+                let l = Line::from(vec![
                     Span::styled("\u{2590} ", Style::default().fg(Color::Rgb(60, 80, 60))),
                     Span::styled(
                         format!("{}{}", ts, line_text.trim_start_matches("> ")),
                         content_style,
                     ),
-                ]));
+                ]);
+                cumulative_visual += visual_line_count(&l, content_width);
+                lines.push(l);
             }
 
-            lines.push(Line::from(Span::styled(
+            let bottom_line = Line::from(Span::styled(
                 "\u{2590}",
                 Style::default().fg(Color::Rgb(60, 80, 60)),
-            )));
-        } else if m.starts_with("> /") {
+            ));
+            cumulative_visual += visual_line_count(&bottom_line, content_width);
+            lines.push(bottom_line);
+        } else if msg.starts_with("> /") {
             let style = Style::default()
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD);
-            lines.push(Line::from(Span::styled(m.clone(), style)));
-        } else if m.starts_with("Error:") || m.starts_with("Error :") {
-            lines.push(Line::from(Span::styled(
-                m.clone(),
+            let l = Line::from(Span::styled(msg.clone(), style));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("Error:") || msg.starts_with("Error :") {
+            let l = Line::from(Span::styled(
+                msg.clone(),
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            )));
-        } else if m.starts_with("Subagent '") && m.contains("created") {
-            lines.push(Line::from(Span::styled(
-                m.clone(),
+            ));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("Subagent '") && msg.contains("created") {
+            let l = Line::from(Span::styled(
+                msg.clone(),
                 Style::default().fg(Color::Yellow),
-            )));
-        } else if m.starts_with("Subagent '") && m.contains("completed") {
-            lines.push(Line::from(Span::styled(
-                m.clone(),
-                Style::default().fg(Color::Green),
-            )));
-        } else if m.starts_with("Switched to session:")
-            || m.starts_with("Session renamed to:")
-            || (m.starts_with("Session ") && (m.contains("deleted") || m.contains("deleted.")))
-            || m.starts_with("Anacleto shutting down")
-            || m.starts_with("Anacleto started")
+            ));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("Subagent '") && msg.contains("completed") {
+            let l = Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Green)));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("Switched to session:")
+            || msg.starts_with("Session renamed to:")
+            || (msg.starts_with("Session ")
+                && (msg.contains("deleted") || msg.contains("deleted.")))
+            || msg.starts_with("Anacleto shutting down")
+            || msg.starts_with("Anacleto started")
         {
-            lines.push(Line::from(Span::styled(
-                m.clone(),
-                Style::default().fg(Color::Blue),
-            )));
-        } else if m.starts_with("Agent '") && m.contains("created") {
-            lines.push(Line::from(Span::styled(
-                m.clone(),
-                Style::default().fg(Color::Cyan),
-            )));
-        } else if m.starts_with("Unknown command") {
-            lines.push(Line::from(Span::styled(
-                m.clone(),
+            let l = Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Blue)));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("Agent '") && msg.contains("created") {
+            let l = Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Cyan)));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("Unknown command") {
+            let l = Line::from(Span::styled(
+                msg.clone(),
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            )));
-        } else if m.starts_with("Usage:") || m.starts_with("Commands:") {
-            lines.push(Line::from(Span::styled(
-                m.clone(),
-                Style::default().fg(Color::Blue),
-            )));
-        } else if m.starts_with("$ ") {
-            lines.push(Line::from(Span::styled(
-                m.clone(),
+            ));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("Usage:") || msg.starts_with("Commands:") {
+            let l = Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Blue)));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("$ ") {
+            let l = Line::from(Span::styled(
+                msg.clone(),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
-            )));
-        } else if m.starts_with("\u{2502} ") {
-            lines.push(Line::from(Span::styled(
-                m.clone(),
+            ));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("\u{2502} ") {
+            let l = Line::from(Span::styled(
+                msg.clone(),
                 Style::default()
                     .fg(Color::Rgb(160, 160, 180))
                     .add_modifier(Modifier::DIM),
-            )));
-        } else if m.starts_with("\u{2514} ") {
-            lines.push(Line::from(Span::styled(
-                m.clone(),
+            ));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("\u{2514} ") {
+            let l = Line::from(Span::styled(
+                msg.clone(),
                 Style::default()
                     .fg(Color::Rgb(220, 120, 120))
                     .add_modifier(Modifier::DIM),
-            )));
-        } else if m.starts_with("\u{1f50d}") {
+            ));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("\u{1f50d}") {
             let style = Style::default()
                 .fg(Color::Rgb(180, 100, 255))
                 .add_modifier(Modifier::BOLD);
-            lines.push(Line::from(Span::styled(m.clone(), style)));
-        } else if m.starts_with("  ") && app.debug_mode {
+            let l = Line::from(Span::styled(msg.clone(), style));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+        } else if msg.starts_with("  ") && app.debug_mode {
             let style = Style::default()
                 .fg(Color::Rgb(180, 100, 255))
                 .add_modifier(Modifier::DIM);
-            lines.push(Line::from(Span::styled(m.clone(), style)));
+            let l = Line::from(Span::styled(msg.clone(), style));
+            cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
         } else {
-            ai_batch.push((m.clone(), ts));
+            ai_batch.push((msg.clone(), ts));
         }
     }
 
     // Flush any remaining AI messages.
-    flush_ai_batch(&mut lines, &mut ai_batch, app);
+    flush_ai_batch(
+        &mut lines,
+        &mut ai_batch,
+        app,
+        &mut cumulative_visual,
+        content_width,
+        Some(&mut section_line_map),
+        Some(&mut section_info),
+        Some(&mut counters),
+    );
 
     // Add streaming indicator if active
     if let Some(stream) = &app.current_stream {
@@ -1399,34 +2245,129 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::DIM),
             tool_border: Style::default().fg(themes.tool_border()),
             tool_exec: Style::default().fg(themes.tool_text()),
-            tool_ok: Style::default()
-                .fg(themes.tool_ok())
+            tool_output: Style::default()
+                .fg(themes.tool_text())
                 .add_modifier(Modifier::DIM),
-            tool_err: Style::default()
-                .fg(themes.tool_err())
-                .add_modifier(Modifier::DIM),
+            tool_success: Style::default().fg(themes.tool_ok()),
+            tool_error: Style::default().fg(themes.tool_err()),
+            user_border: Style::default().fg(themes.user_border()),
+            user_text: Style::default().fg(themes.user_text()),
+            command_border: Style::default().fg(themes.command_border()),
+            command_text: Style::default().fg(themes.command_text()),
         };
         let config = SectionConfig {
-            normal_has_borders: false,
             first_normal_prefix: "\u{258c}",
             subsequent_normal_prefix: " ",
         };
+        let is_dark = app.is_dark();
         lines.extend(render_sectioned_block(
             stream,
             "",
             &config,
             &styles,
             stream_style,
-            |full_line, prefix, _border| {
-                Line::from(Span::styled(
-                    format!("{}{}", prefix, full_line),
+            |full_line, prefix, border| {
+                let mut rendered = render_markdown_line_with_syntect(
+                    &full_line,
                     stream_style,
-                ))
+                    &app.code_block_hl,
+                    is_dark,
+                );
+                rendered.spans.insert(0, Span::styled(prefix, border));
+                rendered
             },
+            &app.code_block_hl,
+            &mut app.code_block_positions,
+            is_dark,
+            &mut cumulative_visual,
+            content_width,
+            Some(&mut section_line_map),
+            Some(&mut section_info),
+            Some(&mut counters),
         ));
     }
 
-    let title = format!(" (1) \u{1f4ac} Chat [{}] ", app.session_name);
+    // Pre-wrap every line that exceeds the content width so that
+    // ratatui never needs to soft-wrap — each visual line is its own
+    // `Line` with the proper border prefix.  Without this, wrapped
+    // continuation lines lose the "▐ " left border.
+    let mut prewrapped: Vec<Line<'static>> = Vec::with_capacity(lines.len());
+    let mut line_orig_idx: Vec<usize> = Vec::new();
+    for (orig_idx, line) in lines.iter().enumerate() {
+        let wrapped = prewrap_line(line.clone(), content_width);
+        line_orig_idx.extend(std::iter::repeat_n(orig_idx, wrapped.len()));
+        prewrapped.extend(wrapped);
+    }
+    lines = prewrapped;
+
+    // Expand section_line_map to match prewrapped line indices
+    app.section_line_map = Vec::with_capacity(lines.len());
+    for &orig_idx in &line_orig_idx {
+        app.section_line_map
+            .push(section_line_map.get(orig_idx).cloned().flatten());
+    }
+    // Update section_info start_line indices for prewrapped positions
+    let mut updated_si: Vec<CollapsedSection> = Vec::new();
+    for section in &section_info {
+        let mut new_start = 0;
+        let mut new_line_count = lines.len(); // default: remaining lines
+        // Find first prewrapped line that belongs to this section
+        'outer: for (pw_idx, &orig_idx) in line_orig_idx.iter().enumerate() {
+            if orig_idx >= section.start_line {
+                new_start = pw_idx;
+                // Count consecutive prewrapped lines belonging to this section
+                let end_orig = section.start_line + section.line_count;
+                for (pw_idx2, &orig_idx2) in line_orig_idx.iter().enumerate().skip(pw_idx) {
+                    if orig_idx2 >= end_orig {
+                        new_line_count = pw_idx2 - pw_idx;
+                        break 'outer;
+                    }
+                }
+                new_line_count = lines.len() - pw_idx;
+                break 'outer;
+            }
+        }
+        updated_si.push(CollapsedSection {
+            start_line: new_start,
+            line_count: new_line_count,
+            ..section.clone()
+        });
+    }
+    app.section_info = updated_si;
+
+    // ── Apply collapsed sections ──
+    // If any sections are marked collapsed, replace their lines with a single
+    // summary line so the user sees a compact view.
+    if !app.collapsed_sections.is_empty() {
+        let themes = &app.theme;
+        let collapse_styles = SectionStyles {
+            border: Style::default().fg(themes.ai_border()),
+            thinking_border: Style::default().fg(themes.thinking_dim()),
+            thinking_text: Style::default()
+                .fg(themes.thinking())
+                .add_modifier(Modifier::DIM),
+            tool_border: Style::default().fg(themes.tool_border()),
+            tool_exec: Style::default().fg(themes.tool_text()),
+            tool_output: Style::default()
+                .fg(themes.tool_text())
+                .add_modifier(Modifier::DIM),
+            tool_success: Style::default().fg(themes.tool_ok()),
+            tool_error: Style::default().fg(themes.tool_err()),
+            user_border: Style::default().fg(themes.user_border()),
+            user_text: Style::default().fg(themes.user_text()),
+            command_border: Style::default().fg(themes.command_border()),
+            command_text: Style::default().fg(themes.command_text()),
+        };
+        apply_collapsed(
+            &mut lines,
+            &mut app.section_info,
+            &mut app.section_line_map,
+            &app.collapsed_sections,
+            &collapse_styles,
+        );
+    }
+
+    let title = format!(" [2] \u{1f4ac} Chat [{}] ", app.session_name);
     let chat_border = if app.focus == Focus::Chat {
         app.theme.accent()
     } else {
@@ -1436,13 +2377,36 @@ fn render_chat(f: &mut Frame, area: Rect, app: &App) {
     // Instead of using Paragraph::scroll() which can leave content hidden when
     // wrapping creates more visual lines than logical ones we pre-select the
     // subset of lines that fits the visible area then render with scroll(0,0).
-    let content_width = (area.width.saturating_sub(2)).max(1) as usize; // minus borders
     let visible = (area.height.max(2) as usize) - 2; // minus borders
+
+    // Compute the absolute line index of each code block's [copy] line
+    // so mouse clicks can be matched back.
+    {
+        let mut block_iter = app.code_block_positions.iter_mut();
+        let mut current_block = block_iter.next();
+
+        for (idx, line) in lines.iter().enumerate() {
+            let full: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            if full.contains("[copy]")
+                && let Some(b) = current_block.as_mut()
+            {
+                b.copy_line = idx;
+                current_block = block_iter.next();
+            }
+        }
+        // Fallback if last block wasn't matched
+        if let Some(b) = current_block.take() {
+            b.copy_line = lines.len().saturating_sub(1);
+        }
+    }
+
+    // Save the full rendered lines for mouse-click handling.
+    app.rendered_chat_lines = lines.clone();
 
     // Select visible portion: walk backwards from the end accumulating visual rows
     // (accounting for wrapping) until we fill the visible rows.
-    let start_idx = select_visible_start(&lines, visible, content_width, app.chat_scroll);
-    let display_lines: Vec<Line> = lines.into_iter().skip(start_idx as usize).collect();
+    let vs = select_visible_start(&lines, visible, content_width, app.chat_scroll);
+    let display_lines: Vec<Line> = lines.into_iter().skip(vs.start_idx as usize).collect();
 
     let paragraph = Paragraph::new(display_lines)
         .block(
@@ -2263,4 +3227,237 @@ pub(crate) fn copy_to_clipboard(text: &str) -> Result<(), String> {
     }
 
     Err("No clipboard tool found. Install wl-clipboard (Wayland) or xclip (X11)".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_styles() -> SectionStyles {
+        SectionStyles {
+            border: Style::default().fg(Color::White),
+            thinking_border: Style::default().fg(Color::Yellow),
+            thinking_text: Style::default().fg(Color::Gray),
+            tool_border: Style::default().fg(Color::Blue),
+            tool_exec: Style::default().fg(Color::Cyan),
+            tool_output: Style::default().fg(Color::DarkGray),
+            tool_success: Style::default().fg(Color::Green),
+            tool_error: Style::default().fg(Color::Red),
+            user_border: Style::default().fg(Color::Green),
+            user_text: Style::default().fg(Color::Green),
+            command_border: Style::default().fg(Color::Magenta),
+            command_text: Style::default().fg(Color::Magenta),
+        }
+    }
+
+    fn raw_line(s: &str) -> Line<'static> {
+        Line::from(Span::raw(s.to_string()))
+    }
+
+    /// Join all span contents of a line into one String (ignores styles).
+    fn line_text(l: &Line<'static>) -> String {
+        l.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn consecutive_same_type_sections_share_border() {
+        let styles = test_styles();
+        let mut out: Vec<Line> = Vec::new();
+        let mut buf1: Vec<Line> = vec![raw_line("a")];
+        let mut buf2: Vec<Line> = vec![raw_line("b")];
+        let mut cv = 0usize;
+        let mut last: Option<&'static str> = None;
+
+        flush_section(
+            &mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+        flush_section(
+            &mut out, &mut buf2, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+
+        let text: Vec<String> = out.iter().map(line_text).collect();
+        // Top border, content a, shared separator (bottom of first == no new
+        // top for second), content b, bottom border.
+        assert_eq!(text, vec!["▐", "a", "▐", "b", "▐"]);
+    }
+
+    #[test]
+    fn different_type_sections_each_get_top_border() {
+        let styles = test_styles();
+        let mut out: Vec<Line> = Vec::new();
+        let mut buf1: Vec<Line> = vec![raw_line("a")];
+        let mut buf2: Vec<Line> = vec![raw_line("x")];
+        let mut cv = 0usize;
+        let mut last: Option<&'static str> = None;
+
+        flush_section(
+            &mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+        flush_section(
+            &mut out, &mut buf2, "thinking", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+
+        let text: Vec<String> = out.iter().map(line_text).collect();
+        // Different types: both keep their own top border → two ▐ between a and x.
+        assert_eq!(text, vec!["▐", "a", "▐", "▐", "x", "▐"]);
+    }
+
+    #[test]
+    fn empty_buffer_does_not_update_last_flushed() {
+        let styles = test_styles();
+        let mut out: Vec<Line> = Vec::new();
+        let mut empty: Vec<Line> = Vec::new();
+        let mut cv = 0usize;
+        let mut last: Option<&'static str> = None;
+
+        flush_section(
+            &mut out, &mut empty, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+        assert!(out.is_empty());
+        assert_eq!(last, None);
+    }
+
+    #[test]
+    fn three_consecutive_same_type_blocks_merge() {
+        let styles = test_styles();
+        let mut out: Vec<Line> = Vec::new();
+        let mut buf1: Vec<Line> = vec![raw_line("a")];
+        let mut buf2: Vec<Line> = vec![raw_line("b")];
+        let mut buf3: Vec<Line> = vec![raw_line("c")];
+        let mut cv = 0usize;
+        let mut last: Option<&'static str> = None;
+
+        flush_section(
+            &mut out, &mut buf1, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+        flush_section(
+            &mut out, &mut buf2, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+        flush_section(
+            &mut out, &mut buf3, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+
+        let text: Vec<String> = out.iter().map(line_text).collect();
+        assert_eq!(text, vec!["▐", "a", "▐", "b", "▐", "c", "▐"]);
+    }
+
+    /// End-to-end: replicate the /copy output (several [normal]-wrapped
+    /// messages combined into ONE string, as flush_ai_batch does) and verify
+    /// consecutive normal blocks share a border.
+    #[test]
+    fn end_to_end_copy_output_normal_blocks_merge() {
+        let styles = test_styles();
+        let config = SectionConfig {
+            first_normal_prefix: "▐ ",
+            subsequent_normal_prefix: "▐ ",
+        };
+        let base = Style::default();
+        let hl = CodeBlockHighlighter::default();
+        let mut positions = Vec::new();
+        let mut cv = 0usize;
+
+        let combined = "[normal]\nAnacleto started.\n[/normal]\n\
+                        [normal]\nModel changed to: deepseek/deepseek-v4-flash\n[/normal]\n\
+                        [normal]\nAgent 'dev-manager' created.\n[/normal]\n\
+                        [normal]\n> /copy\n[/normal]";
+
+        let out = render_sectioned_block(
+            &combined,
+            "",
+            &config,
+            &styles,
+            base,
+            |full_line, prefix, border| {
+                let mut rendered = Line::from(Span::raw(full_line));
+                rendered.spans.insert(0, Span::styled(prefix, border));
+                rendered
+            },
+            &hl,
+            &mut positions,
+            true,
+            &mut cv,
+            80,
+            None,
+            None,
+            None,
+        );
+
+        let text: Vec<String> = out.iter().map(line_text).collect();
+        // 4 consecutive normal blocks → each subsequent block skips its top
+        // border; the previous block's bottom border acts as the separator.
+        // Result: top(1) + 4 content + 3 separators + bottom(1) = 9 lines,
+        // with 5 pure-▐ border lines (1 top + 3 shared + 1 bottom). Without
+        // the merge this would be 8 borders + 4 content = 12 lines.
+        let border_count = text.iter().filter(|l| l.as_str() == "▐").count();
+        assert_eq!(border_count, 5, "borders: {text:?}");
+        assert_eq!(text.len(), 9, "lines: {text:?}");
+        assert!(text.iter().any(|l| l.contains("Anacleto started.")));
+        assert!(text.iter().any(|l| l.contains("> /copy")));
+    }
+
+    /// `[command]` blocks render with the command border/text styles, and
+    /// consecutive command blocks share a border like other sections.
+    #[test]
+    fn generate_section_id_increments_per_type() {
+        let mut counters = HashMap::new();
+        assert_eq!(generate_section_id("thinking", &mut counters), "thinking_1");
+        assert_eq!(generate_section_id("thinking", &mut counters), "thinking_2");
+        assert_eq!(generate_section_id("tool", &mut counters), "tool_1");
+        assert_eq!(generate_section_id("thinking", &mut counters), "thinking_3");
+        assert_eq!(generate_section_id("normal", &mut counters), "normal_1");
+    }
+
+    #[test]
+    fn command_sections_render_with_command_styles_and_merge() {
+        let styles = test_styles();
+        let config = SectionConfig {
+            first_normal_prefix: "▐ ",
+            subsequent_normal_prefix: "▐ ",
+        };
+        let base = Style::default();
+        let hl = CodeBlockHighlighter::default();
+        let mut positions = Vec::new();
+        let mut cv = 0usize;
+
+        let content = "[command]\n> /copy\n[/command]\n[command]\n> /sessions\n[/command]";
+        let out = render_sectioned_block(
+            &content,
+            "",
+            &config,
+            &styles,
+            base,
+            |full_line, prefix, border| {
+                let mut rendered = Line::from(Span::raw(full_line));
+                rendered.spans.insert(0, Span::styled(prefix, border));
+                rendered
+            },
+            &hl,
+            &mut positions,
+            true,
+            &mut cv,
+            80,
+            None,
+            None,
+            None,
+        );
+
+        let text: Vec<String> = out.iter().map(line_text).collect();
+        // 2 consecutive command blocks → shared border: top + 2 content +
+        // 1 separator + bottom = 5 lines, 3 pure-▐ borders.
+        assert_eq!(text.len(), 5, "lines: {text:?}");
+        let border_count = text.iter().filter(|l| l.as_str() == "▐").count();
+        assert_eq!(border_count, 3, "borders: {text:?}");
+        assert!(text.iter().any(|l| l.contains("> /copy")));
+        assert!(text.iter().any(|l| l.contains("> /sessions")));
+
+        // Command lines are styled with the command (magenta) styles.
+        let copy_line = out
+            .iter()
+            .find(|l| line_text(l).contains("> /copy"))
+            .expect("command line");
+        let border_span = &copy_line.spans[0];
+        assert_eq!(border_span.style.fg, Some(Color::Magenta));
+        let text_span = &copy_line.spans[1];
+        assert_eq!(text_span.style.fg, Some(Color::Magenta));
+    }
 }

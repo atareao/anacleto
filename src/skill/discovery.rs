@@ -46,13 +46,15 @@ fn scan_skills_dir(dir: &PathBuf, skills: &mut Vec<DiscoveredSkill>) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() && path.join("SKILL.md").is_file()
-                && let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    skills.push(DiscoveredSkill {
-                        name: name.to_string(),
-                        source_dir: path,
-                    });
-                }
+            if path.is_dir()
+                && path.join("SKILL.md").is_file()
+                && let Some(name) = path.file_name().and_then(|n| n.to_str())
+            {
+                skills.push(DiscoveredSkill {
+                    name: name.to_string(),
+                    source_dir: path,
+                });
+            }
         }
     }
 }

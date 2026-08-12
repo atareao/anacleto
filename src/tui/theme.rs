@@ -74,13 +74,13 @@ impl Theme {
         }
     }
 
-    /// Lighter variant of `tool_text` for finalized/committed messages.
-    pub(crate) fn tool_text_dim(&self) -> Color {
+    /// Color for thinking/reasoning text.
+    pub(crate) fn thinking(&self) -> Color {
         match self {
-            Theme::Default => Color::Rgb(140, 180, 210),
-            Theme::Nord => Color::Rgb(145, 170, 205),
-            Theme::Dracula => Color::Rgb(150, 160, 200),
-            Theme::Solarized => Color::Rgb(135, 155, 160),
+            Theme::Default => Color::Rgb(180, 180, 180),
+            Theme::Nord => Color::Rgb(180, 185, 195),
+            Theme::Dracula => Color::Rgb(200, 200, 210),
+            Theme::Solarized => Color::Rgb(170, 170, 170),
         }
     }
 
@@ -94,16 +94,6 @@ impl Theme {
         }
     }
 
-    /// Dimmed variant of `tool_ok` for finalized (non-streaming) messages.
-    pub(crate) fn tool_ok_dim(&self) -> Color {
-        match self {
-            Theme::Default => Color::Rgb(90, 160, 90),
-            Theme::Nord => Color::Rgb(110, 140, 90),
-            Theme::Dracula => Color::Rgb(50, 180, 80),
-            Theme::Solarized => Color::Rgb(90, 105, 0),
-        }
-    }
-
     /// Color for tool failure markers (❌).
     pub(crate) fn tool_err(&self) -> Color {
         match self {
@@ -114,26 +104,6 @@ impl Theme {
         }
     }
 
-    /// Dimmed variant of `tool_err` for finalized (non-streaming) messages.
-    pub(crate) fn tool_err_dim(&self) -> Color {
-        match self {
-            Theme::Default => Color::Rgb(180, 90, 90),
-            Theme::Nord => Color::Rgb(140, 60, 70),
-            Theme::Dracula => Color::Rgb(180, 50, 50),
-            Theme::Solarized => Color::Rgb(155, 30, 30),
-        }
-    }
-
-    /// Color for thinking/reasoning text.
-    pub(crate) fn thinking(&self) -> Color {
-        match self {
-            Theme::Default => Color::Rgb(180, 180, 180),
-            Theme::Nord => Color::Rgb(180, 185, 195),
-            Theme::Dracula => Color::Rgb(200, 200, 210),
-            Theme::Solarized => Color::Rgb(170, 170, 170),
-        }
-    }
-
     /// Dimmed variant of `thinking` for borders and finalized messages.
     pub(crate) fn thinking_dim(&self) -> Color {
         match self {
@@ -141,6 +111,49 @@ impl Theme {
             Theme::Nord => Color::Rgb(130, 135, 145),
             Theme::Dracula => Color::Rgb(140, 140, 150),
             Theme::Solarized => Color::Rgb(110, 110, 110),
+        }
+    }
+
+    /// Border color (▐) for user input blocks.
+    /// Green tones to distinguish from AI (golden), thinking (grey), and tool (blue).
+    pub(crate) fn user_border(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(80, 200, 120),
+            Theme::Nord => Color::Rgb(143, 188, 143),
+            Theme::Dracula => Color::Rgb(80, 250, 123),
+            Theme::Solarized => Color::Rgb(133, 153, 0),
+        }
+    }
+
+    /// Text color for user input lines.
+    pub(crate) fn user_text(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(80, 200, 120),
+            Theme::Nord => Color::Rgb(143, 188, 143),
+            Theme::Dracula => Color::Rgb(80, 250, 123),
+            Theme::Solarized => Color::Rgb(133, 153, 0),
+        }
+    }
+
+    /// Border color (▐) for command blocks (`/cmd`).
+    /// Magenta/violet tones to distinguish from user (green), AI (golden),
+    /// thinking (grey), and tool (blue).
+    pub(crate) fn command_border(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(200, 120, 255),
+            Theme::Nord => Color::Rgb(180, 142, 173),
+            Theme::Dracula => Color::Rgb(255, 121, 198),
+            Theme::Solarized => Color::Rgb(108, 113, 196),
+        }
+    }
+
+    /// Text color for command lines.
+    pub(crate) fn command_text(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(200, 120, 255),
+            Theme::Nord => Color::Rgb(180, 142, 173),
+            Theme::Dracula => Color::Rgb(255, 121, 198),
+            Theme::Solarized => Color::Rgb(108, 113, 196),
         }
     }
 }

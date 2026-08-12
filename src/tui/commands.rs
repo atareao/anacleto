@@ -15,7 +15,6 @@ use super::types::InitFlow;
 use crate::db::models::SessionSummary;
 use crate::engine::orchestrator::{EngineCommand, ExportFormat, InitAnswers};
 use crate::engine::template::expand_vars;
-use ratatui_textarea::TextArea;
 
 impl App {
     /// Process a line of input — check for slash commands or send to engine.
@@ -439,7 +438,7 @@ impl App {
             "/stash" => match parts.get(1) {
                 Some(&"pop") => {
                     if let Some(saved) = self.stash_stack.pop() {
-                        self.textarea = TextArea::from([saved.as_str()]);
+                        self.set_textarea_text(saved.as_str());
                         self.push_msg("> /stash pop — restored prompt.");
                     } else {
                         self.push_msg("> /stash pop — nothing stashed.");
@@ -460,7 +459,7 @@ impl App {
                         self.push_msg("> /stash — nothing to stash.");
                     } else {
                         self.stash_stack.push(self.textarea.lines().join("\n"));
-                        self.textarea = TextArea::default();
+                        self.reset_textarea();
                         self.push_msg(format!(
                             "> /stash — saved ({} stashed).",
                             self.stash_stack.len()
@@ -531,7 +530,7 @@ impl App {
         }
         self.open_file_in_editor(&tmp);
         if let Ok(contents) = std::fs::read_to_string(&tmp) {
-            self.textarea = TextArea::from([contents.trim_end_matches('\n')]);
+            self.set_textarea_text(contents.trim_end_matches('\n'));
         }
         let _ = std::fs::remove_file(&tmp);
     }
@@ -584,7 +583,7 @@ impl App {
             return;
         };
         let answer = self.textarea.lines().join("\n");
-        self.textarea = TextArea::default();
+        self.reset_textarea();
         match flow.step {
             0 => flow.name = answer,
             1 => flow.description = answer,

@@ -57,14 +57,16 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffEntry> {
             let path = rest.trim_start_matches("a/").to_string();
             // Consume the `+++` line if present.
             if let Some(next) = lines.peek()
-                && next.starts_with("+++ ") {
-                    lines.next();
-                }
+                && next.starts_with("+++ ")
+            {
+                lines.next();
+            }
             // Finalize any previous entry/hunk.
             if let Some(hunk) = current_hunk.take()
-                && let Some(entry) = current.as_mut() {
-                    entry.hunks.push(hunk);
-                }
+                && let Some(entry) = current.as_mut()
+            {
+                entry.hunks.push(hunk);
+            }
             if let Some(entry) = current.take() {
                 entries.push(entry);
             }
@@ -92,9 +94,10 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffEntry> {
         if line.starts_with("@@") {
             // New hunk.
             if let Some(hunk) = current_hunk.take()
-                && let Some(entry) = current.as_mut() {
-                    entry.hunks.push(hunk);
-                }
+                && let Some(entry) = current.as_mut()
+            {
+                entry.hunks.push(hunk);
+            }
             current_hunk = Some(DiffHunk {
                 header: line.to_string(),
                 lines: Vec::new(),
@@ -130,9 +133,10 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffEntry> {
 
     // Finalize the last hunk/entry.
     if let Some(hunk) = current_hunk.take()
-        && let Some(entry) = current.as_mut() {
-            entry.hunks.push(hunk);
-        }
+        && let Some(entry) = current.as_mut()
+    {
+        entry.hunks.push(hunk);
+    }
     if let Some(entry) = current.take() {
         entries.push(entry);
     }
