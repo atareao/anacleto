@@ -189,6 +189,7 @@ pub(crate) fn parse_inline_with_syntect(
 }
 
 /// Parse inline markdown tokens: `**bold**`, `*italic*`, `` `code` ``
+#[cfg(test)]
 pub(crate) fn parse_inline(text: &str, base_style: Style) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let chars: Vec<char> = text.chars().collect();
@@ -371,7 +372,9 @@ pub(crate) fn render_table_block(
     };
 
     // Helper: render a row of cells as a Line with styled spans.
-    // Each cell's content is parsed through parse_inline for bold/italic/code.
+    // Each cell's content is rendered as plain text (markdown tokens are
+    // stripped for accurate width measurement). The display_text is
+    // truncated to fit the column width when necessary.
     let render_row = |cells: &[String], style: Style| -> Line<'static> {
         let mut spans: Vec<Span<'static>> = Vec::new();
 
@@ -395,9 +398,8 @@ pub(crate) fn render_table_block(
             // Space before cell content
             spans.push(Span::styled(" ".to_string(), border_style));
 
-            // Parse cell content for inline markdown
-            let cell_spans = parse_inline(cell, style);
-            spans.extend(cell_spans);
+            // Render the (possibly truncated) display text
+            spans.push(Span::styled(display_text, style));
 
             // Padding to fill remaining column width (based on visual width)
             let padding = w.saturating_sub(display_width);

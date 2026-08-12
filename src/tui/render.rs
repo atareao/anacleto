@@ -962,11 +962,14 @@ struct SectionConfig {
 }
 
 /// Helper: flush accumulated table lines into styled output.
+#[allow(clippy::too_many_arguments)]
 fn flush_table(
     out: &mut Vec<Line>,
     table_buffer: &mut Vec<String>,
     first_normal: &mut bool,
     section_has_content: &mut bool,
+    cumulative_visual: &mut usize,
+    content_width: usize,
     prefix: &'static str,
     border_style: Style,
     cell_style: Style,
@@ -977,6 +980,9 @@ fn flush_table(
     let table_lines: Vec<&str> = table_buffer.iter().map(|s| s.as_str()).collect();
     let table_rows = render_table_block(&table_lines, prefix, border_style, cell_style);
     let count = table_rows.len();
+    for row in &table_rows {
+        *cumulative_visual += visual_line_count(row, content_width);
+    }
     out.extend(table_rows);
     table_buffer.clear();
     *first_normal = false;
@@ -1285,6 +1291,8 @@ fn render_sectioned_block(
                 &mut table_buffer,
                 &mut first_normal,
                 &mut section_has_content,
+                cumulative_visual,
+                content_width,
                 p,
                 styles.border,
                 table_cell_style,
@@ -1691,6 +1699,8 @@ fn render_sectioned_block(
                 &mut table_buffer,
                 &mut first_normal,
                 &mut section_has_content,
+                cumulative_visual,
+                content_width,
                 p,
                 styles.border,
                 table_cell_style,
@@ -1727,6 +1737,8 @@ fn render_sectioned_block(
         &mut table_buffer,
         &mut first_normal,
         &mut section_has_content,
+        cumulative_visual,
+        content_width,
         p,
         styles.border,
         table_cell_style,
