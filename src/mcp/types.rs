@@ -37,7 +37,7 @@ pub struct McpTool {
     /// Tool description.
     pub description: String,
     /// JSON Schema for tool parameters.
-    #[serde(default)]
+    #[serde(default, rename = "inputSchema")]
     pub input_schema: serde_json::Value,
 }
 

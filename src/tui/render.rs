@@ -3472,4 +3472,54 @@ mod tests {
         let text_span = &copy_line.spans[1];
         assert_eq!(text_span.style.fg, Some(Color::Magenta));
     }
+
+    #[test]
+    fn table_renders_in_normal_section() {
+        let styles = test_styles();
+        let config = SectionConfig {
+            first_normal_prefix: "▐ ",
+            subsequent_normal_prefix: "▐ ",
+        };
+        let base = Style::default();
+        let hl = CodeBlockHighlighter::default();
+        let mut positions = Vec::new();
+        let mut cv = 0usize;
+
+        // Plain text with a table (no [normal] markers — just raw content)
+        let content = "Here is a table:\n| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\nEnd of table.";
+        let out = render_sectioned_block(
+            &content,
+            "",
+            &config,
+            &styles,
+            base,
+            |full_line, prefix, border| {
+                let mut rendered = Line::from(Span::raw(full_line));
+                rendered.spans.insert(0, Span::styled(prefix, border));
+                rendered
+            },
+            &hl,
+            &mut positions,
+            true,
+            &mut cv,
+            80,
+            None,
+            None,
+            None,
+        );
+
+        let text: Vec<String> = out.iter().map(line_text).collect();
+        eprintln!("=== table_renders_in_normal_section ===");
+        for (i, t) in text.iter().enumerate() {
+            eprintln!("  {}: {}", i, t);
+        }
+
+        // Should contain box-drawing characters (table rendered)
+        let has_box_drawing = text.iter().any(|l| l.contains('\u{250c}') || l.contains('\u{2510}') || l.contains('\u{2502}'));
+        assert!(has_box_drawing, "No box-drawing chars found in output: {text:?}");
+
+        // Should contain table content
+        assert!(text.iter().any(|l| l.contains("A") && l.contains("B")));
+        assert!(text.iter().any(|l| l.contains("1") && l.contains("2")));
+    }
 }
