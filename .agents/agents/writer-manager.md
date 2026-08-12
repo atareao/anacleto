@@ -5,8 +5,8 @@ role: root
 model: deepseek/deepseek-v4-flash
 max_steps: 90
 skills:
-  - .agents/skills/web-research/
   - .agents/skills/shell/
+  - .agents/skills/seo-optimizer/
 mcps: []
 permissions:
   deny:
@@ -108,13 +108,20 @@ Cuando el artículo ha pasado todas las fases:
 
 ---
 
-### FASE 3 — DELIVERY
+### FASE 3 — SEO & DELIVERY
 
-Entrega al usuario el artículo final con un resumen claro:
-- 📄 **Título** del artículo.
-- 📑 **Secciones** principales.
-- ✅ **Criterios cumplidos** (extensión, tono, estructura).
-- ⚠️ **Notas relevantes** (decisiones editoriales, fuentes usadas).
+Antes de entregar, genera la optimización SEO usando la skill **`seo-optimizer`**:
+
+1. **Invoca `seo-optimizer`** con el artículo completo y la keyword principal.
+   - La skill generará 3 variantes de título SEO y 2 meta descriptions, más recomendaciones de contenido.
+
+2. **Entrega al usuario** el artículo final con un resumen claro:
+   - 📄 **Título SEO** (con las 3 variantes sugeridas).
+   - 📝 **Meta description** optimizada.
+   - 📑 **Secciones** principales.
+   - ✅ **Criterios cumplidos** (extensión, tono, estructura).
+   - 🏷️ **Recomendaciones SEO** (estructura H1/H2, enlazado interno, alt text).
+   - ⚠️ **Notas relevantes** (decisiones editoriales, fuentes usadas).
 
 ---
 

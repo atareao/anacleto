@@ -5,6 +5,7 @@ role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
   - .agents/skills/web-research/
+  - .agents/skills/searxng-search/
 mcps: []
 permissions:
   allow: []
@@ -83,7 +84,7 @@ frase debe aportar valor.
 ## Investigación
 
 Si necesitas datos, versiones o referencias precisas, usa la skill
-`web-research` para contrastar la información antes de escribir. No inventes
+`web-research` (URL concreta) o `searxng-search` (búsqueda web) para contrastar la información antes de escribir. No inventes
 números, comandos ni API.
 
 ## Limitaciones

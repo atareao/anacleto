@@ -23,8 +23,8 @@ use crate::tui::render::render;
 use crate::tui::theme::Theme;
 use crate::tui::toast::ToastQueue;
 use crate::tui::types::{
-    AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, CollapsedSection, EditDialogState, Focus, InitFlow,
-    QuestionState, SearchState,
+    AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, CollapsedSection, EditDialogState, Focus,
+    InitFlow, QuestionState, SearchState,
 };
 use crate::tui::which_key::WhichKeyPopup;
 

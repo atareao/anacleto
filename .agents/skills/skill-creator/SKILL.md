@@ -1,11 +1,12 @@
 ---
 name: skill-creator
 description: |
-  Create new skills, modify and improve existing skills, and measure skill performance.
-  Use when users want to create a skill from scratch, edit, or optimize an existing skill,
-  run evals to test a skill, or benchmark skill performance.
+  Crea, modifica y optimiza skills investigando primero el dominio con SearXNG
+  para basarlas en datos reales y mejores prácticas actuales.
+  Úsala cuando quieras crear una skill nueva, mejorar una existente,
+  o documentar un workflow recurrente como skill reutilizable.
 metadata:
-  version: "1.0"
+  version: "1.1"
   category: development
   risk: low
 ---
@@ -50,6 +51,31 @@ Clarify these points:
 4. What tools or external resources does it need?
 5. What are the boundaries? (what should it NOT do)
 6. What constitutes a success vs. a failure?
+
+### 1b. Research (nueva)
+
+**Antes de escribir nada, investiga el dominio de la skill usando `searxng-search` y `web-research`.**
+
+Una skill basada en datos reales es mucho más valiosa que una basada solo en conocimiento interno.
+
+#### Qué investigar
+
+| Dominio de la skill | Búsqueda recomendada |
+|---|---|
+| **Técnico** (herramientas, lenguajes, frameworks) | Busca documentación oficial, mejores prácticas, versiones actuales. Usa `general,it` + `language=en` |
+| **SEO / Marketing / Contenido** | Busca guías actualizadas, estudios con datos, benchmarks. Usa `general,news` + `time_range=year` |
+| **Científico / Académico** | Busca papers, reviews, meta-análisis. Usa `science` |
+| **Desarrollo / APIs** | Busca repositorios de referencia, documentación de APIs, ejemplos. Usa `it,repos,packages` |
+| **Noticias / Tendencias** | Busca artículos recientes, cambios en el sector. Usa `news` + `time_range=month` |
+
+#### Proceso
+
+1. **Busca** con `searxng-search` usando términos relacionados con el dominio de la skill.
+2. **Fetchea** las 2-3 fuentes más prometedoras con `web-research`.
+3. **Extrae** datos concretos: cifras, fechas, versiones, reglas, ejemplos.
+4. **Incorpora** las fuentes en la skill como referencias citables (tablas con columna "Fuente").
+
+> 💡 **Ejemplo real:** Cuando creamos `seo-optimizer`, investigar con SearXNG nos permitió descubrir que Google reescribe el 76% de los title tags (Search Engine Land 2025) y que títulos de 60-70 caracteres tienen 35% más CTR en YouTube (TubeBuddy 2024).
 
 ### 2. Write a Draft
 

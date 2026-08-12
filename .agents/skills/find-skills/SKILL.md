@@ -1,12 +1,12 @@
 ---
 name: find-skills
 description: |
-  Busca y descubre skills instaladas localmente en el ecosistema Anacleto y
-  en el registro público de skills.sh (mattpocock/skills).
+  Busca y descubre skills instaladas localmente, en skills.sh (mattpocock/skills)
+  y en la web mediante SearXNG.
   Úsala cuando el usuario pregunte "cómo hago X", "busca una skill para X",
   "hay una skill que pueda...", o quiera extender las capacidades del agente.
 metadata:
-  version: "1.1"
+  version: "1.2"
   category: system
   risk: low
 ---
@@ -33,6 +33,7 @@ Anacleto busca skills en estas rutas, por orden de prioridad:
 | `~/.config/anacleto/skills/<name>/SKILL.md` | Global (usuario) | Skills globales del usuario |
 | `~/.config/anacleto/agents/<name>.md` | Global (agentes) | Definiciones de agentes (también tienen frontmatter) |
 | `https://github.com/mattpocock/skills` | Remoto (skills.sh) | Registro público de Matt Pocock (~51 skills) |
+| `https://searxng.one.belcar.corp` | Web (SearXNG) | Búsqueda web en GitHub, blogs, foros, documentación |
 
 > [!NOTE]
 > skills.sh NO tiene API JSON pública. Para acceder a sus skills usamos
@@ -259,6 +260,28 @@ for cat in engineering in-progress misc productivity; do
   done
 done
 ```
+
+### Paso 4b: Buscar en la web con SearXNG
+
+Si las skills locales y skills.sh no tienen lo que buscas, **usa `searxng-search` para buscar skills en la web**:
+
+| Escenario | Búsqueda recomendada | Categoría |
+|---|---|---|
+| Skill técnica (testing, devops, deploy) | `anthropics/skills [dominio]` | `general,it,repos` |
+| Skill de productividad | `skills.sh [acción]` | `general` |
+| Alternativas a skills conocidas | `[tarea] AI agent skill` | `general,news` |
+| Inspiración para crear skill nueva | `[dominio] best practices guide` | `general` |
+| Skills de terceros en GitHub | `site:github.com skill [dominio]` | `general,it` |
+
+#### Proceso
+
+1. **Busca** con `searxng-search` usando los términos según el dominio.
+2. **Revisa** los resultados: repos de GitHub, blogs técnicos, documentación.
+3. Si encuentras una skill publicada, **fetchea** el contenido con `web-research`.
+4. **Evalúa** si es compatible con formato Anacleto (Markdown + YAML frontmatter).
+5. Si no existe una skill específica, **informa al usuario** y sugiere crear una con `skill-creator`.
+
+> 💡 **Ejemplo real:** Para crear `seo-optimizer`, no encontramos skills existentes. Investigamos con SearXNG las mejores prácticas (Search Engine Land, Ahrefs, Moz) y creamos la skill desde cero con datos reales.
 
 ### Paso 5: Mostrar resultados al usuario
 

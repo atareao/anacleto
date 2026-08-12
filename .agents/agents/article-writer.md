@@ -5,6 +5,7 @@ role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
   - .agents/skills/web-research/
+  - .agents/skills/searxng-search/
 mcps: []
 permissions:
   allow: []
@@ -56,4 +57,4 @@ artículo técnico completo, en Markdown, con la voz editorial del sitio.
 - No escribas archivos: entregas el contenido en texto (Markdown).
 - No ejecutes comandos.
 - No inventes detalles técnicos: si algo es incierto, márcalo y pregunta.
-- Si necesitas contrastar un dato puntual, usa la skill `web-research`.
+- Si necesitas contrastar un dato puntual, usa `web-research` (URL concreta) o `searxng-search` (búsqueda web).

@@ -5,6 +5,7 @@ role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
   - .agents/skills/web-research/
+  - .agents/skills/searxng-search/
 mcps: []
 permissions:
   allow: []
@@ -37,8 +38,7 @@ de base para redactar un artículo.
 
 ## Reglas
 
-- Usa SIEMPRE la skill `web-research` para contrastar la información. No te fíes
-  solo de tu conocimiento interno.
+- Usa SIEMPRE `web-research` (para URLs concretas) o `searxng-search` (para búsquedas) para contrastar la información. No te fíes solo de tu conocimiento interno.
 - Prioriza fuentes primarias (documentación oficial, repos oficiales, releases)
   sobre blogs o foros.
 - Distingue claramente entre hecho verificado, opinión y suposición.

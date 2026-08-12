@@ -20,9 +20,9 @@ use super::markdown::{
     render_markdown_line_with_syntect, render_table_block, select_visible_start, visual_line_count,
 };
 use super::palette::{render_agent_palette, render_command_palette, render_model_palette};
-use std::collections::{HashMap, HashSet};
 use super::types::{AgentInfo, CollapsedSection, Focus};
 use crate::agent::types::{AgentRole, AgentStatus, TaskMode};
+use std::collections::{HashMap, HashSet};
 
 /// Render the TUI.
 pub(crate) fn render(f: &mut Frame, app: &mut App) {
@@ -1103,9 +1103,10 @@ fn flush_section(
             }
         }
         if let Some(ref sec_id) = section_id
-            && let Some(entry) = si_vec.iter_mut().rev().find(|s| s.id == *sec_id) {
-                entry.line_count = total_lines;
-            }
+            && let Some(entry) = si_vec.iter_mut().rev().find(|s| s.id == *sec_id)
+        {
+            entry.line_count = total_lines;
+        }
     }
 
     *last_flushed = Some(section_type);
@@ -2020,10 +2021,7 @@ fn apply_collapsed(
             // Keep section_line_map in sync: remove the old entries, insert
             // one entry for the summary line.
             let section_id = section_info[i].id.clone();
-            section_line_map.splice(
-                adj_start..end,
-                std::iter::repeat_n(Some(section_id), 1),
-            );
+            section_line_map.splice(adj_start..end, std::iter::repeat_n(Some(section_id), 1));
 
             // Update section metadata — keep original line_count for
             // the click handler (toast) which reads it before next render.
@@ -3270,8 +3268,12 @@ mod tests {
         let mut cv = 0usize;
         let mut last: Option<&'static str> = None;
 
-        flush_section(&mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last, None, None, None);
-        flush_section(&mut out, &mut buf2, "tool", &styles, &mut cv, 80, &mut last, None, None, None);
+        flush_section(
+            &mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+        flush_section(
+            &mut out, &mut buf2, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
         // Top border, content a, shared separator (bottom of first == no new
@@ -3288,12 +3290,11 @@ mod tests {
         let mut cv = 0usize;
         let mut last: Option<&'static str> = None;
 
-        flush_section(&mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last, None, None, None);
         flush_section(
-            &mut out, &mut buf2, "thinking", &styles, &mut cv, 80, &mut last,
-        None,
-        None,
-        None,
+            &mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+        );
+        flush_section(
+            &mut out, &mut buf2, "thinking", &styles, &mut cv, 80, &mut last, None, None, None,
         );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
@@ -3310,10 +3311,7 @@ mod tests {
         let mut last: Option<&'static str> = None;
 
         flush_section(
-            &mut out, &mut empty, "tool", &styles, &mut cv, 80, &mut last,
-        None,
-        None,
-        None,
+            &mut out, &mut empty, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
         );
         assert!(out.is_empty());
         assert_eq!(last, None);
@@ -3330,22 +3328,13 @@ mod tests {
         let mut last: Option<&'static str> = None;
 
         flush_section(
-            &mut out, &mut buf1, "normal", &styles, &mut cv, 80, &mut last,
-        None,
-        None,
-        None,
+            &mut out, &mut buf1, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
         );
         flush_section(
-            &mut out, &mut buf2, "normal", &styles, &mut cv, 80, &mut last,
-        None,
-        None,
-        None,
+            &mut out, &mut buf2, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
         );
         flush_section(
-            &mut out, &mut buf3, "normal", &styles, &mut cv, 80, &mut last,
-        None,
-        None,
-        None,
+            &mut out, &mut buf3, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
         );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
