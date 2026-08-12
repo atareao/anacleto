@@ -712,7 +712,13 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::DarkGray),
         )))]
     } else {
-        display_agents
+        // First pass: build each line and measure prefix width for alignment.
+        struct AgentLine<'a> {
+            spans: Vec<Span<'a>>,
+            prefix_width: usize,
+        }
+
+        let lines: Vec<AgentLine<'_>> = display_agents
             .iter()
             .enumerate()
             .map(|(i, a)| {
@@ -725,17 +731,6 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                     AgentStatus::Completed => ("✅", Color::DarkGray),
                     AgentStatus::Error(_) => ("❌", Color::Red),
                 };
-                let role = match a.role {
-                    AgentRole::Root => "Root",
-                    AgentRole::SubAgent => "SubAgent",
-                };
-                let status_str = match &a.status {
-                    AgentStatus::Working => "working",
-                    AgentStatus::Idle => "idle",
-                    AgentStatus::WaitingForSubAgent => "waiting",
-                    AgentStatus::Completed => "done",
-                    AgentStatus::Error(_) => "error",
-                };
                 // Selected rows get the accent background (matching the Skills
                 // panel), applied to every span so the whole row is highlighted.
                 let sel = |s: Style| -> Style {
@@ -745,61 +740,100 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                         s
                     }
                 };
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        if active { "▶ " } else { "  " },
-                        sel(Style::default()
-                            .fg(Color::Magenta)
-                            .add_modifier(Modifier::BOLD)),
-                    ),
-                    Span::styled(
-                        format!(" {} ", dot),
-                        sel(Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
-                    ),
-                    Span::styled(
-                        &a.name,
-                        sel(Style::default()
-                            .fg(if active { Color::Magenta } else { Color::White })
-                            .add_modifier(Modifier::BOLD)),
-                    ),
-                    if a.status == AgentStatus::Working {
-                        Span::styled(
-                            format!(
-                                " {}",
-                                SPINNER_FRAMES[(app.frame_count as usize) % SPINNER_FRAMES.len()]
-                            ),
-                            sel(Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD)),
-                        )
-                    } else {
-                        Span::raw("")
-                    },
-                    Span::styled(
-                        format!(" [{}]", role),
+
+                let role_emoji = match a.role {
+                    AgentRole::Root => "🧠",
+                    AgentRole::SubAgent => "🔧",
+                };
+                let mode_emoji = a.mode.as_ref().map(|m| match m {
+                    TaskMode::Foreground => "⬆️",
+                    TaskMode::Background => "⬇️",
+                });
+
+                let mut spans = Vec::new();
+                let mut prefix_width: usize = 0;
+
+                // 1. Active indicator
+                let active_str = if active { "👉 " } else { "   " };
+                prefix_width += active_str.width();
+                spans.push(Span::styled(
+                    active_str,
+                    sel(Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD)),
+                ));
+
+                // 2. Role emoji
+                let role_str = format!("{} ", role_emoji);
+                prefix_width += role_str.width();
+                spans.push(Span::styled(
+                    role_str,
+                    sel(Style::default().fg(Color::DarkGray)),
+                ));
+
+                // 3. Mode emoji (only for subagents)
+                if let Some(emoji) = mode_emoji {
+                    let mode_str = format!("{} ", emoji);
+                    prefix_width += mode_str.width();
+                    spans.push(Span::styled(
+                        mode_str,
                         sel(Style::default().fg(Color::DarkGray)),
-                    ),
-                    Span::styled(
-                        format!(" [{}]", a.agent_type.as_deref().unwrap_or("generic")),
-                        sel(Style::default().fg(Color::Cyan)),
-                    ),
-                    if let Some(mode) = &a.mode {
-                        let label = match mode {
-                            TaskMode::Foreground => "fg",
-                            TaskMode::Background => "bg",
-                        };
-                        Span::styled(
-                            format!(" ({label})"),
-                            sel(Style::default().fg(Color::DarkGray)),
-                        )
-                    } else {
-                        Span::raw("")
-                    },
-                    Span::styled(
-                        format!(" ({})", status_str),
-                        sel(Style::default().fg(dot_color)),
-                    ),
-                ]))
+                    ));
+                }
+
+                // 4. Status emoji
+                let status_str = format!("{} ", dot);
+                prefix_width += status_str.width();
+                spans.push(Span::styled(
+                    status_str,
+                    sel(Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
+                ));
+
+                // 5. Spinner (only when Working)
+                if a.status == AgentStatus::Working {
+                    let spinner_str = format!(
+                        "{} ",
+                        SPINNER_FRAMES[(app.frame_count as usize) % SPINNER_FRAMES.len()]
+                    );
+                    prefix_width += spinner_str.width();
+                    spans.push(Span::styled(
+                        spinner_str,
+                        sel(Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)),
+                    ));
+                }
+
+                // 6. Agent name (not counted in prefix_width)
+                spans.push(Span::styled(
+                    format!(" {}", a.name),
+                    sel(Style::default()
+                        .fg(if active { Color::Magenta } else { Color::White })
+                        .add_modifier(Modifier::BOLD)),
+                ));
+
+                AgentLine {
+                    spans,
+                    prefix_width,
+                }
+            })
+            .collect();
+
+        // Find the maximum prefix width for alignment.
+        let max_prefix = lines.iter().map(|l| l.prefix_width).max().unwrap_or(0);
+
+        // Second pass: add padding before the name so all names align.
+        lines
+            .into_iter()
+            .map(|line| {
+                let padding = max_prefix.saturating_sub(line.prefix_width);
+                let mut spans = line.spans;
+                if padding > 0 {
+                    // Insert padding span right before the name (last element).
+                    let name_idx = spans.len() - 1;
+                    spans.insert(name_idx, Span::raw(" ".repeat(padding)));
+                }
+                ListItem::new(Line::from(spans))
             })
             .collect()
     };
@@ -1011,9 +1045,51 @@ pub(crate) fn generate_section_id(
     format!("{}_{}", section_type, entry)
 }
 
+/// Trim leading and trailing blank lines from a section buffer.
+/// A line is considered blank when all its content spans are empty or
+/// whitespace-only. When the line has a known prefix span (first span),
+/// only the content spans after the prefix are checked.
+fn trim_blank_lines(buffer: &mut Vec<Line<'static>>) {
+    let is_blank = |line: &Line| -> bool {
+        if line.spans.len() <= 1 {
+            // No prefix span — check all content
+            line.spans.iter().all(|s| s.content.trim().is_empty())
+        } else {
+            // Skip the first span (▐ prefix) and check the rest
+            line.spans
+                .iter()
+                .skip(1)
+                .all(|s| s.content.trim().is_empty())
+        }
+    };
+
+    // Trim leading blank lines
+    let first = buffer.iter().position(|line| !is_blank(line));
+    match first {
+        Some(0) => {} // already starts with content
+        Some(idx) => {
+            buffer.drain(0..idx);
+        }
+        None => {
+            // All lines are blank — clear the buffer entirely
+            buffer.clear();
+            return;
+        }
+    }
+
+    // Trim trailing blank lines
+    let last = buffer.iter().rposition(|line| !is_blank(line));
+    if let Some(idx) = last {
+        buffer.truncate(idx + 1);
+    }
+}
+
 /// Flush a section (thinking/tool) into the output, always showing full content
-/// with a top border, content lines (each with a ▐ prefix from the caller),
-/// and a bottom border. No collapse/expand toggle.
+/// with a top border and content lines (each with a ▐ prefix from the caller).
+/// No bottom border and no collapse/expand toggle.
+///
+/// Leading and trailing blank lines in the section buffer are automatically
+/// trimmed so that whitespace-only padding around the content is removed.
 ///
 /// `cumulative_visual` is updated in-place as lines are emitted.
 /// When `section_line_map`, `section_info`, and `counters` are provided,
@@ -1026,11 +1102,17 @@ fn flush_section(
     styles: &SectionStyles,
     cumulative_visual: &mut usize,
     content_width: usize,
-    last_flushed: &mut Option<&'static str>,
     mut section_line_map: Option<&mut Vec<Option<String>>>,
     mut section_info: Option<&mut Vec<CollapsedSection>>,
     mut counters: Option<&mut HashMap<String, u32>>,
 ) {
+    if buffer.is_empty() {
+        return;
+    }
+
+    // Strip leading and trailing blank lines so whitespace-only padding
+    // around the actual content doesn't create visual gaps.
+    trim_blank_lines(buffer);
     if buffer.is_empty() {
         return;
     }
@@ -1049,38 +1131,29 @@ fn flush_section(
     let track = slm.is_some() && si.is_some() && cnt.is_some();
 
     let mut section_id: Option<String> = None;
-    let start_line: usize;
 
-    // Top border — skipped when the previous flushed section had the same
-    // type, so consecutive blocks of the same kind read as one continuous
-    // section (the previous block's bottom border acts as the separator).
-    if *last_flushed != Some(section_type) {
-        let top_line = Line::from(Span::styled("\u{2590}", border_style));
-        *cumulative_visual += visual_line_count(&top_line, content_width);
-        start_line = out.len();
-        out.push(top_line);
+    // Top border — always added for every section
+    let top_line = Line::from(Span::styled("\u{2590}", border_style));
+    *cumulative_visual += visual_line_count(&top_line, content_width);
+    let start_line = out.len();
+    out.push(top_line);
 
-        if track {
-            let slm_vec = slm.as_mut().unwrap();
-            let si_vec = si.as_mut().unwrap();
-            let cnt_vec = cnt.as_mut().unwrap();
-            let id = generate_section_id(section_type, cnt_vec);
-            section_id = Some(id.clone());
-            if slm_vec.len() <= start_line {
-                slm_vec.resize(start_line + 1, None);
-            }
-            slm_vec[start_line] = Some(id.clone());
-            si_vec.push(CollapsedSection {
-                id,
-                section_type: section_type.to_string(),
-                start_line,
-                line_count: 0,
-            });
+    if track {
+        let slm_vec = slm.as_mut().unwrap();
+        let si_vec = si.as_mut().unwrap();
+        let cnt_vec = cnt.as_mut().unwrap();
+        let id = generate_section_id(section_type, cnt_vec);
+        section_id = Some(id.clone());
+        if slm_vec.len() <= start_line {
+            slm_vec.resize(start_line + 1, None);
         }
-    } else {
-        // No new top border — section content follows from the previous
-        // same-type section's bottom border. The start is the last line.
-        start_line = out.len().saturating_sub(1);
+        slm_vec[start_line] = Some(id.clone());
+        si_vec.push(CollapsedSection {
+            id,
+            section_type: section_type.to_string(),
+            start_line,
+            line_count: 0,
+        });
     }
 
     // Emit content lines directly (each already has a ▐ prefix from the caller)
@@ -1089,11 +1162,6 @@ fn flush_section(
         *cumulative_visual += visual_line_count(l, content_width);
     }
     out.extend(lines);
-
-    // Bottom border
-    let bottom_line = Line::from(Span::styled("\u{2590}", border_style));
-    *cumulative_visual += visual_line_count(&bottom_line, content_width);
-    out.push(bottom_line);
 
     // Update section_line_map and section_info with correct line_count
     if track {
@@ -1114,8 +1182,6 @@ fn flush_section(
             entry.line_count = total_lines;
         }
     }
-
-    *last_flushed = Some(section_type);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1148,7 +1214,6 @@ fn render_sectioned_block(
     let mut normal_buffer: Vec<Line<'static>> = Vec::new();
     let mut user_buffer: Vec<Line<'static>> = Vec::new();
     let mut command_buffer: Vec<Line<'static>> = Vec::new();
-    let mut last_flushed: Option<&'static str> = None;
     let mut tool_style = styles.tool_exec;
 
     // Helper to pick the right prefix
@@ -1233,7 +1298,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1246,7 +1310,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1259,7 +1322,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1272,7 +1334,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1304,7 +1365,6 @@ fn render_sectioned_block(
                 styles,
                 cumulative_visual,
                 content_width,
-                &mut last_flushed,
                 section_line_map.as_deref_mut(),
                 section_info.as_deref_mut(),
                 counters.as_deref_mut(),
@@ -1325,7 +1385,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1338,7 +1397,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1351,7 +1409,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1364,7 +1421,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1384,7 +1440,6 @@ fn render_sectioned_block(
                 styles,
                 cumulative_visual,
                 content_width,
-                &mut last_flushed,
                 section_line_map.as_deref_mut(),
                 section_info.as_deref_mut(),
                 counters.as_deref_mut(),
@@ -1420,7 +1475,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1433,7 +1487,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1446,7 +1499,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1459,7 +1511,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1479,7 +1530,6 @@ fn render_sectioned_block(
                 styles,
                 cumulative_visual,
                 content_width,
-                &mut last_flushed,
                 section_line_map.as_deref_mut(),
                 section_info.as_deref_mut(),
                 counters.as_deref_mut(),
@@ -1501,7 +1551,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1514,7 +1563,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1527,7 +1575,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1540,7 +1587,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1559,7 +1605,6 @@ fn render_sectioned_block(
                 styles,
                 cumulative_visual,
                 content_width,
-                &mut last_flushed,
                 section_line_map.as_deref_mut(),
                 section_info.as_deref_mut(),
                 counters.as_deref_mut(),
@@ -1581,7 +1626,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1594,7 +1638,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1607,7 +1650,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1620,7 +1662,6 @@ fn render_sectioned_block(
                     styles,
                     cumulative_visual,
                     content_width,
-                    &mut last_flushed,
                     section_line_map.as_deref_mut(),
                     section_info.as_deref_mut(),
                     counters.as_deref_mut(),
@@ -1639,7 +1680,6 @@ fn render_sectioned_block(
                 styles,
                 cumulative_visual,
                 content_width,
-                &mut last_flushed,
                 section_line_map.as_deref_mut(),
                 section_info.as_deref_mut(),
                 counters.as_deref_mut(),
@@ -1683,9 +1723,24 @@ fn render_sectioned_block(
         } else if section == "normal" {
             // ── Table detection (consecutive | lines) ──
             if marker.starts_with('|') {
-                // Entering table mode
-                if table_buffer.is_empty() && first_normal {
-                    first_normal = false;
+                // Entering table mode — flush any pending normal content
+                // FIRST so that headings/text before the table render in
+                // the correct order (not after the table).
+                if table_buffer.is_empty() {
+                    flush_section(
+                        &mut out,
+                        &mut normal_buffer,
+                        "normal",
+                        styles,
+                        cumulative_visual,
+                        content_width,
+                        section_line_map.as_deref_mut(),
+                        section_info.as_deref_mut(),
+                        counters.as_deref_mut(),
+                    );
+                    if first_normal {
+                        first_normal = false;
+                    }
                 }
                 table_buffer.push(line_text.to_string());
                 section_has_content = true;
@@ -1753,7 +1808,6 @@ fn render_sectioned_block(
         styles,
         cumulative_visual,
         content_width,
-        &mut last_flushed,
         section_line_map.as_deref_mut(),
         section_info.as_deref_mut(),
         counters.as_deref_mut(),
@@ -1765,7 +1819,6 @@ fn render_sectioned_block(
         styles,
         cumulative_visual,
         content_width,
-        &mut last_flushed,
         section_line_map.as_deref_mut(),
         section_info.as_deref_mut(),
         counters.as_deref_mut(),
@@ -1777,7 +1830,6 @@ fn render_sectioned_block(
         styles,
         cumulative_visual,
         content_width,
-        &mut last_flushed,
         section_line_map.as_deref_mut(),
         section_info.as_deref_mut(),
         counters.as_deref_mut(),
@@ -1789,7 +1841,6 @@ fn render_sectioned_block(
         styles,
         cumulative_visual,
         content_width,
-        &mut last_flushed,
         section_line_map.as_deref_mut(),
         section_info.as_deref_mut(),
         counters.as_deref_mut(),
@@ -1801,7 +1852,6 @@ fn render_sectioned_block(
         styles,
         cumulative_visual,
         content_width,
-        &mut last_flushed,
         section_line_map.as_deref_mut(),
         section_info.as_deref_mut(),
         counters.as_deref_mut(),
@@ -2128,13 +2178,6 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 cumulative_visual += visual_line_count(&l, content_width);
                 lines.push(l);
             }
-
-            let bottom_line = Line::from(Span::styled(
-                "\u{2590}",
-                Style::default().fg(Color::Rgb(60, 80, 60)),
-            ));
-            cumulative_visual += visual_line_count(&bottom_line, content_width);
-            lines.push(bottom_line);
         } else if msg.starts_with("> /") {
             let style = Style::default()
                 .fg(Color::Magenta)
@@ -2268,8 +2311,8 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
             command_text: Style::default().fg(themes.command_text()),
         };
         let config = SectionConfig {
-            first_normal_prefix: "\u{258c}",
-            subsequent_normal_prefix: " ",
+            first_normal_prefix: "▐ ",
+            subsequent_normal_prefix: "▐ ",
         };
         let is_dark = app.is_dark();
         lines.extend(render_sectioned_block(
@@ -3272,25 +3315,23 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_same_type_sections_share_border() {
+    fn consecutive_same_type_sections_each_get_top_border() {
         let styles = test_styles();
         let mut out: Vec<Line> = Vec::new();
         let mut buf1: Vec<Line> = vec![raw_line("a")];
         let mut buf2: Vec<Line> = vec![raw_line("b")];
         let mut cv = 0usize;
-        let mut last: Option<&'static str> = None;
 
         flush_section(
-            &mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+            &mut out, &mut buf1, "tool", &styles, &mut cv, 80, None, None, None,
         );
         flush_section(
-            &mut out, &mut buf2, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+            &mut out, &mut buf2, "tool", &styles, &mut cv, 80, None, None, None,
         );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
-        // Top border, content a, shared separator (bottom of first == no new
-        // top for second), content b, bottom border.
-        assert_eq!(text, vec!["▐", "a", "▐", "b", "▐"]);
+        // Each section gets its own top border, no bottom borders.
+        assert_eq!(text, vec!["▐", "a", "▐", "b"]);
     }
 
     #[test]
@@ -3300,57 +3341,40 @@ mod tests {
         let mut buf1: Vec<Line> = vec![raw_line("a")];
         let mut buf2: Vec<Line> = vec![raw_line("x")];
         let mut cv = 0usize;
-        let mut last: Option<&'static str> = None;
 
         flush_section(
-            &mut out, &mut buf1, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
+            &mut out, &mut buf1, "tool", &styles, &mut cv, 80, None, None, None,
         );
         flush_section(
-            &mut out, &mut buf2, "thinking", &styles, &mut cv, 80, &mut last, None, None, None,
+            &mut out, &mut buf2, "thinking", &styles, &mut cv, 80, None, None, None,
         );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
-        // Different types: both keep their own top border → two ▐ between a and x.
-        assert_eq!(text, vec!["▐", "a", "▐", "▐", "x", "▐"]);
+        // Each section gets its own top border, no bottom borders.
+        assert_eq!(text, vec!["▐", "a", "▐", "x"]);
     }
 
     #[test]
-    fn empty_buffer_does_not_update_last_flushed() {
-        let styles = test_styles();
-        let mut out: Vec<Line> = Vec::new();
-        let mut empty: Vec<Line> = Vec::new();
-        let mut cv = 0usize;
-        let mut last: Option<&'static str> = None;
-
-        flush_section(
-            &mut out, &mut empty, "tool", &styles, &mut cv, 80, &mut last, None, None, None,
-        );
-        assert!(out.is_empty());
-        assert_eq!(last, None);
-    }
-
-    #[test]
-    fn three_consecutive_same_type_blocks_merge() {
+    fn three_consecutive_same_type_blocks_each_get_top_border() {
         let styles = test_styles();
         let mut out: Vec<Line> = Vec::new();
         let mut buf1: Vec<Line> = vec![raw_line("a")];
         let mut buf2: Vec<Line> = vec![raw_line("b")];
         let mut buf3: Vec<Line> = vec![raw_line("c")];
         let mut cv = 0usize;
-        let mut last: Option<&'static str> = None;
 
         flush_section(
-            &mut out, &mut buf1, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
+            &mut out, &mut buf1, "normal", &styles, &mut cv, 80, None, None, None,
         );
         flush_section(
-            &mut out, &mut buf2, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
+            &mut out, &mut buf2, "normal", &styles, &mut cv, 80, None, None, None,
         );
         flush_section(
-            &mut out, &mut buf3, "normal", &styles, &mut cv, 80, &mut last, None, None, None,
+            &mut out, &mut buf3, "normal", &styles, &mut cv, 80, None, None, None,
         );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
-        assert_eq!(text, vec!["▐", "a", "▐", "b", "▐", "c", "▐"]);
+        assert_eq!(text, vec!["▐", "a", "▐", "b", "▐", "c"]);
     }
 
     /// End-to-end: replicate the /copy output (several [normal]-wrapped
@@ -3395,14 +3419,12 @@ mod tests {
         );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
-        // 4 consecutive normal blocks → each subsequent block skips its top
-        // border; the previous block's bottom border acts as the separator.
-        // Result: top(1) + 4 content + 3 separators + bottom(1) = 9 lines,
-        // with 5 pure-▐ border lines (1 top + 3 shared + 1 bottom). Without
-        // the merge this would be 8 borders + 4 content = 12 lines.
+        // 4 consecutive normal blocks → each block gets its own top border.
+        // No bottom borders or shared borders.
+        // Result: 4 top borders + 4 content = 8 lines.
         let border_count = text.iter().filter(|l| l.as_str() == "▐").count();
-        assert_eq!(border_count, 5, "borders: {text:?}");
-        assert_eq!(text.len(), 9, "lines: {text:?}");
+        assert_eq!(border_count, 4, "borders: {text:?}");
+        assert_eq!(text.len(), 8, "lines: {text:?}");
         assert!(text.iter().any(|l| l.contains("Anacleto started.")));
         assert!(text.iter().any(|l| l.contains("> /copy")));
     }
@@ -3454,11 +3476,11 @@ mod tests {
         );
 
         let text: Vec<String> = out.iter().map(line_text).collect();
-        // 2 consecutive command blocks → shared border: top + 2 content +
-        // 1 separator + bottom = 5 lines, 3 pure-▐ borders.
-        assert_eq!(text.len(), 5, "lines: {text:?}");
+        // 2 consecutive command blocks → each gets its own top border.
+        // Result: 2 top borders + 2 content = 4 lines.
+        assert_eq!(text.len(), 4, "lines: {text:?}");
         let border_count = text.iter().filter(|l| l.as_str() == "▐").count();
-        assert_eq!(border_count, 3, "borders: {text:?}");
+        assert_eq!(border_count, 2, "borders: {text:?}");
         assert!(text.iter().any(|l| l.contains("> /copy")));
         assert!(text.iter().any(|l| l.contains("> /sessions")));
 
@@ -3515,8 +3537,13 @@ mod tests {
         }
 
         // Should contain box-drawing characters (table rendered)
-        let has_box_drawing = text.iter().any(|l| l.contains('\u{250c}') || l.contains('\u{2510}') || l.contains('\u{2502}'));
-        assert!(has_box_drawing, "No box-drawing chars found in output: {text:?}");
+        let has_box_drawing = text
+            .iter()
+            .any(|l| l.contains('\u{250c}') || l.contains('\u{2510}') || l.contains('\u{2502}'));
+        assert!(
+            has_box_drawing,
+            "No box-drawing chars found in output: {text:?}"
+        );
 
         // Should contain table content
         assert!(text.iter().any(|l| l.contains("A") && l.contains("B")));
