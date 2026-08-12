@@ -251,7 +251,17 @@ impl McpClient {
     }
 
     /// List available resources from the MCP server.
+    ///
+    /// Returns an empty list if the server does not advertise the `resources`
+    /// capability (checked via [`McpServerInfo::capabilities`]).
     pub async fn list_resources(&mut self) -> Result<Vec<McpResource>> {
+        // Short-circuit if the server does not support resources.
+        if let Some(ref info) = self.info
+            && !info.capabilities.resources
+        {
+            return Ok(vec![]);
+        }
+
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": self.next_id,
@@ -266,7 +276,17 @@ impl McpClient {
     }
 
     /// List available resource templates from the MCP server.
+    ///
+    /// Returns an empty list if the server does not advertise the `resources`
+    /// capability (checked via [`McpServerInfo::capabilities`]).
     pub async fn list_resource_templates(&mut self) -> Result<Vec<McpResourceTemplate>> {
+        // Short-circuit if the server does not support resources.
+        if let Some(ref info) = self.info
+            && !info.capabilities.resources
+        {
+            return Ok(vec![]);
+        }
+
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": self.next_id,
@@ -285,7 +305,19 @@ impl McpClient {
     /// Text contents are concatenated into a single string. Binary contents
     /// (base64 `blob`) are returned as `data:<mime>;base64,<payload>` so the
     /// caller can distinguish them from plain text.
+    ///
+    /// Returns an error if the server does not advertise the `resources`
+    /// capability (checked via [`McpServerInfo::capabilities`]).
     pub async fn read_resource(&mut self, uri: &str) -> Result<String> {
+        // Short-circuit if the server does not support resources.
+        if let Some(ref info) = self.info
+            && !info.capabilities.resources
+        {
+            return Err(Error::Mcp(
+                "MCP server does not support resources capability".into(),
+            ));
+        }
+
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": self.next_id,
@@ -374,6 +406,38 @@ impl McpClient {
 mod tests {
     use super::*;
 
+    /// Build a default `McpServerInfo` for use in mock clients.
+    fn mock_server_info() -> McpServerInfo {
+        McpServerInfo {
+            name: "mock-server".into(),
+            version: "1.0.0".into(),
+            capabilities: McpCapabilities {
+                tools: true,
+                resources: true,
+                prompts: false,
+            },
+            tools: vec![],
+            resources: vec![],
+        }
+    }
+
+    /// Build a minimal `McpClient` with no I/O handles and optional info.
+    fn mock_client() -> McpClient {
+        McpClient {
+            name: "mock".into(),
+            transport: McpTransport::Stdio {
+                command: "echo".into(),
+                args: vec![],
+            },
+            child: None,
+            info: None,
+            next_id: 1,
+            stdin: None,
+            stdout: None,
+            tcp_stream: None,
+        }
+    }
+
     #[test]
     fn test_mcp_client_new_defaults() {
         let def = McpDefinition {
@@ -388,5 +452,68 @@ mod tests {
         assert!(client.stdin.is_none());
         assert!(client.stdout.is_none());
         assert!(client.tcp_stream.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // RED → GREEN tests: capability checks for resources
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_list_resources_returns_empty_when_not_supported() {
+        let mut client = mock_client();
+        client.info = Some(McpServerInfo {
+            capabilities: McpCapabilities {
+                resources: false,
+                ..mock_server_info().capabilities
+            },
+            ..mock_server_info()
+        });
+
+        let resources = client.list_resources().await.unwrap();
+        assert!(
+            resources.is_empty(),
+            "Expected empty list when resources not supported"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_resource_templates_returns_empty_when_not_supported() {
+        let mut client = mock_client();
+        client.info = Some(McpServerInfo {
+            capabilities: McpCapabilities {
+                resources: false,
+                ..mock_server_info().capabilities
+            },
+            ..mock_server_info()
+        });
+
+        let templates = client.list_resource_templates().await.unwrap();
+        assert!(
+            templates.is_empty(),
+            "Expected empty list when resources not supported"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_resource_returns_error_when_not_supported() {
+        let mut client = mock_client();
+        client.info = Some(McpServerInfo {
+            capabilities: McpCapabilities {
+                resources: false,
+                ..mock_server_info().capabilities
+            },
+            ..mock_server_info()
+        });
+
+        let err = client
+            .read_resource("file:///tmp/test.txt")
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not support resources capability"),
+            "Expected error about missing resources capability, got: {}",
+            msg
+        );
     }
 }
