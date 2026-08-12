@@ -8,3 +8,9 @@ models:
     api_key: ${OPENROUTER_API_KEY}
     model: deepseek/deepseek-v4-flash
     context_window: 200000
+
+mcps:
+  codegraph:
+    transport: stdio
+    command: codegraph
+    args: ["serve", "--mcp"]

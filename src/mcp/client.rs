@@ -148,12 +148,17 @@ impl McpClient {
         });
         self.send_jsonrpc(&notification).await?;
 
+        // Helper: check if a capability is supported.
+        // The MCP spec allows capabilities to be either a boolean (`true`) or
+        // an object (`{}` with optional sub-capabilities). Both mean supported.
+        let capability_supported = |key: &str| -> bool {
+            capabilities
+                .get(key)
+                .is_some_and(|v| v.is_boolean() && v.as_bool().unwrap_or(false) || v.is_object())
+        };
+
         // List tools if supported
-        let tools = if capabilities
-            .get("tools")
-            .and_then(|t| t.as_bool())
-            .unwrap_or(false)
-        {
+        let tools = if capability_supported("tools") {
             self.list_tools_inner().await.unwrap_or_default()
         } else {
             vec![]
@@ -163,18 +168,9 @@ impl McpClient {
             name: server_name,
             version: server_version,
             capabilities: McpCapabilities {
-                tools: capabilities
-                    .get("tools")
-                    .and_then(|t| t.as_bool())
-                    .unwrap_or(false),
-                resources: capabilities
-                    .get("resources")
-                    .and_then(|t| t.as_bool())
-                    .unwrap_or(false),
-                prompts: capabilities
-                    .get("prompts")
-                    .and_then(|t| t.as_bool())
-                    .unwrap_or(false),
+                tools: capability_supported("tools"),
+                resources: capability_supported("resources"),
+                prompts: capability_supported("prompts"),
             },
             tools,
             resources: vec![],
