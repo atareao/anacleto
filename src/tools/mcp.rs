@@ -19,7 +19,8 @@ pub fn mcp_list_resources_tool_definition() -> ToolDefinition {
         name: "mcp_list_resources".to_string(),
         description: "List the resources exposed by a connected MCP server. \
                        Provide the `server` name (one of the configured MCP servers). \
-                       Returns the URI, name, description and MIME type of each resource."
+                       Returns the URI, name, description and MIME type of each resource. \
+                       NOTE: only servers that advertise the `resources` capability (checked at connect time) will return data."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -41,7 +42,8 @@ pub fn mcp_read_resource_tool_definition() -> ToolDefinition {
         description: "Read a resource from a connected MCP server by its URI. \
                        Provide the `server` name and the resource `uri`. \
                        Text resources are returned as text; binary resources are \
-                       returned as a data URI with their MIME type."
+                       returned as a data URI with their MIME type. \
+                       NOTE: only servers that advertise the `resources` capability (checked at connect time) support this tool; calling it on other servers will return an error."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -66,7 +68,8 @@ pub fn mcp_list_resource_templates_tool_definition() -> ToolDefinition {
         name: "mcp_list_resource_templates".to_string(),
         description: "List the resource templates exposed by a connected MCP server. \
                        Provide the `server` name. Returns the URI template, name, \
-                       description and MIME type of each template."
+                       description and MIME type of each template. \
+                       NOTE: only servers that advertise the `resources` capability (checked at connect time) will return data."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
