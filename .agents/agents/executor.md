@@ -1,6 +1,8 @@
 ---
 name: executor
 description: Simple subagent that executes a given task and returns the result
+when_to_use: >
+  Cuando necesites ejecutar una tarea concreta y devolver el resultado, sin necesidad de planificación ni revisión adicional
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:

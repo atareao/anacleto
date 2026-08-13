@@ -1,6 +1,8 @@
 ---
 name: planner
 description: Especialista en descomponer tareas en subtareas y crear/actualizar/deprecar planes de trabajo estructurados en PLAN.md
+when_to_use: >
+  Al inicio de una tarea compleja de múltiples pasos, antes de empezar a implementar, para descomponerla en subtareas y crear un plan de trabajo en PLAN.md
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:

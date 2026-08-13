@@ -1372,6 +1372,7 @@ mod tests {
             AgentConfig {
                 name: "root".into(),
                 description: "root agent".into(),
+                when_to_use: String::new(),
                 role: AgentRole::Root,
                 model: "claude-sonnet-4".into(),
                 skills: vec![],
@@ -1385,6 +1386,7 @@ mod tests {
             AgentConfig {
                 name: "tech-writer".into(),
                 description: "subagent".into(),
+                when_to_use: String::new(),
                 role: AgentRole::SubAgent,
                 model: "claude-sonnet-4".into(),
                 skills: vec![],
@@ -1671,6 +1673,7 @@ mod tests {
             AgentConfig {
                 name: "root".into(),
                 description: "root agent".into(),
+                when_to_use: String::new(),
                 role: AgentRole::Root,
                 model: "claude-sonnet-4".into(),
                 skills: vec![],
@@ -1684,6 +1687,7 @@ mod tests {
             AgentConfig {
                 name: "writer".into(),
                 description: "writer agent".into(),
+                when_to_use: String::new(),
                 role: AgentRole::Root,
                 model: "claude-opus-4".into(),
                 skills: vec![],
@@ -1697,6 +1701,7 @@ mod tests {
             AgentConfig {
                 name: "helper".into(),
                 description: "non-root agent".into(),
+                when_to_use: String::new(),
                 role: AgentRole::SubAgent,
                 model: "claude-sonnet-4".into(),
                 skills: vec![],
@@ -1761,6 +1766,7 @@ mod tests {
         engine.config.agents.push(AgentConfig {
             name: "orphan".into(),
             description: "root but listed as subagent".into(),
+            when_to_use: String::new(),
             role: AgentRole::Root,
             model: "claude-sonnet-4".into(),
             skills: vec![],
@@ -1801,6 +1807,7 @@ mod tests {
         new_config.agents = vec![AgentConfig {
             name: "root".into(),
             description: "updated root".into(),
+            when_to_use: String::new(),
             role: AgentRole::Root,
             model: "gpt-4o".into(),
             skills: vec![],

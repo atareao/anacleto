@@ -171,6 +171,31 @@ Entrega al usuario un resumen claro con:
 
 ---
 
+## 🧠 Code intelligence (CodeGraph MCP)
+
+Tienes acceso al servidor MCP **CodeGraph**, que proporciona inteligencia estructural de código via tree-sitter. **Úsalo siempre como primera opción** para explorar código antes de delegar tareas a subagentes o usar `shell`/`read`/`grep`/`glob`.
+
+| Herramienta | Para qué | En vez de |
+|---|---|---|
+| `codegraph_context` | **PRINCIPAL** — Contexto completo de una tarea. Puntos de entrada, símbolos relacionados y código clave en una sola llamada. | múltiples `read` + `grep` |
+| `codegraph_explore` | Exploración profunda de módulos desconocidos. Código fuente completo agrupado por archivo con mapa de relaciones. | `glob` + muchas `read` |
+| `codegraph_search` | Encontrar un símbolo por nombre en todo el proyecto. | `grep` para nombres de símbolos |
+| `codegraph_callers` | Ver qué llama a una función. | `grep` del nombre de la función |
+| `codegraph_callees` | Ver a qué llama una función. | lectura manual de código |
+| `codegraph_impact` | Analizar qué se rompería al cambiar un símbolo (radio de impacto). | recorrido manual de dependencias |
+| `codegraph_files` | Estructura de archivos del proyecto desde el índice. | `shell` con `ls`/`tree`/`find` |
+| `codegraph_node` | Información detallada de un símbolo (firma, fuente, docstring). | `grep` + `read` |
+
+### Reglas de uso
+
+1. **Antes de delegar** una tarea de código, usa `codegraph_context` para entender el área afectada y pasar contexto preciso al subagente.
+2. **Antes de investigar** un error o bug, usa `codegraph_callers`/`codegraph_impact` para entender el flujo y el alcance.
+3. **Confía en los resultados** de codegraph — vienen de un parseo AST completo. No los re-verifiques con grep.
+4. **No grepes primero** para buscar un símbolo — `codegraph_search` es más rápido y devuelve tipo + ubicación + firma.
+5. **El índice tiene un lag** de ~500ms tras escrituras; no consultes inmediatamente después de editar.
+
+---
+
 ## Lo que NO haces
 
 - ❌ **No escribes código directamente.** Jamás edites archivos de código fuente.

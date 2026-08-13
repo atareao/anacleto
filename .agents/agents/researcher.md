@@ -1,6 +1,8 @@
 ---
 name: researcher
 description: Investiga un tema con fuentes primarias y produce un brief de investigación verificado
+when_to_use: >
+  Al inicio de un proyecto de escritura, antes de redactar nada, para investigar el tema con fuentes primarias y producir un brief verificado
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:

@@ -14,12 +14,13 @@ use ratatui::widgets::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use super::app::App;
+use super::app::{App, ChatCache};
 use super::code_block::CodeBlockHighlighter;
 use super::markdown::{
     render_markdown_line_with_syntect, render_table_block, select_visible_start, visual_line_count,
 };
 use super::palette::{render_agent_palette, render_command_palette, render_model_palette};
+use super::theme::Theme;
 use super::types::{AgentInfo, CollapsedSection, Focus};
 use crate::agent::types::{AgentRole, AgentStatus, TaskMode};
 use std::collections::{HashMap, HashSet};
@@ -468,11 +469,11 @@ fn render_status_panel(f: &mut Frame, area: Rect, app: &App) {
         .split(area);
 
     let text = format!(
-        "Tokens: {}\nCost: ${:.2}\nContext: {:.1}% ({} / {})",
+        "Tokens (session): {}\nCost: ${:.2}\nContext: {:.1}% ({} / {})",
         format_tokens(app.total_tokens),
         app.total_cost,
         app.context_window_pct,
-        format_tokens(app.total_tokens),
+        format_tokens(app.context_tokens),
         format_tokens(app.context_window)
     );
 
@@ -495,7 +496,7 @@ fn render_status_panel(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Format a token count as thousands (K) or millions (M).
-fn format_tokens(n: u64) -> String {
+pub(crate) fn format_tokens(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.2}M", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {
@@ -585,14 +586,11 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, app: &App) {
 
 /// Panel 2c: SubAgents — subagent names of the active agent (active when `info_tab = 2`).
 fn render_subagent_panel(f: &mut Frame, area: Rect, app: &App) {
-    let unique_subagents: Vec<&str> = {
-        let set: std::collections::BTreeSet<&str> = app
-            .configured_subagents
-            .get(&app.active_agent)
-            .map(|v| v.iter().map(|s| s.as_str()).collect())
-            .unwrap_or_default();
-        set.into_iter().collect()
-    };
+    let configured: Vec<&str> = app
+        .configured_subagents
+        .get(&app.active_agent)
+        .map(|v| v.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
 
     let focused = app.focus == Focus::Info && app.info_tab == 2;
     let border_color = if focused {
@@ -601,25 +599,63 @@ fn render_subagent_panel(f: &mut Frame, area: Rect, app: &App) {
         Color::Cyan
     };
 
-    let items: Vec<ListItem> = if unique_subagents.is_empty() {
+    let items: Vec<ListItem> = if configured.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             "(none)",
             Style::default().fg(Color::DarkGray),
         )))]
     } else {
-        unique_subagents
+        configured
             .iter()
             .enumerate()
             .map(|(i, name)| {
-                let style = if focused && i == app.subagent_panel_index {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(app.theme.accent())
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
+                let selected = focused && i == app.subagent_panel_index;
+                let sel = |s: Style| -> Style {
+                    if selected {
+                        s.bg(app.theme.accent()).fg(Color::Black)
+                    } else {
+                        s
+                    }
                 };
-                ListItem::new(Line::from(Span::styled(*name, style)))
+
+                // Find the matching AgentInfo to get mode and status
+                let agent_info = app.agents.iter().find(|a| {
+                    a.agent_type.as_deref() == Some(name) && a.role == AgentRole::SubAgent
+                });
+
+                let mut spans = Vec::new();
+
+                // Mode emoji
+                if let Some(info) = agent_info {
+                    if let Some(mode) = &info.mode {
+                        let (emoji, color) = match mode {
+                            TaskMode::Foreground => ("⬆️", Color::Cyan),
+                            TaskMode::Background => ("⬇️", Color::Yellow),
+                        };
+                        spans.push(Span::styled(
+                            format!("{} ", emoji),
+                            sel(Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                        ));
+                    }
+
+                    // Status dot
+                    let (dot, dot_color) = match &info.status {
+                        AgentStatus::Working => ("🟢", Color::Green),
+                        AgentStatus::Idle => ("⏸", Color::Yellow),
+                        AgentStatus::WaitingForSubAgent => ("⏳", Color::Blue),
+                        AgentStatus::Completed => ("✅", Color::DarkGray),
+                        AgentStatus::Error(_) => ("❌", Color::Red),
+                    };
+                    spans.push(Span::styled(
+                        format!("{} ", dot),
+                        sel(Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
+                    ));
+                }
+
+                // Name
+                spans.push(Span::styled(*name, sel(Style::default())));
+
+                ListItem::new(Line::from(spans))
             })
             .collect()
     };
@@ -629,7 +665,7 @@ fn render_subagent_panel(f: &mut Frame, area: Rect, app: &App) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(format!(" [2] SubAgents ({}) ", unique_subagents.len())),
+            .title(format!(" [2] SubAgents ({}) ", configured.len())),
     );
 
     f.render_widget(list, area);
@@ -749,6 +785,10 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                     TaskMode::Foreground => "⬆️",
                     TaskMode::Background => "⬇️",
                 });
+                let mode_color = a.mode.as_ref().map(|m| match m {
+                    TaskMode::Foreground => Color::Cyan,
+                    TaskMode::Background => Color::Yellow,
+                });
 
                 let mut spans = Vec::new();
                 let mut prefix_width: usize = 0;
@@ -773,11 +813,12 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
 
                 // 3. Mode emoji (only for subagents)
                 if let Some(emoji) = mode_emoji {
+                    let color = mode_color.unwrap_or(Color::DarkGray);
                     let mode_str = format!("{} ", emoji);
                     prefix_width += mode_str.width();
                     spans.push(Span::styled(
                         mode_str,
-                        sel(Style::default().fg(Color::DarkGray)),
+                        sel(Style::default().fg(color).add_modifier(Modifier::BOLD)),
                     ));
                 }
 
@@ -967,6 +1008,29 @@ fn render_working_dir(f: &mut Frame, area: Rect, app: &App) {
 // ---------------------------------------------------------------------------
 // Shared sectioned-block renderer for committed messages and stream.
 // ---------------------------------------------------------------------------
+
+/// Build a SectionStyles for a live streaming block (thinking or stream).
+/// `border` is the border style for the outer block.
+fn live_section_styles(themes: &Theme) -> SectionStyles {
+    SectionStyles {
+        border: Style::default(), // caller overrides below
+        thinking_border: Style::default().fg(themes.thinking_dim()),
+        thinking_text: Style::default()
+            .fg(themes.thinking())
+            .add_modifier(Modifier::DIM),
+        tool_border: Style::default().fg(themes.tool_border()),
+        tool_exec: Style::default().fg(themes.tool_text()),
+        tool_output: Style::default()
+            .fg(themes.tool_text())
+            .add_modifier(Modifier::DIM),
+        tool_success: Style::default().fg(themes.tool_ok()),
+        tool_error: Style::default().fg(themes.tool_err()),
+        user_border: Style::default().fg(themes.user_border()),
+        user_text: Style::default().fg(themes.user_text()),
+        command_border: Style::default().fg(themes.command_border()),
+        command_text: Style::default().fg(themes.command_text()),
+    }
+}
 
 /// Styles for each section type.
 struct SectionStyles {
@@ -1184,6 +1248,96 @@ fn flush_section(
     }
 }
 
+/// Trim leading and trailing blank lines inside each section marker pair
+/// (e.g., between `[normal]` and first text, and between last text and
+/// `[/normal]`).  This keeps stored content clean and avoids rendering
+/// whitespace-only padding around block content.
+pub(crate) fn trim_block_blank_lines(content: &str) -> String {
+    let markers = [
+        "[thinking]",
+        "[/thinking]",
+        "[tool]",
+        "[/tool]",
+        "[normal]",
+        "[/normal]",
+        "[user]",
+        "[/user]",
+        "[command]",
+        "[/command]",
+    ];
+
+    let mut result_lines: Vec<&str> = Vec::new();
+    let mut buffer: Vec<&str> = Vec::new();
+    let mut in_section = false;
+
+    for line in content.split('\n') {
+        let trimmed = line.trim();
+        let is_open = markers.contains(&trimmed)
+            && markers.iter().position(|m| *m == trimmed).unwrap() % 2 == 0;
+        let is_close = markers.contains(&trimmed)
+            && markers.iter().position(|m| *m == trimmed).unwrap() % 2 == 1;
+
+        if is_open {
+            // Flush any previous buffered lines
+            if !buffer.is_empty() || !result_lines.is_empty() {
+                result_lines.append(&mut buffer);
+            }
+            buffer.clear();
+            result_lines.push(line);
+            in_section = true;
+            continue;
+        }
+
+        if is_close {
+            // Trim trailing blank lines from buffer
+            while let Some(last) = buffer.last() {
+                if last.trim().is_empty() {
+                    buffer.pop();
+                } else {
+                    break;
+                }
+            }
+            // Trim leading blank lines from buffer
+            while let Some(first) = buffer.first() {
+                if first.trim().is_empty() {
+                    buffer.remove(0);
+                } else {
+                    break;
+                }
+            }
+            result_lines.append(&mut buffer);
+            result_lines.push(line);
+            in_section = false;
+            continue;
+        }
+
+        if in_section {
+            buffer.push(line);
+        } else {
+            result_lines.push(line);
+        }
+    }
+
+    // Flush remaining buffer (unclosed section at end of content)
+    while let Some(last) = buffer.last() {
+        if last.trim().is_empty() {
+            buffer.pop();
+        } else {
+            break;
+        }
+    }
+    while let Some(first) = buffer.first() {
+        if first.trim().is_empty() {
+            buffer.remove(0);
+        } else {
+            break;
+        }
+    }
+    result_lines.append(&mut buffer);
+
+    result_lines.join("\n")
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::needless_option_as_deref)]
 fn render_sectioned_block(
@@ -1224,6 +1378,9 @@ fn render_sectioned_block(
             config.subsequent_normal_prefix
         }
     };
+
+    // Preprocess: strip blank lines between section markers and content
+    let content = trim_block_blank_lines(content);
 
     let mut lines_iter = content.split('\n').peekable();
     while let Some(line_text) = lines_iter.next() {
@@ -1886,24 +2043,8 @@ fn flush_ai_batch(
     batch.clear();
 
     let themes = &app.theme;
-    let styles = SectionStyles {
-        border: Style::default().fg(themes.ai_border()),
-        thinking_border: Style::default().fg(themes.thinking_dim()),
-        thinking_text: Style::default()
-            .fg(themes.thinking())
-            .add_modifier(Modifier::DIM),
-        tool_border: Style::default().fg(themes.tool_border()),
-        tool_exec: Style::default().fg(themes.tool_text()),
-        tool_output: Style::default()
-            .fg(themes.tool_text())
-            .add_modifier(Modifier::DIM),
-        tool_success: Style::default().fg(themes.tool_ok()),
-        tool_error: Style::default().fg(themes.tool_err()),
-        user_border: Style::default().fg(themes.user_border()),
-        user_text: Style::default().fg(themes.user_text()),
-        command_border: Style::default().fg(themes.command_border()),
-        command_text: Style::default().fg(themes.command_text()),
-    };
+    let mut styles = live_section_styles(themes);
+    styles.border = Style::default().fg(themes.ai_border());
     let config = SectionConfig {
         first_normal_prefix: "▐ ",
         subsequent_normal_prefix: "▐ ",
@@ -2094,6 +2235,101 @@ fn apply_collapsed(
     }
 }
 
+/// Render a system/status message as a bordered block.
+///
+/// Draws a `▐` top border line, then each content line prefixed with `▐`.
+/// Handles multi-line messages by splitting on `\n`.
+fn render_status_block(
+    lines: &mut Vec<Line<'static>>,
+    msg: &str,
+    ts: &str,
+    content_style: Style,
+    border_style: Style,
+    cumulative_visual: &mut usize,
+    content_width: usize,
+) {
+    // Top border
+    let top = Line::from(Span::styled("\u{2590}", border_style));
+    *cumulative_visual += visual_line_count(&top, content_width);
+    lines.push(top);
+
+    // Content lines with border prefix
+    for (i, line_text) in msg.split('\n').enumerate() {
+        let prefix = if i == 0 {
+            format!("{}{}", ts, line_text)
+        } else {
+            line_text.to_string()
+        };
+        let l = Line::from(vec![
+            Span::styled("\u{2590} ", border_style),
+            Span::styled(prefix, content_style),
+        ]);
+        *cumulative_visual += visual_line_count(&l, content_width);
+        lines.push(l);
+    }
+}
+
+/// Flush a batch of consecutive command-output messages (`$`, `│`, `└`, `🔍`)
+/// into a single bordered block with a shared `▐` top border and left border
+/// on each line, using distinct content styles per message type.
+fn flush_cmd_batch(
+    lines: &mut Vec<Line<'static>>,
+    batch: &mut Vec<(String, String)>,
+    cumulative_visual: &mut usize,
+    content_width: usize,
+) {
+    if batch.is_empty() {
+        return;
+    }
+
+    let border_style = Style::default()
+        .fg(Color::Rgb(80, 80, 80))
+        .add_modifier(Modifier::DIM);
+
+    // Top border
+    let top = Line::from(Span::styled("\u{2590}", border_style));
+    *cumulative_visual += visual_line_count(&top, content_width);
+    lines.push(top);
+
+    let mut first_line = true;
+    for (msg, ts) in batch.drain(..) {
+        let content_style = if msg.starts_with("$ ") {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else if msg.starts_with("\u{2502} ") {
+            Style::default()
+                .fg(Color::Rgb(160, 160, 180))
+                .add_modifier(Modifier::DIM)
+        } else if msg.starts_with("\u{2514} ") {
+            Style::default()
+                .fg(Color::Rgb(220, 120, 120))
+                .add_modifier(Modifier::DIM)
+        } else if msg.starts_with("\u{1f50d}") {
+            Style::default()
+                .fg(Color::Rgb(180, 100, 255))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+
+        for line_text in msg.split('\n') {
+            let prefix = if first_line {
+                format!("{}{}", ts, line_text)
+            } else {
+                line_text.to_string()
+            };
+            let l = Line::from(vec![
+                Span::styled("\u{2590} ", border_style),
+                Span::styled(prefix, content_style),
+            ]);
+            *cumulative_visual += visual_line_count(&l, content_width);
+            lines.push(l);
+            first_line = false;
+        }
+    }
+}
+
 fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
     if app.show_welcome {
         render_welcome_banner(f, area, app);
@@ -2109,40 +2345,198 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
 
     let mut lines: Vec<Line> = Vec::with_capacity(app.messages.len() + 4);
     let mut ai_batch: Vec<(String, String)> = Vec::new();
+    let mut cmd_batch: Vec<(String, String)> = Vec::new();
     let mut cumulative_visual: usize = 0;
     let mut section_line_map: Vec<Option<String>> = Vec::new();
     let mut section_info: Vec<CollapsedSection> = Vec::new();
     let mut counters: HashMap<String, u32> = HashMap::new();
 
-    for idx in 0..app.messages.len() {
-        let msg = app.messages[idx].clone();
-        let ts = if app.show_timestamps {
-            app.message_timestamps
-                .get(idx)
-                .map(|t| format!("[{}] ", t.format("%H:%M:%S")))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
+    // ── Render cache ────────────────────────────────────────────────────
+    // The committed-messages loop below (syntect highlighting, section
+    // batching, prewrap) is the most expensive part of the frame. During LLM
+    // streaming only `current_stream`/`current_thinking` change each frame, so
+    // we cache the committed output and reuse it until the messages or
+    // display settings actually change.
+    let cache_is_valid = app.chat_cache.as_ref().is_some_and(|c| {
+        c.generation == app.messages_generation
+            && c.content_width == content_width
+            && c.show_timestamps == app.show_timestamps
+            && c.is_dark == app.is_dark()
+    });
 
-        // AI-batchable messages: thinking, tool activity, and sectioned
-        // messages ([normal]/[command]/[user]/[tool]) accumulate so that
-        // flush_ai_batch renders consecutive same-type sections as ONE block
-        // (sharing borders) instead of one block per message.
-        if msg.starts_with("[thinking]")
-            || msg.starts_with("[normal]")
-            || msg.starts_with("[command]")
-            || msg.starts_with("[user]")
-            || msg.starts_with("[tool]")
-            || msg.starts_with("\u{1f527}")
-            || msg.starts_with("\u{2705}")
-            || msg.starts_with("\u{274c}")
-        {
-            ai_batch.push((msg.clone(), ts));
-            continue;
+    if cache_is_valid {
+        // Restore the cached committed-messages rendering. The live
+        // streaming/thinking blocks are appended below every frame.
+        let cache = app.chat_cache.take().unwrap();
+        lines = cache.lines;
+        section_line_map = cache.section_line_map;
+        section_info = cache.section_info;
+        counters = cache.counters;
+        app.code_block_positions = cache.code_block_positions;
+        // Recompute the running visual-line counter from the cached lines so
+        // the live blocks below keep correct cumulative positioning.
+        for l in &lines {
+            cumulative_visual += visual_line_count(l, content_width);
+        }
+    } else {
+        // ── Full committed-messages render ──
+        for idx in 0..app.messages.len() {
+            let msg = app.messages[idx].clone();
+            let ts = if app.show_timestamps {
+                app.message_timestamps
+                    .get(idx)
+                    .map(|t| format!("[{}] ", t.format("%H:%M:%S")))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+
+            // AI-batchable messages: thinking, tool activity, and sectioned
+            // messages ([normal]/[command]/[user]/[tool]) accumulate so that
+            // flush_ai_batch renders consecutive same-type sections as ONE block
+            // (sharing borders) instead of one block per message.
+            if msg.starts_with("[thinking]")
+                || msg.starts_with("[normal]")
+                || msg.starts_with("[command]")
+                || msg.starts_with("[user]")
+                || msg.starts_with("[tool]")
+                || msg.starts_with("\u{1f527}")
+                || msg.starts_with("\u{2705}")
+                || msg.starts_with("\u{274c}")
+            {
+                ai_batch.push((msg.clone(), ts));
+                continue;
+            }
+
+            // Every other message type flushes the AI batch first.
+            flush_ai_batch(
+                &mut lines,
+                &mut ai_batch,
+                app,
+                &mut cumulative_visual,
+                content_width,
+                Some(&mut section_line_map),
+                Some(&mut section_info),
+                Some(&mut counters),
+            );
+
+            // Cmd-batchable messages: shell commands, output, and search
+            // results group into a single bordered block.
+            if msg.starts_with("$ ")
+                || msg.starts_with("\u{2502} ")
+                || msg.starts_with("\u{2514} ")
+                || msg.starts_with("\u{1f50d}")
+            {
+                cmd_batch.push((msg, ts));
+                continue;
+            }
+
+            // Flush cmd batch when we encounter a non-cmd message.
+            flush_cmd_batch(
+                &mut lines,
+                &mut cmd_batch,
+                &mut cumulative_visual,
+                content_width,
+            );
+
+            if msg.starts_with("> ") && !msg.starts_with("> /") {
+                let content_style = Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD);
+
+                // Top border extension
+                let top_line = Line::from(Span::styled(
+                    "\u{2590}",
+                    Style::default().fg(Color::Rgb(60, 80, 60)),
+                ));
+                cumulative_visual += visual_line_count(&top_line, content_width);
+                lines.push(top_line);
+
+                for line_text in msg.split("\n") {
+                    let l = Line::from(vec![
+                        Span::styled("\u{2590} ", Style::default().fg(Color::Rgb(60, 80, 60))),
+                        Span::styled(
+                            format!("{}{}", ts, line_text.trim_start_matches("> ")),
+                            content_style,
+                        ),
+                    ]);
+                    cumulative_visual += visual_line_count(&l, content_width);
+                    lines.push(l);
+                }
+            } else if msg.starts_with("> /") {
+                let border_style = Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::DIM);
+                let content_style = Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD);
+                render_status_block(
+                    &mut lines,
+                    &msg,
+                    &ts,
+                    content_style,
+                    border_style,
+                    &mut cumulative_visual,
+                    content_width,
+                );
+            } else if msg.starts_with("Error:")
+                || msg.starts_with("Error :")
+                || msg.starts_with("Unknown command")
+            {
+                render_status_block(
+                    &mut lines,
+                    &msg,
+                    &ts,
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::DIM),
+                    &mut cumulative_visual,
+                    content_width,
+                );
+            } else if (msg.starts_with("Subagent '") && msg.contains("created"))
+                || (msg.starts_with("Subagent '") && msg.contains("completed"))
+                || (msg.starts_with("Agent '") && msg.contains("created"))
+                || msg.starts_with("Switched to session:")
+                || msg.starts_with("Session renamed to:")
+                || (msg.starts_with("Session ")
+                    && (msg.contains("deleted") || msg.contains("deleted.")))
+                || msg.starts_with("Anacleto shutting down")
+                || msg.starts_with("Anacleto started")
+            {
+                let border_color = app.theme.status_border();
+                render_status_block(
+                    &mut lines,
+                    &msg,
+                    &ts,
+                    Style::default().fg(border_color),
+                    Style::default()
+                        .fg(border_color)
+                        .add_modifier(Modifier::DIM),
+                    &mut cumulative_visual,
+                    content_width,
+                );
+            } else if msg.starts_with("Usage:") || msg.starts_with("Commands:") {
+                render_status_block(
+                    &mut lines,
+                    &msg,
+                    &ts,
+                    Style::default().fg(Color::Blue),
+                    Style::default().fg(Color::Blue).add_modifier(Modifier::DIM),
+                    &mut cumulative_visual,
+                    content_width,
+                );
+            } else if msg.starts_with("  ") && app.debug_mode {
+                let style = Style::default()
+                    .fg(Color::Rgb(180, 100, 255))
+                    .add_modifier(Modifier::DIM);
+                let l = Line::from(Span::styled(msg.clone(), style));
+                cumulative_visual += visual_line_count(&l, content_width);
+                lines.push(l);
+            } else {
+                ai_batch.push((msg.clone(), ts));
+            }
         }
 
-        // Every other message type flushes the AI batch first.
+        // Flush any remaining AI messages.
         flush_ai_batch(
             &mut lines,
             &mut ai_batch,
@@ -2154,137 +2548,75 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
             Some(&mut counters),
         );
 
-        if msg.starts_with("> ") && !msg.starts_with("> /") {
-            let content_style = Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD);
+        // Flush any remaining command-output messages.
+        flush_cmd_batch(
+            &mut lines,
+            &mut cmd_batch,
+            &mut cumulative_visual,
+            content_width,
+        );
 
-            // Top border extension
-            let top_line = Line::from(Span::styled(
-                "\u{2590}",
-                Style::default().fg(Color::Rgb(60, 80, 60)),
-            ));
-            cumulative_visual += visual_line_count(&top_line, content_width);
-            lines.push(top_line);
-
-            for line_text in msg.split("\n") {
-                let l = Line::from(vec![
-                    Span::styled("\u{2590} ", Style::default().fg(Color::Rgb(60, 80, 60))),
-                    Span::styled(
-                        format!("{}{}", ts, line_text.trim_start_matches("> ")),
-                        content_style,
-                    ),
-                ]);
-                cumulative_visual += visual_line_count(&l, content_width);
-                lines.push(l);
-            }
-        } else if msg.starts_with("> /") {
-            let style = Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::BOLD);
-            let l = Line::from(Span::styled(msg.clone(), style));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("Error:") || msg.starts_with("Error :") {
-            let l = Line::from(Span::styled(
-                msg.clone(),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("Subagent '") && msg.contains("created") {
-            let l = Line::from(Span::styled(
-                msg.clone(),
-                Style::default().fg(Color::Yellow),
-            ));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("Subagent '") && msg.contains("completed") {
-            let l = Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Green)));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("Switched to session:")
-            || msg.starts_with("Session renamed to:")
-            || (msg.starts_with("Session ")
-                && (msg.contains("deleted") || msg.contains("deleted.")))
-            || msg.starts_with("Anacleto shutting down")
-            || msg.starts_with("Anacleto started")
-        {
-            let l = Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Blue)));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("Agent '") && msg.contains("created") {
-            let l = Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Cyan)));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("Unknown command") {
-            let l = Line::from(Span::styled(
-                msg.clone(),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("Usage:") || msg.starts_with("Commands:") {
-            let l = Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Blue)));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("$ ") {
-            let l = Line::from(Span::styled(
-                msg.clone(),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("\u{2502} ") {
-            let l = Line::from(Span::styled(
-                msg.clone(),
-                Style::default()
-                    .fg(Color::Rgb(160, 160, 180))
-                    .add_modifier(Modifier::DIM),
-            ));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("\u{2514} ") {
-            let l = Line::from(Span::styled(
-                msg.clone(),
-                Style::default()
-                    .fg(Color::Rgb(220, 120, 120))
-                    .add_modifier(Modifier::DIM),
-            ));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("\u{1f50d}") {
-            let style = Style::default()
-                .fg(Color::Rgb(180, 100, 255))
-                .add_modifier(Modifier::BOLD);
-            let l = Line::from(Span::styled(msg.clone(), style));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else if msg.starts_with("  ") && app.debug_mode {
-            let style = Style::default()
-                .fg(Color::Rgb(180, 100, 255))
-                .add_modifier(Modifier::DIM);
-            let l = Line::from(Span::styled(msg.clone(), style));
-            cumulative_visual += visual_line_count(&l, content_width);
-            lines.push(l);
-        } else {
-            ai_batch.push((msg.clone(), ts));
-        }
+        // Save the committed-messages rendering to the cache for the next
+        // frames, so unchanged content is not re-rendered (syntect is the
+        // dominant CPU cost during streaming).
+        app.chat_cache = Some(ChatCache {
+            generation: app.messages_generation,
+            content_width,
+            show_timestamps: app.show_timestamps,
+            is_dark: app.is_dark(),
+            counters: counters.clone(),
+            lines: lines.clone(),
+            section_line_map: section_line_map.clone(),
+            section_info: section_info.clone(),
+            code_block_positions: app.code_block_positions.clone(),
+        });
     }
 
-    // Flush any remaining AI messages.
-    flush_ai_batch(
-        &mut lines,
-        &mut ai_batch,
-        app,
-        &mut cumulative_visual,
-        content_width,
-        Some(&mut section_line_map),
-        Some(&mut section_info),
-        Some(&mut counters),
-    );
+    // Add live thinking indicator if active. Thinking streams token-by-token
+    // like the content stream, rendered dim/grey so it reads as intermediate
+    // reasoning. It appears above the content stream because thinking always
+    // precedes content chronologically.
+    if let Some(thinking) = &app.current_thinking
+        && !thinking.trim().is_empty()
+    {
+        let themes = &app.theme;
+        let mut styles = live_section_styles(themes);
+        styles.border = Style::default().fg(themes.thinking_dim());
+        let config = SectionConfig {
+            first_normal_prefix: "▐ ",
+            subsequent_normal_prefix: "▐ ",
+        };
+        let is_dark = app.is_dark();
+        // Wrap in [thinking] markers so render_sectioned_block applies the
+        // thinking border/text styles to every line.
+        let content = format!("[thinking]\n{}\n[/thinking]", thinking.trim());
+        let thinking_style = styles.thinking_text;
+        lines.extend(render_sectioned_block(
+            &content,
+            "",
+            &config,
+            &styles,
+            thinking_style,
+            |full_line, prefix, border| {
+                let mut rendered = render_markdown_line_with_syntect(
+                    &full_line,
+                    thinking_style,
+                    &app.code_block_hl,
+                    is_dark,
+                );
+                rendered.spans.insert(0, Span::styled(prefix, border));
+                rendered
+            },
+            &app.code_block_hl,
+            &mut app.code_block_positions,
+            is_dark,
+            &mut cumulative_visual,
+            content_width,
+            Some(&mut section_line_map),
+            Some(&mut section_info),
+            Some(&mut counters),
+        ));
+    }
 
     // Add streaming indicator if active
     if let Some(stream) = &app.current_stream {
@@ -2292,24 +2624,8 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
             .fg(Color::Rgb(100, 200, 255))
             .add_modifier(Modifier::DIM);
         let themes = &app.theme;
-        let styles = SectionStyles {
-            border: stream_style,
-            thinking_border: Style::default().fg(themes.thinking_dim()),
-            thinking_text: Style::default()
-                .fg(themes.thinking())
-                .add_modifier(Modifier::DIM),
-            tool_border: Style::default().fg(themes.tool_border()),
-            tool_exec: Style::default().fg(themes.tool_text()),
-            tool_output: Style::default()
-                .fg(themes.tool_text())
-                .add_modifier(Modifier::DIM),
-            tool_success: Style::default().fg(themes.tool_ok()),
-            tool_error: Style::default().fg(themes.tool_err()),
-            user_border: Style::default().fg(themes.user_border()),
-            user_text: Style::default().fg(themes.user_text()),
-            command_border: Style::default().fg(themes.command_border()),
-            command_text: Style::default().fg(themes.command_text()),
-        };
+        let mut styles = live_section_styles(themes);
+        styles.border = stream_style;
         let config = SectionConfig {
             first_normal_prefix: "▐ ",
             subsequent_normal_prefix: "▐ ",
@@ -3493,6 +3809,82 @@ mod tests {
         assert_eq!(border_span.style.fg, Some(Color::Magenta));
         let text_span = &copy_line.spans[1];
         assert_eq!(text_span.style.fg, Some(Color::Magenta));
+    }
+
+    #[test]
+    fn trim_blank_lines_removes_whitespace_between_markers_and_content() {
+        let styles = test_styles();
+        let config = SectionConfig {
+            first_normal_prefix: "▐ ",
+            subsequent_normal_prefix: "▐ ",
+        };
+        let base = Style::default();
+        let hl = CodeBlockHighlighter::default();
+        let mut positions = Vec::new();
+        let mut cv = 0usize;
+
+        // Blank lines before first text and after last text, WITH explicit markers
+        let content = "[normal]\n\n\nLet me read the rest of the truncated files and the test files:\n\n\n[/normal]";
+
+        let out = render_sectioned_block(
+            &content,
+            "",
+            &config,
+            &styles,
+            base,
+            |full_line, prefix, border| {
+                let mut rendered = Line::from(Span::raw(full_line));
+                rendered.spans.insert(0, Span::styled(prefix, border));
+                rendered
+            },
+            &hl,
+            &mut positions,
+            true,
+            &mut cv,
+            80,
+            None,
+            None,
+            None,
+        );
+
+        let text: Vec<String> = out.iter().map(line_text).collect();
+        // Should have: 1 top border + 1 content line = 2 lines
+        let border_count = text.iter().filter(|l| l.as_str() == "▐").count();
+        assert_eq!(border_count, 1, "borders: {text:?}");
+        assert_eq!(text.len(), 2, "lines: {text:?}");
+        assert!(text.iter().any(|l| l.contains("Let me read the rest")));
+    }
+
+    #[test]
+    fn trim_block_blank_lines_strips_leading_and_trailing_blanks() {
+        // Blank lines between [normal] and first text, and between last text and [/normal]
+        let input = "[normal]\n\n\nLet me read the rest of the truncated files and the test files:\n\n\n[/normal]";
+        let expected =
+            "[normal]\nLet me read the rest of the truncated files and the test files:\n[/normal]";
+        assert_eq!(trim_block_blank_lines(input), expected);
+
+        // Blank lines between [thinking] and content
+        let input2 = "[thinking]\n\n\nI need to think about this...\n\n\n[/thinking]";
+        let expected2 = "[thinking]\nI need to think about this...\n[/thinking]";
+        assert_eq!(trim_block_blank_lines(input2), expected2);
+
+        // Multiple consecutive sections
+        let input3 = "[normal]\n\nFirst line\n\n\n[/normal]\n[thinking]\n\nThink\n\n[/thinking]";
+        let expected3 = "[normal]\nFirst line\n[/normal]\n[thinking]\nThink\n[/thinking]";
+        assert_eq!(trim_block_blank_lines(input3), expected3);
+
+        // No blank lines — should remain unchanged
+        let input4 = "[normal]\nHello\n[/normal]";
+        assert_eq!(trim_block_blank_lines(input4), input4);
+
+        // Content without markers — should remain unchanged
+        let input5 = "\n\nHello\n\n";
+        assert_eq!(trim_block_blank_lines(input5), input5);
+
+        // Unclosed section at end should still trim
+        let input6 = "[normal]\n\n\nHello\n\n\n";
+        let expected6 = "[normal]\nHello";
+        assert_eq!(trim_block_blank_lines(input6), expected6);
     }
 
     #[test]

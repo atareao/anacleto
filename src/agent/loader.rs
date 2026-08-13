@@ -52,6 +52,8 @@ pub fn parse_agent(content: &str, default_max_steps: u32) -> Result<AgentConfig>
         name: String,
         description: String,
         #[serde(default)]
+        when_to_use: String,
+        #[serde(default)]
         role: Option<AgentRole>,
         #[serde(default = "default_model")]
         model: String,
@@ -75,6 +77,7 @@ pub fn parse_agent(content: &str, default_max_steps: u32) -> Result<AgentConfig>
     Ok(AgentConfig {
         name: frontmatter.name,
         description: frontmatter.description,
+        when_to_use: frontmatter.when_to_use,
         role: frontmatter.role.unwrap_or(AgentRole::SubAgent),
         model: frontmatter.model,
         skills: frontmatter.skills,
@@ -350,6 +353,7 @@ role: root
         let global = vec![AgentConfig {
             name: "root".into(),
             description: "global root".into(),
+            when_to_use: String::new(),
             role: AgentRole::Root,
             model: "llama2".into(),
             skills: vec![],
@@ -363,6 +367,7 @@ role: root
         let project = vec![AgentConfig {
             name: "root".into(),
             description: "project root".into(),
+            when_to_use: String::new(),
             role: AgentRole::Root,
             model: "llama3.2".into(),
             skills: vec![],
@@ -386,6 +391,7 @@ role: root
         let global = vec![AgentConfig {
             name: "root".into(),
             description: "root".into(),
+            when_to_use: String::new(),
             role: AgentRole::Root,
             model: "m".into(),
             skills: vec![],
@@ -399,6 +405,7 @@ role: root
         let project = vec![AgentConfig {
             name: "reviewer".into(),
             description: "reviewer".into(),
+            when_to_use: String::new(),
             role: AgentRole::SubAgent,
             model: "m".into(),
             skills: vec![],
@@ -420,6 +427,7 @@ role: root
         let no_root = vec![AgentConfig {
             name: "reviewer".into(),
             description: "reviewer".into(),
+            when_to_use: String::new(),
             role: AgentRole::SubAgent,
             model: "m".into(),
             skills: vec![],
@@ -437,6 +445,7 @@ role: root
             AgentConfig {
                 name: "a".into(),
                 description: "a".into(),
+                when_to_use: String::new(),
                 role: AgentRole::Root,
                 model: "m".into(),
                 skills: vec![],
@@ -450,6 +459,7 @@ role: root
             AgentConfig {
                 name: "b".into(),
                 description: "b".into(),
+                when_to_use: String::new(),
                 role: AgentRole::Root,
                 model: "m".into(),
                 skills: vec![],
@@ -467,6 +477,7 @@ role: root
         let one_root = vec![AgentConfig {
             name: "root".into(),
             description: "root".into(),
+            when_to_use: String::new(),
             role: AgentRole::Root,
             model: "m".into(),
             skills: vec![],
@@ -493,5 +504,32 @@ role: root
             resolve_skill_path(Path::new("/abs/skill"), root),
             PathBuf::from("/abs/skill")
         );
+    }
+
+    #[test]
+    fn test_parse_agent_with_when_to_use() {
+        let content = r#"---
+name: documenter
+description: Documenta acciones
+when_to_use: Tras cada tool call, delega un resumen
+---
+
+Documenta todo.
+"#;
+        let agent = parse_agent(content, 60).unwrap();
+        assert_eq!(agent.when_to_use, "Tras cada tool call, delega un resumen");
+    }
+
+    #[test]
+    fn test_parse_agent_without_when_to_use_defaults_empty() {
+        let content = r#"---
+name: reviewer
+description: Revisa código
+---
+
+Revisa.
+"#;
+        let agent = parse_agent(content, 60).unwrap();
+        assert_eq!(agent.when_to_use, "");
     }
 }

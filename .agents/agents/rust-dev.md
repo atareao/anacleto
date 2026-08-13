@@ -1,13 +1,15 @@
 ---
 name: rust-dev
 description: Rust development specialist — writes, compiles, tests and debugs idiomatic Rust code
+when_to_use: >
+  Cuando necesites escribir, compilar, testear o depurar código Rust idiomático, o refactorizar código Rust existente
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:
   - .agents/skills/rust-dev/
   - .agents/skills/shell/
   - .agents/skills/code-review/
-mcps: []
+mcps: [codegraph]
 permissions:
   deny:
     - command.run.sudo

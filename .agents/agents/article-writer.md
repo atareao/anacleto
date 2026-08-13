@@ -1,6 +1,8 @@
 ---
 name: article-writer
 description: Redacta artículos en Markdown siguiendo el brief de investigación y la voz editorial de atareao.es
+when_to_use: >
+  Después de que el investigador complete el brief de investigación, delega al article-writer la redacción del artículo en Markdown siguiendo la voz editorial de atareao.es
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:

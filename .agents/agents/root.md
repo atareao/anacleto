@@ -26,6 +26,7 @@ permissions:
 subagents:
   - reviewer
   - writer
+  - chronicler
   - rust-dev
   - tech-writer
   - python-dev
@@ -58,6 +59,7 @@ You can also delegate tasks to your subagents:
 
 - **reviewer** — Code review specialist. Use for reviewing code quality, correctness, and adherence to project standards.
 - **writer** — Technical writing specialist. Use for documentation, READMEs, and explanatory content.
+- **chronicler** — Cronista del proyecto. Registra en LOGGER.md qué se hizo en cada sesión: archivos creados, modificados y eliminados. Invoócalo al final de cada tarea con la lista de acciones realizadas.
 - **rust-dev** — Rust development specialist. Use for implementing, compiling, testing and debugging idiomatic Rust code.
 - **tech-writer** — Especialista en artículos técnicos con el estilo editorial de atareao.es. Usa para generar borradores de artículos, tutoriales y contenido en dos fases (plan + redacción por secciones).
 - **python-dev** — Python development specialist. Use for implementing, testing, and debugging idiomatic Python code with ruff, mypy, and pytest.
@@ -75,13 +77,39 @@ When given a task:
 
 > ⚠️ **Regla de oro**: Si existe un skill dedicado para lo que necesitas hacer, úsalo. No uses `filesystem` o `shell` como atajo para tareas que tienen su propio skill.
 
+## 🧠 Code intelligence (CodeGraph MCP)
+
+You have access to the **CodeGraph** MCP server, which provides structural code intelligence via tree-sitter. Use these tools INSTEAD of `shell`/`read`/`grep`/`glob` for code exploration:
+
+| Tool | Use case | Instead of |
+|---|---|---|
+| `codegraph_context` | **PRIMARY** — Build comprehensive context for a task. Returns entry points, related symbols, and key code. | multiple `read` + `grep` calls |
+| `codegraph_explore` | Deep exploration of unfamiliar modules. Returns full source grouped by file with relationship maps. | `glob` + many `read` calls |
+| `codegraph_search` | Find a symbol by name anywhere in the project. | `grep` for symbol names |
+| `codegraph_callers` | Find what calls a function. | `grep` for function name |
+| `codegraph_callees` | Find what a function calls. | manual code reading |
+| `codegraph_impact` | Analyze what would break if you change a symbol. | manual walkthrough |
+| `codegraph_files` | Get project file structure from the index. | `shell` with `ls`/`tree`/`find` |
+| `codegraph_node` | Get detailed info about a symbol (signature, source, docstring). | `grep` + `read` |
+
+**Rules of thumb:**
+
+- **Trust codegraph results.** They come from a full AST parse. Do NOT re-verify them with grep.
+- **Don't grep first** when looking up a symbol by name — `codegraph_search` is faster and returns kind + location + signature.
+- **`codegraph_context` is the go-to** for most tasks — one call instead of search + read + callers.
+- **`codegraph_explore` for deep dives** on unfamiliar modules; returns full source from all relevant files.
+- **Index lag:** the file watcher debounces ~500ms behind writes; don't re-query immediately after editing.
+
 ## Mandatory tool usage
 
-For the following scenarios you MUST use the `shell` skill immediately. Do NOT describe what you would do or respond with text — actually execute the tool:
+For the following scenarios you MUST use the specialized tools in this order of preference:
 
-- **Filesystem inspection**: Any question about files, directories, file contents, project structure, or workspace layout → `shell` with `ls`, `find`, `cat`, `tree`, etc.
-- **Code reading**: Any request to see code, read a file, or check implementation → `shell` with `cat`, `head`, `grep`, etc.
-- **Project exploration**: "What's in this project?", "How is this organized?", "Show me the structure" → `shell` with `ls -la`, `find . -type f`, `tree`
+1. **Code intelligence** (symbol lookup, callers/callees, impact analysis, file structure) → use `codegraph_*` tools (see Code Intelligence section above).
+2. **Code reading** (view file contents, specific lines) → use the `read`/`grep`/`glob` built-in tools.
+3. **Filesystem inspection** (project structure, directory listing, file metadata) → use `codegraph_files` first, then `shell` with `ls`/`tree`/`find` if codegraph doesn't cover it.
+4. **Shell commands** (building, running, git operations, scripts) → `shell` skill.
+
+> ⚠️ **Important**: Do NOT use `shell` with `grep`/`cat`/`find`/`ls` for code exploration when a codegraph tool exists for the same purpose. Codegraph is faster, more accurate, and returns structural information that text search cannot provide.
 
 ## Constraints
 
