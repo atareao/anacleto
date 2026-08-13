@@ -241,6 +241,25 @@ impl App {
             return;
         }
 
+        // Todo list navigation.
+        if self.show_todos {
+            match key {
+                KeyCode::Up => {
+                    self.todos_index = self.todos_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if !self.todos.is_empty() {
+                        self.todos_index = (self.todos_index + 1) % self.todos.len();
+                    }
+                }
+                KeyCode::Esc => {
+                    self.show_todos = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // ── Model picker navigation ──────────────────────────────────
         if self.model_picker.visible {
             match key {

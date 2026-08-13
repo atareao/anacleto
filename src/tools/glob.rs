@@ -13,17 +13,12 @@ const MAX_PATHS: usize = 1000;
 pub fn glob_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "glob".to_string(),
-        description: "List files within the workspace that match a glob pattern. \
-                       Patterns are relative to the workspace root and support \
-                       '*', '?', '**' and '[a-z]' (e.g. 'src/**/*.rs'). Returns \
-                       the list of matching relative paths."
-            .to_string(),
+        description: "List files matching a glob pattern within the workspace.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "pattern": {
-                    "type": "string",
-                    "description": "Glob pattern relative to the workspace root."
+                    "type": "string"
                 }
             },
             "required": ["pattern"]

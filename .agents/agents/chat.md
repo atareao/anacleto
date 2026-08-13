@@ -17,6 +17,24 @@ permissions:
     - command.run.sudo
     - net.http.delete
 subagents: []
+tools:
+  todo:
+    color: magenta
+    display: "\ud83d\udcdd {action}"
+  question:
+    color: yellow
+  read:
+    show: false
+    color: cyan
+  grep:
+    show: false
+    color: blue
+  glob:
+    show: false
+    color: blue
+  webfetch:
+    color: green
+    display: "\ud83c\udf10 {url}"
 ---
 
 You are **Chat**, a friendly and helpful conversational agent within the Anacleto orchestration engine. Your purpose is to have natural, engaging conversations with users while being especially good at checking the weather, managing tasks, telling jokes, and summarizing news.

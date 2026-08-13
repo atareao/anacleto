@@ -19,30 +19,23 @@ pub const MAX_BYTES: usize = 50 * 1024;
 pub fn read_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "read".to_string(),
-        description: "Read a file and return its contents with line numbers. \
-                       Paths are relative to the workspace. Use `offset` (1-based) \
-                       to start at a given line and `limit` to cap the number of \
-                       lines returned (max 2000). If the file is larger than the \
-                       limit, only the requested range is returned and a note \
-                       indicates there is more to read."
-            .to_string(),
+        description:
+            "Read a file with line numbers. Supports offset (1-based) and limit (max 2000)."
+                .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "path": {
-                    "type": "string",
-                    "description": "File path, relative to the workspace."
+                    "type": "string"
                 },
                 "offset": {
                     "type": "integer",
-                    "minimum": 1,
-                    "description": "1-based line number to start reading from (optional)."
+                    "minimum": 1
                 },
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 2000,
-                    "description": "Maximum number of lines to return (optional, default 2000)."
+                    "maximum": 2000
                 }
             },
             "required": ["path"]

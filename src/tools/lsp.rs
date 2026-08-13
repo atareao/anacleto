@@ -13,40 +13,28 @@ use crate::permissions::types::Permissions;
 pub fn lsp_query_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "lsp_query".to_string(),
-        description: "Query a Language Server Protocol (LSP) server for code \
-                       intelligence. Provide `server_command` (e.g. 'rust-analyzer' \
-                       or 'typescript-language-server'), the `file_path` to analyze, \
-                       the 0-based `line` and `character` position, and a `query_type` \
-                       of 'hover', 'definition', 'references' or 'diagnostic'. \
-                       If `server_command` is omitted, a default is chosen from the \
-                       file extension. Launches the server process, so it requires \
-                       the command.run permission."
+        description: "Query an LSP server for code intelligence: hover, definition, references, or diagnostic."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "server_command": {
-                    "type": "string",
-                    "description": "The LSP server executable (e.g. 'rust-analyzer'). Optional; inferred from the file extension if omitted."
+                    "type": "string"
                 },
                 "file_path": {
-                    "type": "string",
-                    "description": "Absolute path to the file to analyze."
+                    "type": "string"
                 },
                 "line": {
                     "type": "integer",
-                    "minimum": 0,
-                    "description": "0-based line number of the position (ignored for 'diagnostic')."
+                    "minimum": 0
                 },
                 "character": {
                     "type": "integer",
-                    "minimum": 0,
-                    "description": "0-based character offset of the position (ignored for 'diagnostic')."
+                    "minimum": 0
                 },
                 "query_type": {
                     "type": "string",
-                    "enum": ["hover", "definition", "references", "diagnostic"],
-                    "description": "The kind of LSP query to perform."
+                    "enum": ["hover", "definition", "references", "diagnostic"]
                 }
             },
             "required": ["file_path", "query_type"]

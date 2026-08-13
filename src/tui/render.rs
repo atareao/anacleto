@@ -375,12 +375,14 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-/// Render the left panel: session list, agent list, subagent tree, or chat.
+/// Render the left panel: session list, agent list, subagent tree, todos, or chat.
 fn render_left_panel(f: &mut Frame, area: Rect, app: &mut App) {
     if app.show_timeline {
         render_timeline_panel(f, area, app);
     } else if app.show_mcps {
         render_mcp_list_panel(f, area, app);
+    } else if app.show_todos {
+        render_todo_panel(f, area, app);
     } else if app.show_session_list {
         render_session_list(f, area, app);
     } else if app.show_agents {
@@ -457,6 +459,78 @@ fn render_mcp_list_panel(f: &mut Frame, area: Rect, app: &App) {
                 .title(" MCP Servers "),
         )
         .highlight_style(Style::default().bg(app.theme.accent()));
+    f.render_widget(list, area);
+}
+
+/// Render the todo list panel (`/todos`).
+fn render_todo_panel(f: &mut Frame, area: Rect, app: &App) {
+    let items: Vec<ListItem> = if app.todos.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "(no hay tareas — usa el tool `todo` para crear una)",
+            Style::default().fg(Color::DarkGray),
+        )))]
+    } else {
+        app.todos
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let selected = i == app.todos_index;
+                let sel = |s: Style| -> Style {
+                    if selected {
+                        s.bg(app.theme.accent()).fg(Color::Black)
+                    } else {
+                        s
+                    }
+                };
+
+                // Status emoji
+                let (status_emoji, status_color) = match t.status.as_str() {
+                    "completed" => ("✅", Color::Green),
+                    "in_progress" => ("🔄", Color::Yellow),
+                    "cancelled" => ("❌", Color::Red),
+                    _ => ("⬜", Color::DarkGray), // pending
+                };
+
+                // Priority indicator
+                let priority_str = match t.priority.as_deref() {
+                    Some("high") => " 🔥",
+                    Some("medium") => " ⚡",
+                    Some("low") => " ↓",
+                    _ => "",
+                };
+
+                let mut spans = Vec::new();
+                spans.push(Span::styled(
+                    format!("{} ", status_emoji),
+                    sel(Style::default()
+                        .fg(status_color)
+                        .add_modifier(Modifier::BOLD)),
+                ));
+                spans.push(Span::styled(t.content.clone(), sel(Style::default())));
+                if !priority_str.is_empty() {
+                    spans.push(Span::styled(
+                        priority_str,
+                        sel(Style::default().fg(status_color)),
+                    ));
+                }
+
+                ListItem::new(Line::from(spans))
+            })
+            .collect()
+    };
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Rgb(100, 200, 255)))
+            .title(format!(
+                " Todos ({}/{}) ",
+                app.todos.iter().filter(|t| t.status == "completed").count(),
+                app.todos.len()
+            )),
+    );
+
     f.render_widget(list, area);
 }
 
@@ -1364,6 +1438,37 @@ pub(crate) fn trim_block_blank_lines(content: &str) -> String {
     result_lines.join("\n")
 }
 
+/// Parse a color name or hex code into a ratatui Color.
+fn parse_color_name(name: &str) -> Option<Color> {
+    match name.to_lowercase().trim() {
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "yellow" => Some(Color::Yellow),
+        "blue" => Some(Color::Blue),
+        "magenta" => Some(Color::Magenta),
+        "cyan" => Some(Color::Cyan),
+        "white" => Some(Color::White),
+        "black" => Some(Color::Black),
+        "gray" | "grey" => Some(Color::Gray),
+        "dark_gray" | "dark_grey" => Some(Color::DarkGray),
+        "light_red" => Some(Color::LightRed),
+        "light_green" => Some(Color::LightGreen),
+        "light_yellow" => Some(Color::LightYellow),
+        "light_blue" => Some(Color::LightBlue),
+        "light_magenta" => Some(Color::LightMagenta),
+        "light_cyan" => Some(Color::LightCyan),
+        "light_white" => Some(Color::White),
+        // Hex color support: "#ff8800"
+        hex if hex.starts_with('#') && hex.len() == 7 => {
+            let r = u8::from_str_radix(&hex[1..3], 16).ok()?;
+            let g = u8::from_str_radix(&hex[3..5], 16).ok()?;
+            let b = u8::from_str_radix(&hex[5..7], 16).ok()?;
+            Some(Color::Rgb(r, g, b))
+        }
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::needless_option_as_deref)]
 fn render_sectioned_block(
@@ -1645,6 +1750,19 @@ fn render_sectioned_block(
         if marker == "[tool-error]" && section == "tool" {
             tool_style = styles.tool_error;
             continue;
+        }
+
+        // ── [tool-color:NAME] marker: custom color from tool settings ──
+        if let Some(cname) = marker
+            .strip_prefix("[tool-color:")
+            .and_then(|m| m.strip_suffix(']'))
+        {
+            if section == "tool" {
+                if let Some(color) = parse_color_name(cname) {
+                    tool_style = Style::default().fg(color);
+                }
+                continue;
+            }
         }
 
         // ── [normal] / [/normal] markers ──

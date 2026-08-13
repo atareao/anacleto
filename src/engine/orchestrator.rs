@@ -1382,6 +1382,7 @@ mod tests {
                 system_prompt: String::new(),
                 max_steps: 90,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
             AgentConfig {
                 name: "tech-writer".into(),
@@ -1396,6 +1397,7 @@ mod tests {
                 system_prompt: String::new(),
                 max_steps: 90,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
         ];
 
@@ -1488,6 +1490,7 @@ mod tests {
             crate::permissions::Permissions::default(),
             60,
             AgentId::new(),
+            std::collections::HashMap::new(),
         );
         let result = engine.resolve_agent_provider(&agent);
         assert!(result.is_ok());
@@ -1683,6 +1686,7 @@ mod tests {
                 system_prompt: String::new(),
                 max_steps: 90,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
             AgentConfig {
                 name: "writer".into(),
@@ -1697,6 +1701,7 @@ mod tests {
                 system_prompt: String::new(),
                 max_steps: 90,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
             AgentConfig {
                 name: "helper".into(),
@@ -1711,6 +1716,7 @@ mod tests {
                 system_prompt: String::new(),
                 max_steps: 90,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
         ];
         let mut engine = Engine::new(config, event_tx, cmd_rx);
@@ -1776,6 +1782,7 @@ mod tests {
             system_prompt: String::new(),
             max_steps: 90,
             subagent_depth: 3,
+            tools: HashMap::new(),
         });
         // `orphan` is NOT in `self.agents` (not spawned).
         let err = engine.handle_switch_agent("orphan").await.unwrap_err();
@@ -1817,6 +1824,7 @@ mod tests {
             system_prompt: String::new(),
             max_steps: 90,
             subagent_depth: 3,
+            tools: HashMap::new(),
         }];
 
         engine.reload_config(new_config);

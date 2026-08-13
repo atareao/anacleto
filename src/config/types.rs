@@ -424,6 +424,49 @@ pub struct AgentConfig {
     /// tool calls are rejected to prevent runaway nesting.
     #[serde(default = "default_subagent_depth")]
     pub subagent_depth: u32,
+
+    /// Per-tool configuration overrides.
+    /// Keyed by tool name (e.g. "read", "shell", "todo").
+    #[serde(default)]
+    pub tools: HashMap<String, ToolSettings>,
+}
+
+/// Per-tool configuration for an agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolSettings {
+    /// Whether this tool is sent to the model (default: true).
+    /// When false, the tool is excluded from the tool list, saving tokens.
+    #[serde(default = "default_tool_enabled")]
+    pub enabled: bool,
+    /// Whether executions are shown in the chat (default: true).
+    /// When false, ToolExecution/ToolResult events are not rendered.
+    #[serde(default = "default_tool_show")]
+    pub show: bool,
+    /// Custom display template with `{param}` placeholders (optional).
+    /// E.g., "📖 leyendo: {path}" for the `read` tool.
+    pub display: Option<String>,
+    /// Custom color for the tool execution line in the TUI (optional).
+    /// Supports: red, green, yellow, blue, magenta, cyan, white, gray,
+    /// dark_gray, light_* variants, and hex colors like "#ff8800".
+    pub color: Option<String>,
+}
+
+impl Default for ToolSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            show: true,
+            display: None,
+            color: None,
+        }
+    }
+}
+
+fn default_tool_enabled() -> bool {
+    true
+}
+fn default_tool_show() -> bool {
+    true
 }
 
 fn default_role() -> AgentRole {

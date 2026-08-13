@@ -125,35 +125,19 @@ impl ToolInventory {
         }
     }
 
-    /// Format the inventory as a prompt for the agent's context.
+    /// Format the inventory as a compact prompt for the agent's context.
     pub fn to_prompt(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!(
-            "Shell: {} ({})\n\n",
+            "Shell: {} ({})\n",
             self.shell.name, self.shell.path
         ));
 
-        out.push_str("Available modern tools (prefer these over classic GNU tools):\n");
-        for tool in &self.tools {
-            if !self.available.contains(&tool.name) {
-                continue;
-            }
-            if tool.classic.is_empty() {
-                out.push_str(&format!("- {} — {}\n", tool.name, tool.description));
-            } else {
-                out.push_str(&format!(
-                    "- {} (replaces {}) — {}\n",
-                    tool.name, tool.classic, tool.description
-                ));
-            }
+        if !self.available.is_empty() {
+            out.push_str(&format!("Available: {}\n", self.available.join(", ")));
         }
-
-        if self.missing.is_empty() {
-            out.push_str("\nAll modern tools available.\n");
-        } else {
-            out.push_str("\nNot available (use classic equivalents): ");
-            out.push_str(&self.missing.join(", "));
-            out.push('\n');
+        if !self.missing.is_empty() {
+            out.push_str(&format!("Missing: {}\n", self.missing.join(", ")));
         }
 
         out

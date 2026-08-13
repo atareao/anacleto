@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::types::{AgentRole, AgentStatus};
 use crate::config::Config;
-use crate::config::types::CustomCommand;
+use crate::config::types::{CustomCommand, ToolSettings};
 use crate::db::models::SessionSummary;
 use crate::engine::orchestrator::{
     EngineCommand, EngineEvent, McpStatus, SkillInfo, StatusInfo, TimelineEntry,
@@ -189,6 +189,10 @@ pub struct App {
     pub show_mcps: bool,
     /// Index of the highlighted MCP entry.
     pub(crate) mcps_index: usize,
+    /// Whether the todo list panel is open.
+    pub show_todos: bool,
+    /// Index of the highlighted todo entry.
+    pub(crate) todos_index: usize,
     /// Active `/init` flow (None when not running).
     pub(crate) init_flow: Option<InitFlow>,
     /// Todo list for the active session (from the `todo` tool).
@@ -233,6 +237,8 @@ pub struct App {
     /// The full rendered chat lines from the last frame, used by mouse-click
     /// handling to map a click row back to an absolute rendered line.
     pub(crate) rendered_chat_lines: Vec<ratatui::text::Line<'static>>,
+    /// Tool display settings (colors, templates) for the active agent.
+    pub(crate) tool_settings: HashMap<String, ToolSettings>,
     /// Set of collapsed section IDs (ephemeral, per-session).
     pub(crate) collapsed_sections: HashSet<String>,
     /// Per-frame mapping: line index in rendered_chat_lines → section_id.
@@ -412,6 +418,8 @@ impl App {
             timeline_index: 0,
             show_mcps: false,
             mcps_index: 0,
+            show_todos: false,
+            todos_index: 0,
             init_flow: None,
             todos: Vec::new(),
             keymap,
@@ -431,6 +439,7 @@ impl App {
             code_block_positions: Vec::new(),
             pending_tool_lines: Vec::new(),
             rendered_chat_lines: Vec::new(),
+            tool_settings: HashMap::new(),
             collapsed_sections: HashSet::new(),
             section_line_map: Vec::new(),
             section_info: Vec::new(),

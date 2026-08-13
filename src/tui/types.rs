@@ -80,6 +80,8 @@ pub(crate) const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/stage", "Stage the conversation as a pending snapshot"),
     ("/clear", "Clear the staged snapshot"),
     ("/commit", "Commit the staged snapshot"),
+    ("/todos", "Show todo list"),
+    ("/t", "Show todo list (alias)"),
 ];
 
 #[derive(Debug, Clone)]

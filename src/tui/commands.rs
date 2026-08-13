@@ -385,6 +385,12 @@ impl App {
                 self.show_timeline = true;
                 let _ = self.cmd_tx.try_send(EngineCommand::Timeline);
             }
+            "/todos" | "/t" => {
+                self.push_msg("> /todos");
+                self.close_panels();
+                self.show_todos = true;
+                self.todos_index = 0;
+            }
             "/worktree" => match parts.get(1).map(|s| s.to_string()) {
                 Some(sub) if sub == "list" => {
                     self.push_msg("> /worktree list");
@@ -637,5 +643,6 @@ impl App {
         self.show_subagents = false;
         self.show_timeline = false;
         self.show_mcps = false;
+        self.show_todos = false;
     }
 }
