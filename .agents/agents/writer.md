@@ -1,6 +1,8 @@
 ---
 name: writer
 description: Technical writing specialist
+when_to_use: >
+  Cuando necesites redactar documentación técnica, artículos o contenido escrito en general
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:

@@ -3,6 +3,21 @@
 
 use crate::agent::types::{AgentId, AgentRole, AgentStatus, TaskMode};
 
+/// Maximum number of chat messages kept in RAM for rendering. Older messages
+/// are persisted in the SQLite database by the engine, so dropping them from
+/// the in-memory buffer only affects the visible chat history (which the user
+/// can recover by scrolling up — see `load_older_messages`).
+///
+/// This is the primary guard against unbounded RAM growth: a long session
+/// with large code blocks can otherwise balloon past 160 MB.
+pub(crate) const MAX_MESSAGES: usize = 500;
+
+/// Maximum length (in characters) of a single chat message kept in RAM.
+/// Tool outputs and LLM responses can be huge (tens of KB); truncating them
+/// at the display layer saves memory without losing the DB-persisted content.
+/// The full message is always available in the database.
+pub(crate) const MAX_MESSAGE_LENGTH: usize = 12_000;
+
 /// All slash commands with a short description, used by the fuzzy command
 /// palette and Tab autocomplete.
 pub(crate) const BUILTIN_COMMANDS: &[(&str, &str)] = &[

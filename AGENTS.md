@@ -49,7 +49,7 @@ src/
 | Decision | Choice |
 |---|---|
 | **Agent model** | Agents and subagents are the same type. Agents have `subagents: []`. Only agents are user-invocable. Subagents cannot nest. |
-| **Subagent lifecycle** | Disposable: create → work → reply → destroy. No inheritance from parent. |
+| **Subagent lifecycle** | Disposable: create → work → reply → destroy. No inheritance from parent. When a subagent runs out of steps, it MUST stop, return all results to the parent agent, and explicitly indicate it has run out of steps. |
 | **Skills** | Markdown + YAML frontmatter (Anthropic format). Per-agent, no inheritance. |
 | **MCPs** | Consumer only (no lifecycle management). Per-agent, no inheritance. |
 | **TUI** | ratatui + crossterm, same process as engine (separate Tokio tasks). |

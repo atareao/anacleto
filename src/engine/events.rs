@@ -97,8 +97,13 @@ pub enum EngineEvent {
     TokenUsage {
         agent_id: AgentId,
         agent_name: String,
+        /// Total tokens (prompt + completion) for this response.
         total_tokens: u32,
+        /// Prompt tokens sent to the LLM (proxy for current conversation size).
+        prompt_tokens: u32,
+        /// Context window of the provider.
         context_window: u32,
+        /// Cost estimated from per-million-token prices.
         cost: f64,
     },
     /// Tool/skill execution started.
@@ -132,10 +137,12 @@ pub enum EngineEvent {
     ModelChanged { model: String },
     /// The active root agent changed (via `/agent`).
     AgentSwitched { name: String },
-    /// The conversation context was compacted (via `/compact`).
+    /// The conversation context was compacted.
     ConversationCompacted {
         agent_id: AgentId,
         agent_name: String,
+        /// Estimated token count of the conversation buffer after compaction.
+        tokens: u32,
     },
     /// The last message pair was undone (via `/undo`).
     UndoApplied { removed: Vec<String> },

@@ -1,6 +1,8 @@
 ---
 name: verifier
 description: Comprueba que el artículo es correcto y completo según la investigación y los criterios editoriales
+when_to_use: >
+  Después de que el article-writer complete un borrador, delega al verifier para comprobar que es correcto y completo según la investigación y los criterios editoriales
 role: subagent
 model: deepseek/deepseek-v4-flash
 skills:

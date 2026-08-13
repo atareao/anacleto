@@ -96,7 +96,10 @@ async fn main() -> anyhow::Result<()> {
     anacleto::shell::init(&overrides);
 
     // Create communication channels
-    let (event_tx, event_rx) = mpsc::channel::<EngineEvent>(256);
+    // The event channel is large because during LLM streaming each token
+    // becomes an `AgentStreamChunk` event; a small capacity would fill up
+    // quickly and block the engine, slowing down the whole pipeline.
+    let (event_tx, event_rx) = mpsc::channel::<EngineEvent>(4096);
     let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(64);
 
     // Initialize engine

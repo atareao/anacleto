@@ -377,6 +377,11 @@ pub struct AgentConfig {
     /// Short human-readable summary of this agent (from frontmatter).
     pub description: String,
 
+    /// Directrices de cuándo el agente padre debe invocar este subagente
+    /// (texto libre, inyectado automáticamente en el system prompt del padre).
+    #[serde(default)]
+    pub when_to_use: String,
+
     /// Role in the hierarchy: "root" or "subagent" (default "subagent").
     #[serde(default = "default_role")]
     pub role: AgentRole,
