@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-08-13
+
+### Fixed
+
+- **Dialog overflow** — `render_approval_dialog` and `render_question_dialog` now compute dynamic heights from wrapped content lines instead of fixed heights, and apply `Wrap { trim: false }` so long operations, questions, and options never overflow or get cut off.
+- **Dialog exchanges missing from chat** — approval requests, question prompts, and user answers (Y/N, Enter, Esc) are now logged to the chat history, so dialog interactions are visible in the transcript.
+- **Context compaction not triggering** — `estimate_tokens` now counts characters (not bytes, important for UTF-8 like accented Spanish) and uses a conservative ~3 chars/token heuristic that overestimates code-heavy conversations, so auto-compaction fires *before* the real context limit is reached.
+
+### Added
+
+- **Context warning indicator** — the status bar shows `⚠ ctx NN%` in yellow when context usage is ≥70% and `🔥 ctx NN%` in red at ≥90%.
+- **High-context toast** — a one-time warning toast suggests using `/compact` when context usage crosses 70%.
+
 ## [0.27.0] - 2026-08-13
 
 ### Fixed
