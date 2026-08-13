@@ -286,6 +286,7 @@ pub(crate) fn render_table_block(
     prefix: &str,
     border_style: Style,
     cell_style: Style,
+    content_width: usize,
 ) -> Vec<Line<'static>> {
     if table_lines.is_empty() {
         return vec![];
@@ -348,10 +349,47 @@ pub(crate) fn render_table_block(
         }
     }
 
-    // Clamp column widths to avoid insanely wide tables
+    // Clamp column widths: cap at 40 per column, then shrink to fit content_width
     let max_col = 40usize;
     for w in &mut col_widths {
         *w = (*w).min(max_col);
+    }
+
+    // Calculate total table width and shrink columns if needed
+    let prefix_width = prefix.width();
+    // Total width = prefix + left_border(1) + sum(col_width + 3) per column
+    // where +3 = leading_space(1) + trailing_space(1) + pipe(1)
+    let total_width = prefix_width + 1 + col_widths.iter().map(|w| w + 3).sum::<usize>();
+
+    if total_width > content_width && !col_widths.is_empty() {
+        let excess = total_width - content_width;
+        let total_col_width: usize = col_widths.iter().sum();
+
+        let mut remaining_excess = excess;
+        // First pass: proportional reduction, keeping minimum 3 chars per column.
+        // `checked_div` avoids division by zero when all columns are at minimum width.
+        for w in &mut col_widths {
+            let reduction = (*w * excess)
+                .checked_div(total_col_width)
+                .unwrap_or(0)
+                .min(w.saturating_sub(3));
+            *w -= reduction;
+            remaining_excess = remaining_excess.saturating_sub(reduction);
+        }
+        // Second pass: distribute any remaining excess to widest columns
+        if remaining_excess > 0 {
+            // Sort indices by width descending
+            let mut indices: Vec<usize> = (0..col_widths.len()).collect();
+            indices.sort_by(|&a, &b| col_widths[b].cmp(&col_widths[a]));
+            for i in indices {
+                if remaining_excess == 0 {
+                    break;
+                }
+                let reduction = remaining_excess.min(col_widths[i].saturating_sub(3));
+                col_widths[i] -= reduction;
+                remaining_excess -= reduction;
+            }
+        }
     }
 
     let mut out: Vec<Line> = Vec::new();
@@ -755,6 +793,118 @@ mod tests {
             "blank gap: only {} of {} visible rows used",
             used,
             visible
+        );
+    }
+
+    #[test]
+    fn render_table_block_fits_within_content_width() {
+        let lines = vec![
+            "| Name | Description | Value |",
+            "|------|-------------|-------|",
+            "| Foo  | Short desc  | 42    |",
+            "| Bar  | Longer text | 99    |",
+        ];
+        let result = render_table_block(&lines, "▐ ", Style::default(), Style::default(), 80);
+        assert!(!result.is_empty(), "should produce output");
+
+        // Measure the widest line's visual width
+        let max_width = result.iter().map(|l| l.width()).max().unwrap_or(0);
+        assert!(
+            max_width <= 80,
+            "table width {} exceeds content_width 80",
+            max_width
+        );
+    }
+
+    #[test]
+    fn render_table_block_shrinks_columns_when_too_wide() {
+        let lines = vec![
+            "| VeryLongColumnName | AnotherLongColumn | ThirdWideColumn |",
+            "|-------------------|-------------------|-----------------|",
+            "| SomeLongValueHere | MoreLongDataHere  | EvenMoreStuff   |",
+        ];
+        // Narrow content_width forces aggressive shrinking
+        let result = render_table_block(&lines, "▐ ", Style::default(), Style::default(), 40);
+        assert!(!result.is_empty(), "should produce output");
+
+        let max_width = result.iter().map(|l| l.width()).max().unwrap_or(0);
+        assert!(
+            max_width <= 40,
+            "table width {} exceeds content_width 40",
+            max_width
+        );
+    }
+
+    #[test]
+    fn render_table_block_very_narrow_width() {
+        let lines = vec!["| A | B | C |", "|---|---|---|", "| 1 | 2 | 3 |"];
+        // Extremely narrow: each column gets minimum 3 chars
+        let result = render_table_block(&lines, "", Style::default(), Style::default(), 20);
+        assert!(!result.is_empty(), "should produce output");
+
+        let max_width = result.iter().map(|l| l.width()).max().unwrap_or(0);
+        assert!(
+            max_width <= 20,
+            "table width {} exceeds content_width 20",
+            max_width
+        );
+    }
+
+    #[test]
+    fn render_table_block_ellipsis_shown_when_truncated() {
+        let lines = vec![
+            "| LongColumnName | AnotherLongColumnName |",
+            "|---------------|----------------------|",
+            "| VeryLongValue | EvenLongerValueHere   |",
+        ];
+        // Force aggressive truncation to verify ellipsis appears
+        let result = render_table_block(&lines, "", Style::default(), Style::default(), 25);
+        assert!(!result.is_empty(), "should produce output");
+
+        let first_data_line = &result[3]; // top border(0) + header(1) + sep(2) + first data(3)
+        let line_str: String = first_data_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            line_str.contains('…'),
+            "expected ellipsis in truncated table, got: {:?}",
+            line_str
+        );
+
+        let max_width = result.iter().map(|l| l.width()).max().unwrap_or(0);
+        assert!(
+            max_width <= 25,
+            "table width {} exceeds content_width 25",
+            max_width
+        );
+    }
+
+    #[test]
+    fn render_table_block_no_prefix_fits() {
+        let lines = vec!["| Col1 | Col2 |", "|------|------|", "| Val1 | Val2 |"];
+        // Without prefix, should fit easily
+        let result = render_table_block(&lines, "", Style::default(), Style::default(), 80);
+        assert!(!result.is_empty());
+        let max_width = result.iter().map(|l| l.width()).max().unwrap_or(0);
+        assert!(max_width <= 80);
+    }
+
+    #[test]
+    fn render_table_block_single_column() {
+        let lines = vec![
+            "| Data |",
+            "|------|",
+            "| Hello world this is a very long single cell |",
+        ];
+        let result = render_table_block(&lines, "▐ ", Style::default(), Style::default(), 30);
+        assert!(!result.is_empty());
+        let max_width = result.iter().map(|l| l.width()).max().unwrap_or(0);
+        assert!(
+            max_width <= 30,
+            "table width {} exceeds content_width 30",
+            max_width
         );
     }
 }

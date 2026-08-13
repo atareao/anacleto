@@ -1076,7 +1076,13 @@ fn flush_table(
         return false;
     }
     let table_lines: Vec<&str> = table_buffer.iter().map(|s| s.as_str()).collect();
-    let table_rows = render_table_block(&table_lines, prefix, border_style, cell_style);
+    let table_rows = render_table_block(
+        &table_lines,
+        prefix,
+        border_style,
+        cell_style,
+        content_width,
+    );
     let count = table_rows.len();
     for row in &table_rows {
         *cumulative_visual += visual_line_count(row, content_width);
@@ -2078,6 +2084,10 @@ fn flush_ai_batch(
 /// prefix, e.g. `"▐ "`) so that soft-wrapped continuation lines also show
 /// the left border.
 ///
+/// Wrapping prefers word boundaries (spaces) so that the break looks natural
+/// instead of stranding a comma or splitting mid-word. Character-level
+/// splitting is used only as a fallback for unbroken long words.
+///
 /// When a line fits within `max_width` it is returned as-is (zero allocation).
 fn prewrap_line(line: Line<'static>, max_width: usize) -> Vec<Line<'static>> {
     if line.spans.is_empty() || line.width() <= max_width {
@@ -2107,38 +2117,18 @@ fn prewrap_line(line: Line<'static>, max_width: usize) -> Vec<Line<'static>> {
             // Entire span fits on the current line.
             current.push(span.clone());
             current_w += span_w;
-        } else if current_w == 0 {
-            // Prefix + this span exceeds available width immediately.
-            // Split the span text across multiple lines.
-            let mut remaining = text.to_string();
-            while !remaining.is_empty() {
-                let (chunk, rest) = split_str_at_width(&remaining, available);
-                current.push(Span::styled(chunk, style));
-                result.push(Line::from(std::mem::take(&mut current)));
-                current.push(prefix.clone());
-                remaining = rest;
-            }
-            current_w = 0;
         } else {
-            // Flush current line, start a new one with this span.
-            result.push(Line::from(std::mem::take(&mut current)));
-            current.push(prefix.clone());
-
-            if span_w <= available {
-                current.push(span.clone());
-                current_w = span_w;
-            } else {
-                // This span alone exceeds available width.
-                let mut remaining = text.to_string();
-                while !remaining.is_empty() {
-                    let (chunk, rest) = split_str_at_width(&remaining, available);
-                    current.push(Span::styled(chunk, style));
-                    result.push(Line::from(std::mem::take(&mut current)));
-                    current.push(prefix.clone());
-                    remaining = rest;
-                }
-                current_w = 0;
-            }
+            // The span overflows the current line. Wrap it across lines,
+            // preferring word boundaries for a natural break.
+            current_w = push_span_across_lines(
+                &mut result,
+                &mut current,
+                &prefix,
+                text,
+                style,
+                available,
+                current_w,
+            );
         }
     }
 
@@ -2147,6 +2137,72 @@ fn prewrap_line(line: Line<'static>, max_width: usize) -> Vec<Line<'static>> {
     }
 
     result
+}
+
+/// Wrap a single span's text across one or more lines, starting on the
+/// current line (which already holds `start_w` columns of content).
+///
+/// Chunks are pushed onto `current`; every time a line fills up it is flushed
+/// to `result` and a fresh line (with the border `prefix`) is started. Returns
+/// the number of columns occupied on the final line.
+///
+/// Prefers word-boundary splits (via [`split_at_word_boundary`]) and falls
+/// back to character-level splitting ([`split_str_at_width`]) only when the
+/// remaining text is a single unbroken word wider than the line.
+fn push_span_across_lines(
+    result: &mut Vec<Line<'static>>,
+    current: &mut Vec<Span<'static>>,
+    prefix: &Span<'static>,
+    text: &str,
+    style: Style,
+    available: usize,
+    start_w: usize,
+) -> usize {
+    let mut remaining = text.to_string();
+    let mut current_w = start_w;
+
+    loop {
+        // If everything left fits in the remaining space of the current
+        // line, we are done.
+        if remaining.width() <= available.saturating_sub(current_w) {
+            current.push(Span::styled(remaining.to_string(), style));
+            return current_w + remaining.width();
+        }
+
+        let space_left = available.saturating_sub(current_w);
+        if space_left == 0 {
+            // No room left on this line — flush it and start a fresh one.
+            result.push(Line::from(std::mem::take(current)));
+            current.push(prefix.clone());
+            current_w = 0;
+            continue;
+        }
+
+        if let Some((chunk, rest)) = split_at_word_boundary(&remaining, space_left) {
+            let chunk_w = chunk.width();
+            let rest_trimmed = rest.trim_start();
+            current.push(Span::styled(chunk, style));
+            if rest_trimmed.is_empty() {
+                return current_w + chunk_w;
+            }
+            result.push(Line::from(std::mem::take(current)));
+            current.push(prefix.clone());
+            remaining = rest_trimmed.to_string();
+            current_w = 0;
+        } else {
+            // Unbroken long word — fall back to character boundaries.
+            let (chunk, rest) = split_str_at_width(&remaining, space_left);
+            let chunk_w = chunk.width();
+            current.push(Span::styled(chunk, style));
+            if rest.is_empty() {
+                return current_w + chunk_w;
+            }
+            result.push(Line::from(std::mem::take(current)));
+            current.push(prefix.clone());
+            remaining = rest;
+            current_w = 0;
+        }
+    }
 }
 
 /// Split a string at a given visual width (using `unicode-width`),
@@ -2168,6 +2224,37 @@ fn split_str_at_width(s: &str, width: usize) -> (String, String) {
     }
     let right = s[left.len()..].to_string();
     (left, right)
+}
+
+/// Split a string at the last word boundary (space) that fits within
+/// `max_width` visual columns. Returns `(left, right)` where `left` has a
+/// visual width ≤ `max_width` and ends with the separating space, and
+/// `right` starts with the following word (no leading space).
+///
+/// Returns `None` when no space fits within `max_width` (e.g. a single
+/// unbroken long word), in which case the caller should fall back to
+/// character-level splitting via [`split_str_at_width`].
+fn split_at_word_boundary(s: &str, max_width: usize) -> Option<(String, String)> {
+    if s.is_empty() || max_width == 0 {
+        return None;
+    }
+    let mut last_space: Option<usize> = None;
+    let mut w = 0;
+    for (i, c) in s.char_indices() {
+        let cw = UnicodeWidthStr::width(c.to_string().as_str());
+        if w + cw > max_width {
+            break;
+        }
+        w += cw;
+        if c == ' ' {
+            last_space = Some(i);
+        }
+    }
+    last_space.map(|pos| {
+        let left = s[..=pos].to_string();
+        let right = s[pos + 1..].to_string();
+        (left, right)
+    })
 }
 
 /// Replace collapsed section lines with a single summary line each.
@@ -3940,5 +4027,85 @@ mod tests {
         // Should contain table content
         assert!(text.iter().any(|l| l.contains("A") && l.contains("B")));
         assert!(text.iter().any(|l| l.contains("1") && l.contains("2")));
+    }
+
+    // ── prewrap_line word-boundary tests ────────────────────────────────
+
+    /// Reproduces the reported bug: the assistant reply
+    /// `Soy **Anacleto**, tu asistente conversacional. …` was wrapped right
+    /// after the bold span `Anacleto`, stranding the comma at the start of
+    /// the next line even though a natural word boundary was available.
+    ///
+    /// The total line width is 98 columns, so it overflows a 97-column
+    /// content area (terminal of 99 columns). The wrap must now happen at a
+    /// space, not at a span boundary.
+    #[test]
+    fn prewrap_wraps_at_word_boundary_not_mid_clause() {
+        let text = "Soy Anacleto, tu asistente conversacional. ¿En qué puedo ayudarte hoy? Tengo varias habilidades:";
+        let mut line = Line::from(Span::styled(text, Style::default()));
+        line.spans.insert(0, Span::styled("▐ ", Style::default()));
+
+        // content_width for a 99-column terminal (area.width - 2)
+        let max_width = 97;
+        let wrapped = prewrap_line(line, max_width);
+
+        assert!(wrapped.len() >= 2, "expected the line to wrap");
+        for l in &wrapped {
+            assert!(
+                l.width() <= max_width,
+                "wrapped line {} cols > max_width {}: {:?}",
+                l.width(),
+                max_width,
+                line_text(l)
+            );
+        }
+
+        let rest_texts: Vec<String> = wrapped[1..].iter().map(line_text).collect();
+        // Check no wrapped line starts with a comma right after the prefix
+        let prefix = "▐ ";
+        assert!(
+            !rest_texts
+                .iter()
+                .any(|t| t.starts_with(prefix) && t[prefix.len()..].starts_with(',')),
+            "comma stranded at start of a wrapped line: {rest_texts:?}"
+        );
+
+        // The break must land on a space so the first line ends cleanly.
+        let first = line_text(&wrapped[0]);
+        assert!(
+            first.ends_with(' '),
+            "first wrapped line does not end with a space: {first:?}"
+        );
+    }
+
+    /// A single unbroken long word (no spaces) must still wrap, falling
+    /// back to character-level splitting, with every line within width.
+    #[test]
+    fn prewrap_splits_unbroken_word_at_character_boundary() {
+        let long = "a".repeat(100);
+        let line = Line::from(vec![
+            Span::styled("▐ ", Style::default()),
+            Span::styled(long, Style::default()),
+        ]);
+        let wrapped = prewrap_line(line, 40);
+
+        for l in &wrapped {
+            assert!(l.width() <= 40, "line width {} > 40", l.width());
+        }
+        // available = 40 - 2 = 38 → 38 + 38 + 24 = 100 → 3 lines
+        assert_eq!(wrapped.len(), 3, "expected 3 lines, got {}", wrapped.len());
+    }
+
+    /// A line that fits within the width must be returned untouched
+    /// (single line, no extra wrapping).
+    #[test]
+    fn prewrap_keeps_fitting_line_untouched() {
+        let line = Line::from(vec![
+            Span::styled("▐ ", Style::default()),
+            Span::styled("Hola mundo", Style::default()),
+        ]);
+        let wrapped = prewrap_line(line.clone(), 40);
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!(line_text(&wrapped[0]), line_text(&line));
     }
 }
