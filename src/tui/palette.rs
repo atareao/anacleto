@@ -25,26 +25,58 @@ impl App {
             self.palette_index = 0;
             self.update_agent_palette();
             self.update_model_palette();
+            self.update_workspace_palette();
+            self.update_skill_palette();
             return;
         }
 
-        // `/agent` uses its own agent-selection combo instead of the command list.
+        // `/agent` and `/models` no longer auto-open their palettes on type.
+        // Instead, they open on Enter (handled in input.rs::handle_input_key).
+        // We still suppress them from the command palette and close any
+        // stale palette state.
         if input_text.starts_with("/agent") {
             self.show_command_palette = false;
             self.palette_matches.clear();
             self.palette_index = 0;
-            self.update_agent_palette();
-            self.update_model_palette();
+            self.show_agent_palette = false;
+            self.agent_matches.clear();
+            self.agent_index = 0;
+            self.show_model_palette = false;
+            self.model_matches.clear();
+            self.model_index = 0;
             return;
         }
 
-        // `/models` uses its own model-selection combo instead of the command list.
+        if input_text.starts_with("/workspace") {
+            self.show_command_palette = false;
+            self.palette_matches.clear();
+            self.palette_index = 0;
+            self.show_workspace_palette = false;
+            self.workspace_matches.clear();
+            self.workspace_index = 0;
+            return;
+        }
+
+        if input_text.starts_with("/skills") {
+            self.show_command_palette = false;
+            self.palette_matches.clear();
+            self.palette_index = 0;
+            self.show_skill_palette = false;
+            self.skill_matches.clear();
+            self.skill_index = 0;
+            return;
+        }
+
         if input_text.starts_with("/models") {
             self.show_command_palette = false;
             self.palette_matches.clear();
             self.palette_index = 0;
-            self.update_agent_palette();
-            self.update_model_palette();
+            self.show_agent_palette = false;
+            self.agent_matches.clear();
+            self.agent_index = 0;
+            self.show_model_palette = false;
+            self.model_matches.clear();
+            self.model_index = 0;
             return;
         }
 
@@ -131,6 +163,62 @@ impl App {
         self.show_model_palette = !self.model_matches.is_empty();
         if self.model_index >= self.model_matches.len() {
             self.model_index = 0;
+        }
+    }
+
+    /// Fuzzy workspace-selection combo for `/workspace`.
+    pub(crate) fn update_workspace_palette(&mut self) {
+        let input_text = self.textarea.lines().join("\n");
+
+        if !input_text.starts_with("/workspace") {
+            self.show_workspace_palette = false;
+            self.workspace_matches.clear();
+            self.workspace_index = 0;
+            return;
+        }
+
+        let query = input_text.trim_start_matches("/workspace").trim_start();
+
+        let mut scored: Vec<(u32, String)> = self
+            .workspaces_list
+            .iter()
+            .cloned()
+            .filter_map(|name| fuzzy_score(query, &name).map(|s| (s, name)))
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+        self.workspace_matches = scored.into_iter().map(|(_, n)| n).collect();
+        self.show_workspace_palette = !self.workspace_matches.is_empty();
+        if self.workspace_index >= self.workspace_matches.len() {
+            self.workspace_index = 0;
+        }
+    }
+
+    /// Fuzzy skill-selection combo for `/skill`.
+    pub(crate) fn update_skill_palette(&mut self) {
+        let input_text = self.textarea.lines().join("\n");
+
+        if !input_text.starts_with("/skills") {
+            self.show_skill_palette = false;
+            self.skill_matches.clear();
+            self.skill_index = 0;
+            return;
+        }
+
+        let query = input_text.trim_start_matches("/skills").trim_start();
+
+        let source: Vec<String> = self.all_discovered_skills.iter().cloned().collect();
+
+        let mut scored: Vec<(u32, String)> = source
+            .into_iter()
+            .filter_map(|name| fuzzy_score(query, &name).map(|s| (s, name)))
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+        self.skill_matches = scored.into_iter().map(|(_, n)| n).collect();
+        self.show_skill_palette = !self.skill_matches.is_empty();
+        if self.skill_index >= self.skill_matches.len() {
+            self.skill_index = 0;
         }
     }
 }
@@ -271,5 +359,91 @@ pub(crate) fn render_model_palette(f: &mut Frame, input_area: Rect, app: &App) {
         list,
         area,
         &mut ratatui::widgets::ListState::default().with_selected(Some(app.model_index)),
+    );
+}
+
+/// Render the workspace-selection combo as a dropdown above the input area.
+pub(crate) fn render_workspace_palette(f: &mut Frame, input_area: Rect, app: &App) {
+    let max_items = 8usize;
+    let count = app.workspace_matches.len().min(max_items);
+    let width = input_area.width.min(60);
+    let height = (count as u16) + 2;
+    let x = input_area.x;
+    let y = input_area.y.saturating_sub(height);
+    let area = Rect::new(x, y, width, height);
+
+    let items: Vec<ListItem> = app
+        .workspace_matches
+        .iter()
+        .take(max_items)
+        .map(|name| {
+            let line = Line::from(vec![Span::styled(
+                format!(" {:<24}", name),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Green))
+                .title(" Workspaces "),
+        )
+        .highlight_style(Style::default().bg(Color::Rgb(30, 50, 30)))
+        .highlight_symbol("▸ ");
+
+    f.render_stateful_widget(
+        list,
+        area,
+        &mut ratatui::widgets::ListState::default().with_selected(Some(app.workspace_index)),
+    );
+}
+
+/// Render the skill-selection combo as a dropdown above the input area.
+pub(crate) fn render_skill_palette(f: &mut Frame, input_area: Rect, app: &App) {
+    let max_items = 8usize;
+    let count = app.skill_matches.len().min(max_items);
+    let width = input_area.width.min(60);
+    let height = (count as u16) + 2;
+    let x = input_area.x;
+    let y = input_area.y.saturating_sub(height);
+    let area = Rect::new(x, y, width, height);
+
+    let items: Vec<ListItem> = app
+        .skill_matches
+        .iter()
+        .take(max_items)
+        .map(|name| {
+            let line = Line::from(vec![Span::styled(
+                format!(" {:<24}", name),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title(" Skills "),
+        )
+        .highlight_style(Style::default().bg(Color::Rgb(50, 50, 30)))
+        .highlight_symbol("▸ ");
+
+    f.render_stateful_widget(
+        list,
+        area,
+        &mut ratatui::widgets::ListState::default().with_selected(Some(app.skill_index)),
     );
 }

@@ -163,7 +163,7 @@ impl App {
                 }
             }
             // ── Agent info commands ────────────────────────────────
-            "/agent" => {
+            "/agent" | "/agents" | "/a" => {
                 let name = parts.get(1).unwrap_or(&"").trim();
                 if name.is_empty() {
                     self.push_msg("Usage: /agent <agent-name>");
@@ -172,14 +172,6 @@ impl App {
                     let _ = self
                         .cmd_tx
                         .try_send(EngineCommand::SwitchAgent(name.to_string()));
-                }
-            }
-            "/agents" | "/a" => {
-                self.push_msg("> /agents");
-                self.show_agents = !self.show_agents;
-                if self.show_agents {
-                    self.close_panels();
-                    self.show_agents = true;
                 }
             }
             "/subagents" | "/sa" => {
@@ -644,5 +636,7 @@ impl App {
         self.show_timeline = false;
         self.show_mcps = false;
         self.show_todos = false;
+        self.show_workspace_palette = false;
+        self.show_skill_palette = false;
     }
 }

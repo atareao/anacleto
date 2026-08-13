@@ -9,6 +9,7 @@ use ratatui_textarea::CursorMove;
 
 use super::app::App;
 use super::render::shift_char;
+use crate::engine::orchestrator::EngineCommand;
 use crate::tui::keymap::Action;
 
 impl App {
@@ -82,9 +83,50 @@ impl App {
         } else if self.keymap.matches(key_event, Action::CursorRight) {
             self.textarea.move_cursor(CursorMove::Forward);
         } else if self.keymap.matches(key_event, Action::CursorUp) {
-            self.textarea.move_cursor(CursorMove::Up);
+            // When a palette is open, ↑ navigates the palette instead of the cursor.
+            if self.show_model_palette && !self.model_matches.is_empty() {
+                self.model_index = self
+                    .model_index
+                    .saturating_sub(1)
+                    .min(self.model_matches.len() - 1);
+            } else if self.show_agent_palette && !self.agent_matches.is_empty() {
+                self.agent_index = self
+                    .agent_index
+                    .saturating_sub(1)
+                    .min(self.agent_matches.len() - 1);
+            } else if self.show_workspace_palette && !self.workspace_matches.is_empty() {
+                self.workspace_index = self
+                    .workspace_index
+                    .saturating_sub(1)
+                    .min(self.workspace_matches.len() - 1);
+            } else if self.show_skill_palette && !self.skill_matches.is_empty() {
+                self.skill_index = self
+                    .skill_index
+                    .saturating_sub(1)
+                    .min(self.skill_matches.len() - 1);
+            } else if self.show_command_palette && !self.palette_matches.is_empty() {
+                self.palette_index = self
+                    .palette_index
+                    .saturating_sub(1)
+                    .min(self.palette_matches.len() - 1);
+            } else {
+                self.textarea.move_cursor(CursorMove::Up);
+            }
         } else if self.keymap.matches(key_event, Action::CursorDown) {
-            self.textarea.move_cursor(CursorMove::Down);
+            // When a palette is open, ↓ navigates the palette instead of the cursor.
+            if self.show_model_palette && !self.model_matches.is_empty() {
+                self.model_index = (self.model_index + 1) % self.model_matches.len();
+            } else if self.show_agent_palette && !self.agent_matches.is_empty() {
+                self.agent_index = (self.agent_index + 1) % self.agent_matches.len();
+            } else if self.show_workspace_palette && !self.workspace_matches.is_empty() {
+                self.workspace_index = (self.workspace_index + 1) % self.workspace_matches.len();
+            } else if self.show_skill_palette && !self.skill_matches.is_empty() {
+                self.skill_index = (self.skill_index + 1) % self.skill_matches.len();
+            } else if self.show_command_palette && !self.palette_matches.is_empty() {
+                self.palette_index = (self.palette_index + 1) % self.palette_matches.len();
+            } else {
+                self.textarea.move_cursor(CursorMove::Down);
+            }
         } else if self.keymap.matches(key_event, Action::DeleteChar) {
             self.textarea.delete_next_char();
             self.update_command_palette();
@@ -104,6 +146,16 @@ impl App {
                     .agent_index
                     .saturating_sub(1)
                     .min(self.agent_matches.len() - 1);
+            } else if self.show_workspace_palette && !self.workspace_matches.is_empty() {
+                self.workspace_index = self
+                    .workspace_index
+                    .saturating_sub(1)
+                    .min(self.workspace_matches.len() - 1);
+            } else if self.show_skill_palette && !self.skill_matches.is_empty() {
+                self.skill_index = self
+                    .skill_index
+                    .saturating_sub(1)
+                    .min(self.skill_matches.len() - 1);
             } else if self.show_command_palette && !self.palette_matches.is_empty() {
                 self.palette_index = self
                     .palette_index
@@ -127,6 +179,10 @@ impl App {
                 self.model_index = (self.model_index + 1) % self.model_matches.len();
             } else if self.show_agent_palette && !self.agent_matches.is_empty() {
                 self.agent_index = (self.agent_index + 1) % self.agent_matches.len();
+            } else if self.show_workspace_palette && !self.workspace_matches.is_empty() {
+                self.workspace_index = (self.workspace_index + 1) % self.workspace_matches.len();
+            } else if self.show_skill_palette && !self.skill_matches.is_empty() {
+                self.skill_index = (self.skill_index + 1) % self.skill_matches.len();
             } else if self.show_command_palette && !self.palette_matches.is_empty() {
                 self.palette_index = (self.palette_index + 1) % self.palette_matches.len();
             } else if self.history_index.is_some() {
@@ -164,6 +220,22 @@ impl App {
                 self.agent_index = 0;
                 self.reset_textarea();
                 self.handle_command(format!("/agent {}", name));
+            } else if self.show_workspace_palette && !self.workspace_matches.is_empty() {
+                let name = self.workspace_matches[self.workspace_index].clone();
+                self.show_workspace_palette = false;
+                self.workspace_matches.clear();
+                self.workspace_index = 0;
+                self.reset_textarea();
+                self.push_msg(format!("> /workspace {}", name));
+                let _ = self.cmd_tx.try_send(EngineCommand::ListWorkspaces);
+            } else if self.show_skill_palette && !self.skill_matches.is_empty() {
+                let name = self.skill_matches[self.skill_index].clone();
+                self.show_skill_palette = false;
+                self.skill_matches.clear();
+                self.skill_index = 0;
+                self.reset_textarea();
+                self.push_msg(format!("> /skill {}", name));
+                self.push_msg(format!("Available skill: {}", name));
             } else if self.show_command_palette && !self.palette_matches.is_empty() {
                 // Execute the highlighted command from the palette.
                 let idx = self.palette_matches[self.palette_index];
@@ -172,9 +244,39 @@ impl App {
                 self.palette_matches.clear();
                 self.palette_index = 0;
                 self.reset_textarea();
-                self.handle_command(cmd);
+                // If the selected command is /agent or /models, open the
+                // corresponding palette instead of inserting the command.
+                if cmd == "/agents" || cmd == "/a" {
+                    self.set_textarea_text("/agent ");
+                    self.update_agent_palette();
+                } else if cmd == "/models" || cmd == "/m" {
+                    self.set_textarea_text("/models ");
+                    self.update_model_palette();
+                } else if cmd == "/workspace" || cmd == "/skills" {
+                    self.set_textarea_text(format!("{} ", cmd).as_str());
+                    if cmd == "/workspace" {
+                        self.update_workspace_palette();
+                    } else {
+                        self.update_skill_palette();
+                    }
+                } else {
+                    self.handle_command(cmd);
+                }
             } else {
                 let input = self.textarea.lines().join("\n");
+
+                // If input is just "/workspace" or "/skills", open the
+                // corresponding palette instead of sending.
+                let trimmed = input.trim();
+                if trimmed == "/workspace" {
+                    self.update_workspace_palette();
+                    return;
+                }
+                if trimmed == "/skills" {
+                    self.update_skill_palette();
+                    return;
+                }
+
                 self.reset_textarea();
                 if !input.is_empty() {
                     // Record in input history (dedupe consecutive repeats).
@@ -200,6 +302,14 @@ impl App {
                 self.show_agent_palette = false;
                 self.agent_matches.clear();
                 self.agent_index = 0;
+            } else if self.show_workspace_palette {
+                self.show_workspace_palette = false;
+                self.workspace_matches.clear();
+                self.workspace_index = 0;
+            } else if self.show_skill_palette {
+                self.show_skill_palette = false;
+                self.skill_matches.clear();
+                self.skill_index = 0;
             } else if self.show_command_palette {
                 self.show_command_palette = false;
                 self.palette_matches.clear();
@@ -218,6 +328,58 @@ impl App {
             // Any non-Tab key resets autocomplete state
             self.tab_matches.clear();
             self.tab_index = 0;
+            // When a palette is open, j/k navigate instead of inserting text
+            let palette_open = self.show_command_palette
+                || self.show_agent_palette
+                || self.show_model_palette
+                || self.show_workspace_palette
+                || self.show_skill_palette;
+            if palette_open && (c == 'j' || c == 'k') {
+                if c == 'j' {
+                    // Navigate down
+                    if self.show_model_palette && !self.model_matches.is_empty() {
+                        self.model_index = (self.model_index + 1) % self.model_matches.len();
+                    } else if self.show_agent_palette && !self.agent_matches.is_empty() {
+                        self.agent_index = (self.agent_index + 1) % self.agent_matches.len();
+                    } else if self.show_workspace_palette && !self.workspace_matches.is_empty() {
+                        self.workspace_index =
+                            (self.workspace_index + 1) % self.workspace_matches.len();
+                    } else if self.show_skill_palette && !self.skill_matches.is_empty() {
+                        self.skill_index = (self.skill_index + 1) % self.skill_matches.len();
+                    } else if self.show_command_palette && !self.palette_matches.is_empty() {
+                        self.palette_index = (self.palette_index + 1) % self.palette_matches.len();
+                    }
+                } else {
+                    // Navigate up
+                    if self.show_model_palette && !self.model_matches.is_empty() {
+                        self.model_index = self
+                            .model_index
+                            .saturating_sub(1)
+                            .min(self.model_matches.len() - 1);
+                    } else if self.show_agent_palette && !self.agent_matches.is_empty() {
+                        self.agent_index = self
+                            .agent_index
+                            .saturating_sub(1)
+                            .min(self.agent_matches.len() - 1);
+                    } else if self.show_workspace_palette && !self.workspace_matches.is_empty() {
+                        self.workspace_index = self
+                            .workspace_index
+                            .saturating_sub(1)
+                            .min(self.workspace_matches.len() - 1);
+                    } else if self.show_skill_palette && !self.skill_matches.is_empty() {
+                        self.skill_index = self
+                            .skill_index
+                            .saturating_sub(1)
+                            .min(self.skill_matches.len() - 1);
+                    } else if self.show_command_palette && !self.palette_matches.is_empty() {
+                        self.palette_index = self
+                            .palette_index
+                            .saturating_sub(1)
+                            .min(self.palette_matches.len() - 1);
+                    }
+                }
+                return;
+            }
             if self.kb_supported && modifiers.contains(KeyModifiers::SHIFT) {
                 // Kitty protocol: shift is reported as a modifier;
                 // apply keyboard-appropriate shift mapping

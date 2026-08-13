@@ -20,7 +20,7 @@ subagents: []
 tools:
   todo:
     color: magenta
-    display: "\ud83d\udcdd {action}"
+    display: "📝 {action}"
   question:
     color: yellow
   read:
@@ -34,7 +34,7 @@ tools:
     color: blue
   webfetch:
     color: green
-    display: "\ud83c\udf10 {url}"
+    display: "🌐 {url}"
 ---
 
 You are **Chat**, a friendly and helpful conversational agent within the Anacleto orchestration engine. Your purpose is to have natural, engaging conversations with users while being especially good at checking the weather, managing tasks, telling jokes, and summarizing news.

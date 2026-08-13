@@ -151,6 +151,18 @@ pub struct App {
     pub(crate) model_matches: Vec<String>,
     /// Index of the currently highlighted model entry.
     pub(crate) model_index: usize,
+    /// Whether the workspace-selection combo is open (for `/workspace`).
+    pub(crate) show_workspace_palette: bool,
+    /// Workspace names matching the current `/workspace` query.
+    pub(crate) workspace_matches: Vec<String>,
+    /// Index of the currently highlighted workspace entry.
+    pub(crate) workspace_index: usize,
+    /// Whether the skill-selection combo is open (for `/skill`).
+    pub(crate) show_skill_palette: bool,
+    /// Skill names matching the current `/skill` query.
+    pub(crate) skill_matches: Vec<String>,
+    /// Index of the currently highlighted skill entry.
+    pub(crate) skill_index: usize,
     /// Vertical scroll offset for the chat panel (0 = bottom, auto-scroll).
     pub chat_scroll: u16,
     /// Timestamp of the last 'g' press, used to detect a double-'g' (gg) jump.
@@ -400,6 +412,12 @@ impl App {
             show_model_palette: false,
             model_matches: Vec::new(),
             model_index: 0,
+            show_workspace_palette: false,
+            workspace_matches: Vec::new(),
+            workspace_index: 0,
+            show_skill_palette: false,
+            skill_matches: Vec::new(),
+            skill_index: 0,
             chat_scroll: 0,
             last_g_press: None,
             frame_count: 0,

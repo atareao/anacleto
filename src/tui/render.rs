@@ -19,7 +19,10 @@ use super::code_block::CodeBlockHighlighter;
 use super::markdown::{
     render_markdown_line_with_syntect, render_table_block, select_visible_start, visual_line_count,
 };
-use super::palette::{render_agent_palette, render_command_palette, render_model_palette};
+use super::palette::{
+    render_agent_palette, render_command_palette, render_model_palette, render_skill_palette,
+    render_workspace_palette,
+};
 use super::theme::Theme;
 use super::types::{AgentInfo, CollapsedSection, Focus};
 use crate::agent::types::{AgentRole, AgentStatus, TaskMode};
@@ -61,6 +64,14 @@ pub(crate) fn render(f: &mut Frame, app: &mut App) {
     // Render the model-selection combo above the input if open.
     if app.show_model_palette && !app.model_matches.is_empty() {
         render_model_palette(f, chunks[2], app);
+    }
+    // Render the workspace-selection combo above the input if open.
+    if app.show_workspace_palette && !app.workspace_matches.is_empty() {
+        render_workspace_palette(f, chunks[2], app);
+    }
+    // Render the skill-selection combo above the input if open.
+    if app.show_skill_palette && !app.skill_matches.is_empty() {
+        render_skill_palette(f, chunks[2], app);
     }
 
     // Render approval dialog on top if pending

@@ -577,8 +577,17 @@ impl App {
                 return;
             }
             if self.keymap.matches(key_event, Action::OpenModelPicker) {
-                self.model_picker.visible = true;
-                let _ = self.cmd_tx.try_send(EngineCommand::ListModelFrecency);
+                // Focus input and start typing /models, then show palette immediately
+                self.focus = Focus::Input;
+                self.set_textarea_text("/models ");
+                self.update_model_palette();
+                return;
+            }
+            if self.keymap.matches(key_event, Action::OpenAgentPicker) {
+                // Focus input and start typing /agent, then show palette immediately
+                self.focus = Focus::Input;
+                self.set_textarea_text("/agent ");
+                self.update_agent_palette();
                 return;
             }
             if self.keymap.matches(key_event, Action::OpenEditor) {
