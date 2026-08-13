@@ -5,12 +5,19 @@ use crate::llm::provider::LlmProvider;
 use crate::llm::types::{LlmMessage, LlmRequest, MessageRole};
 
 /// Roughly estimate the number of tokens in a text string.
-/// Uses the rule of thumb: ~4 characters per token for English text.
+///
+/// Conservative heuristic: ~3 characters per token (instead of the classic
+/// 4 chars/token for prose) because agent conversations are heavily code-based
+/// (tool outputs, diffs, apply_patch payloads) and code tokenizes denser than
+/// prose. Counting characters instead of bytes keeps the estimate stable for
+/// UTF-8 input (accented Spanish chars are 2 bytes but 1 char), and the lower
+/// divisor deliberately overestimates so compaction fires *before* the real
+/// context limit is hit, not after.
 pub(crate) fn estimate_tokens(text: &str) -> usize {
     if text.is_empty() {
         0
     } else {
-        text.len().div_ceil(4)
+        text.chars().count().div_ceil(3)
     }
 }
 

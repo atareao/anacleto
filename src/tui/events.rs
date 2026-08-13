@@ -222,7 +222,11 @@ impl App {
                 self.chat_scroll = 0;
             }
             EngineEvent::ApprovalRequired { id, operation } => {
-                self.pending_approval = Some(ApprovalRequest { id, operation });
+                self.pending_approval = Some(ApprovalRequest {
+                    id,
+                    operation: operation.clone(),
+                });
+                self.push_msg(format!("[Solicitud de aprobación] {}", operation));
                 self.toasts
                     .push("Aprobación requerida (Y/N)", ToastKind::Info);
             }
@@ -234,12 +238,18 @@ impl App {
             } => {
                 self.pending_question = Some(QuestionState {
                     id,
-                    question,
-                    options,
-                    recommended,
+                    question: question.clone(),
+                    options: options.clone(),
+                    recommended: recommended.clone(),
                     selected: 0,
                     answer_input: String::new(),
                 });
+                let opt_str = if options.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{} opciones]", options.len())
+                };
+                self.push_msg(format!("[Pregunta{}] {}", opt_str, question));
             }
             EngineEvent::TokenUsage {
                 total_tokens,
@@ -258,6 +268,18 @@ impl App {
                     (self.context_tokens as f64 / context_window as f64) * 100.0;
                 // Cost is computed in the engine from per-million-token prices.
                 self.total_cost += cost;
+
+                // Warn once when crossing the 70% threshold
+                if self.context_window_pct >= 70.0 && !self.context_warned {
+                    self.context_warned = true;
+                    self.toasts.push(
+                        "⚠ Contexto alto — usa /compact para compactar",
+                        ToastKind::Warning,
+                    );
+                } else if self.context_window_pct < 60.0 {
+                    // Reset the flag so the warning can fire again if it climbs back up
+                    self.context_warned = false;
+                }
             }
             EngineEvent::ToolExecution {
                 tool_name, task, ..
