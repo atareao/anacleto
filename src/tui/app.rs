@@ -108,6 +108,9 @@ pub struct App {
     pub total_cost: f64,
     /// Context window size (in tokens) of the active model.
     pub context_window: u64,
+    /// Whether the high-context warning toast has already been shown for the
+    /// current crossing of the 70% threshold (avoids spamming every frame).
+    pub(crate) context_warned: bool,
     /// Name of the model currently being executed.
     pub current_model: String,
     /// Current working directory for display.
@@ -361,6 +364,7 @@ impl App {
             context_window_pct: 0.0,
             total_cost: 0.0,
             context_window: 0,
+            context_warned: false,
             current_model: String::new(),
             working_dir,
             git_branch,

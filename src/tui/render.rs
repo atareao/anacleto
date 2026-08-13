@@ -312,6 +312,26 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
             .add_modifier(Modifier::BOLD),
     ));
 
+    // Context window warning indicator
+    if app.context_window > 0 {
+        let pct = app.context_window_pct;
+        if pct >= 90.0 {
+            all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+            all_spans.push(Span::styled(
+                format!(" 🔥 ctx {:.0}% ", pct),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ));
+        } else if pct >= 70.0 {
+            all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+            all_spans.push(Span::styled(
+                format!(" ⚠ ctx {:.0}% ", pct),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+
     // Right-aligned segment: compute padding
     let left_width: u16 = all_spans.iter().map(|s| s.width() as u16).sum::<u16>() + 2; // leading + trailing spaces
     let right_items = vec![
@@ -3349,7 +3369,18 @@ fn render_approval_dialog(f: &mut Frame, area: Rect, app: &App) {
 
     // Dialog dimensions
     let dialog_width = area.width.min(60);
-    let dialog_height = 7;
+    let content_width = (dialog_width as usize).saturating_sub(4);
+
+    // Calculate wrapped lines for the operation text
+    let op_lines = if content_width > 0 {
+        let op_width = approval.operation.width();
+        std::cmp::max(1, op_width.div_ceil(content_width))
+    } else {
+        1
+    };
+
+    // Height: title(1) + blank(1) + operation(op_lines) + blank(1) + footer(1) + border(2)
+    let dialog_height = (6u16 + op_lines as u16).min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
     let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
     let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
@@ -3386,6 +3417,7 @@ fn render_approval_dialog(f: &mut Frame, area: Rect, app: &App) {
                 .border_style(Style::default().fg(Color::Yellow))
                 .style(Style::default().bg(Color::Rgb(40, 30, 0))),
         )
+        .wrap(Wrap { trim: false })
         .alignment(ratatui::layout::Alignment::Center);
 
     f.render_widget(dialog, dialog_area);
@@ -3398,7 +3430,30 @@ fn render_question_dialog(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let dialog_width = area.width.min(70);
-    let dialog_height = 12;
+    let content_width = (dialog_width as usize).saturating_sub(4);
+
+    // Calculate wrapped lines for the question text
+    let q_lines = if content_width > 0 {
+        let q_width = q.question.width();
+        std::cmp::max(1, q_width.div_ceil(content_width))
+    } else {
+        1
+    };
+
+    // Calculate lines for options
+    let opt_lines = if !q.options.is_empty() {
+        q.options.len() // one line per option
+    } else {
+        1 // answer input line
+    };
+
+    // Recommended line
+    let rec_lines = if q.recommended.is_some() { 1 } else { 0 };
+
+    // Height: title(1) + blank(1) + question(q_lines) + blank(1) + options(opt_lines)
+    //         + recommended(rec_lines) + blank(1) + footer(1) + border(2)
+    let dialog_height = (8u16 + q_lines as u16 + opt_lines as u16 + rec_lines as u16)
+        .min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
     let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
     let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
@@ -3462,6 +3517,7 @@ fn render_question_dialog(f: &mut Frame, area: Rect, app: &App) {
                 .border_style(Style::default().fg(Color::Cyan))
                 .style(Style::default().bg(Color::Rgb(0, 30, 40))),
         )
+        .wrap(Wrap { trim: false })
         .alignment(ratatui::layout::Alignment::Left);
 
     f.render_widget(dialog, dialog_area);
