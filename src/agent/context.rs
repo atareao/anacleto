@@ -5,13 +5,25 @@ use crate::llm::provider::LlmProvider;
 use crate::llm::types::{LlmMessage, LlmRequest, MessageRole};
 
 /// Roughly estimate the number of tokens in a text string.
-/// Uses the rule of thumb: ~4 characters per token for English text.
-fn estimate_tokens(text: &str) -> usize {
+///
+/// Conservative heuristic: ~3 characters per token (instead of the classic
+/// 4 chars/token for prose) because agent conversations are heavily code-based
+/// (tool outputs, diffs, apply_patch payloads) and code tokenizes denser than
+/// prose. Counting characters instead of bytes keeps the estimate stable for
+/// UTF-8 input (accented Spanish chars are 2 bytes but 1 char), and the lower
+/// divisor deliberately overestimates so compaction fires *before* the real
+/// context limit is hit, not after.
+pub(crate) fn estimate_tokens(text: &str) -> usize {
     if text.is_empty() {
         0
     } else {
-        text.len().div_ceil(4)
+        text.chars().count().div_ceil(3)
     }
+}
+
+/// Estimate the total number of tokens across a conversation buffer.
+pub(crate) fn conversation_tokens(messages: &[LlmMessage]) -> usize {
+    messages.iter().map(|m| estimate_tokens(&m.content)).sum()
 }
 
 /// Fraction of the token budget at which compaction is triggered automatically.
@@ -96,15 +108,17 @@ fn build_summary_prompt(messages: &[LlmMessage], tool_store: Option<&ToolOutputS
 /// - The most recent non-system messages (at least the last exchange)
 ///
 /// Removes oldest non-system messages first when over budget.
-fn trim_conversation(messages: &mut Vec<LlmMessage>, max_tokens: usize) {
+///
+/// Returns `true` if any message was removed (the conversation changed).
+fn trim_conversation(messages: &mut Vec<LlmMessage>, max_tokens: usize) -> bool {
     if messages.is_empty() || max_tokens == 0 {
-        return;
+        return false;
     }
 
     // Quick check: if already under budget, do nothing
     let total: usize = messages.iter().map(|m| estimate_tokens(&m.content)).sum();
     if total <= max_tokens {
-        return;
+        return false;
     }
 
     // Separate system messages from the rest
@@ -138,6 +152,7 @@ fn trim_conversation(messages: &mut Vec<LlmMessage>, max_tokens: usize) {
     // Restore: system first, then remaining non-system
     *messages = system_msgs;
     messages.extend(non_system_msgs);
+    true
 }
 
 /// Try to summarize old conversation messages using the LLM.
@@ -155,6 +170,9 @@ fn trim_conversation(messages: &mut Vec<LlmMessage>, max_tokens: usize) {
 /// conversation is under the token budget (used by the `/compact` command).
 /// The rest of the logic (needs a provider, needs at least 4 non-system
 /// messages, preserves system + latest exchange) is still respected.
+///
+/// Returns `true` if the conversation was actually modified (a summary was
+/// injected or messages were trimmed), so callers can report the event.
 pub(crate) async fn summarize_conversation(
     conversation: &mut Vec<LlmMessage>,
     max_tokens: usize,
@@ -163,21 +181,17 @@ pub(crate) async fn summarize_conversation(
     force: bool,
     tool_store: Option<&ToolOutputStore>,
     retry_config: Option<&RetryConfig>,
-) {
+) -> bool {
     // Quick check: if already under the compaction threshold, do nothing
     // (unless forced). The threshold is `max_tokens * COMPACTION_THRESHOLD_RATIO`.
-    let total: usize = conversation
-        .iter()
-        .map(|m| estimate_tokens(&m.content))
-        .sum();
+    let total: usize = conversation_tokens(conversation);
     if !force && !should_compact(total, max_tokens, COMPACTION_THRESHOLD_RATIO) {
-        return;
+        return false;
     }
 
     // Need a provider for summarization
     let Some(prov) = provider else {
-        trim_conversation(conversation, max_tokens);
-        return;
+        return trim_conversation(conversation, max_tokens);
     };
 
     // Separate system from non-system
@@ -196,8 +210,7 @@ pub(crate) async fn summarize_conversation(
     if non_system_msgs.len() < 4 {
         system_msgs.extend(non_system_msgs);
         *conversation = system_msgs;
-        trim_conversation(conversation, max_tokens);
-        return;
+        return trim_conversation(conversation, max_tokens);
     }
 
     // Keep the last 2 messages (latest exchange), summarize the rest
@@ -254,8 +267,7 @@ pub(crate) async fn summarize_conversation(
             system_msgs.extend(to_summarize);
             system_msgs.extend(recent);
             *conversation = system_msgs;
-            trim_conversation(conversation, max_tokens);
-            return;
+            return trim_conversation(conversation, max_tokens);
         }
     }
 
@@ -265,6 +277,7 @@ pub(crate) async fn summarize_conversation(
 
     // Final trim check (summary itself might still be over budget)
     trim_conversation(conversation, max_tokens);
+    true
 }
 
 #[cfg(test)]

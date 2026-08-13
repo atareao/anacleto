@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyEventKind};
@@ -24,7 +24,7 @@ use crate::tui::theme::Theme;
 use crate::tui::toast::ToastQueue;
 use crate::tui::types::{
     AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, CollapsedSection, EditDialogState, Focus,
-    InitFlow, QuestionState, SearchState,
+    InitFlow, MAX_MESSAGE_LENGTH, MAX_MESSAGES, QuestionState, SearchState,
 };
 use crate::tui::which_key::WhichKeyPopup;
 
@@ -98,14 +98,19 @@ pub struct App {
     pub(crate) pending_question: Option<QuestionState>,
 
     // ── Right panel data ──────────────────────────────────────────────
-    /// Total tokens consumed in the current session.
+    /// Total tokens consumed in the current session (cumulative).
     pub total_tokens: u64,
+    /// Current context size (non-cumulative, reflects actual conversation buffer).
+    pub context_tokens: u64,
     /// Percentage of the context window used.
     pub context_window_pct: f64,
     /// Total cost spent (in dollars).
     pub total_cost: f64,
     /// Context window size (in tokens) of the active model.
     pub context_window: u64,
+    /// Whether the high-context warning toast has already been shown for the
+    /// current crossing of the 70% threshold (avoids spamming every frame).
+    pub(crate) context_warned: bool,
     /// Name of the model currently being executed.
     pub current_model: String,
     /// Current working directory for display.
@@ -234,6 +239,40 @@ pub struct App {
     pub(crate) section_line_map: Vec<Option<String>>,
     /// Per-frame section info for collapse rendering.
     pub(crate) section_info: Vec<CollapsedSection>,
+    /// Cached rendered chat lines from committed messages (excluding live
+    /// streaming/thinking content). Invalidated when `messages_generation`
+    /// changes, the terminal is resized, or display settings change.
+    pub(crate) chat_cache: Option<ChatCache>,
+    /// Timestamp of the last render, used for throttling (max 30fps).
+    pub(crate) last_render_time: Instant,
+    /// Monotonic generation counter bumped every time `messages` changes.
+    /// Used by the render cache to skip re-rendering unchanged messages.
+    pub(crate) messages_generation: u64,
+}
+
+/// Cached rendering of the committed chat messages (everything except the
+/// live streaming/thinking blocks, which change every frame and are rendered
+/// on top of this cache). Rebuilt only when the underlying messages or
+/// display settings change.
+pub(crate) struct ChatCache {
+    /// `messages_generation` value when the cache was built.
+    pub generation: u64,
+    /// Content width (terminal width minus borders) when the cache was built.
+    pub content_width: usize,
+    /// Whether timestamps were shown when the cache was built.
+    pub show_timestamps: bool,
+    /// Whether dark mode was active when the cache was built.
+    pub is_dark: bool,
+    /// Section-type counters (for unique section IDs) when the cache was built.
+    pub counters: HashMap<String, u32>,
+    /// Fully rendered, prewrapped chat lines (committed messages only).
+    pub lines: Vec<ratatui::text::Line<'static>>,
+    /// Per-line section map matching `lines` (pre-prewrap coordinates).
+    pub section_line_map: Vec<Option<String>>,
+    /// Section info (collapse regions) in pre-prewrap coordinates.
+    pub section_info: Vec<CollapsedSection>,
+    /// Code block positions from committed messages.
+    pub code_block_positions: Vec<CodeBlockPosition>,
 }
 
 impl App {
@@ -321,9 +360,11 @@ impl App {
             pending_approval: None,
             pending_question: None,
             total_tokens: 0,
+            context_tokens: 0,
             context_window_pct: 0.0,
             total_cost: 0.0,
             context_window: 0,
+            context_warned: false,
             current_model: String::new(),
             working_dir,
             git_branch,
@@ -393,6 +434,9 @@ impl App {
             collapsed_sections: HashSet::new(),
             section_line_map: Vec::new(),
             section_info: Vec::new(),
+            chat_cache: None,
+            last_render_time: Instant::now(),
+            messages_generation: 0,
         }
     }
 
@@ -401,9 +445,22 @@ impl App {
     /// batched together before non-tool content.
     /// Wraps non-tool, non-thinking messages in [normal] markers so the
     /// renderer can detect section transitions and add borders.
+    /// Long messages are truncated to `MAX_MESSAGE_LENGTH` and the in-memory
+    /// buffer is capped at `MAX_MESSAGES` entries (older messages are dropped;
+    /// they remain persisted in the database).
     pub(crate) fn push_msg(&mut self, msg: impl Into<String>) {
         self.flush_tool_lines();
-        let msg = msg.into();
+        let mut msg = msg.into();
+        // Truncate oversized messages at the display layer. The full content
+        // is still persisted by the engine in SQLite, so nothing is lost.
+        let char_len = msg.chars().count();
+        if char_len > MAX_MESSAGE_LENGTH {
+            let truncated: String = msg.chars().take(MAX_MESSAGE_LENGTH).collect();
+            msg = format!(
+                "{}…\n[truncado: {} chars → {}]",
+                truncated, char_len, MAX_MESSAGE_LENGTH
+            );
+        }
         // Only wrap in [normal] if not already wrapped in a section marker.
         let trimmed = msg.trim_start();
         if !trimmed.starts_with("[thinking]")
@@ -417,14 +474,37 @@ impl App {
             // they render with the command style (magenta border/text).
             if trimmed.starts_with("> /") {
                 self.messages
-                    .push(format!("[command]\n{}\n[/command]", msg));
+                    .push(crate::tui::render::trim_block_blank_lines(&format!(
+                        "[command]\n{}\n[/command]",
+                        msg
+                    )));
             } else {
-                self.messages.push(format!("[normal]\n{}\n[/normal]", msg));
+                self.messages
+                    .push(crate::tui::render::trim_block_blank_lines(&format!(
+                        "[normal]\n{}\n[/normal]",
+                        msg
+                    )));
             }
         } else {
             self.message_timestamps.push(Utc::now());
-            self.messages.push(msg);
+            self.messages
+                .push(crate::tui::render::trim_block_blank_lines(&msg));
         }
+        self.enforce_message_limit();
+    }
+
+    /// Cap the in-memory message buffer at `MAX_MESSAGES` entries, dropping
+    /// the oldest ones. The engine persists every message in SQLite, so this
+    /// only limits what is kept in RAM for rendering — the primary guard
+    /// against unbounded memory growth on long sessions.
+    fn enforce_message_limit(&mut self) {
+        let overflow = self.messages.len().saturating_sub(MAX_MESSAGES);
+        if overflow > 0 {
+            self.messages.drain(0..overflow);
+            self.message_timestamps.drain(0..overflow);
+        }
+        // Any mutation of `messages` invalidates the render cache.
+        self.messages_generation = self.messages_generation.wrapping_add(1);
     }
 
     /// Flush any accumulated tool lines as a single [tool] block.
@@ -433,10 +513,20 @@ impl App {
         if self.pending_tool_lines.is_empty() {
             return;
         }
-        let block = format!("[tool]\n{}\n[/tool]", self.pending_tool_lines.join("\n"));
+        let mut block = format!("[tool]\n{}\n[/tool]", self.pending_tool_lines.join("\n"));
+        // Truncate oversized tool blocks at the display layer.
+        let char_len = block.chars().count();
+        if char_len > MAX_MESSAGE_LENGTH {
+            let truncated: String = block.chars().take(MAX_MESSAGE_LENGTH).collect();
+            block = format!(
+                "{}…\n[truncado: {} chars → {}]",
+                truncated, char_len, MAX_MESSAGE_LENGTH
+            );
+        }
         self.pending_tool_lines.clear();
         self.message_timestamps.push(Utc::now());
         self.messages.push(block);
+        self.enforce_message_limit();
     }
 
     /// Commit any in-progress streaming response to the message log so that a
@@ -754,6 +844,11 @@ impl App {
     }
 }
 
+/// Minimum interval between renders (in microseconds) when streaming is
+/// active. This caps the render rate at ~30 fps to avoid burning CPU on
+/// full re-renders when only a few streamed characters have changed.
+const RENDER_INTERVAL_US: u64 = 33_000; // ≈ 30 fps
+
 /// Run the TUI event loop.
 pub async fn run_tui<B: ratatui::backend::Backend<Error = std::io::Error>>(
     terminal: &mut Terminal<B>,
@@ -762,10 +857,12 @@ pub async fn run_tui<B: ratatui::backend::Backend<Error = std::io::Error>>(
     loop {
         // Drain ALL pending engine events BEFORE drawing, so the render
         // always shows the latest state (not the state from the previous cycle)
+        let mut had_events = false;
         loop {
             match app.event_rx.try_recv() {
                 Ok(event) => {
                     app.handle_event(event);
+                    had_events = true;
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                     return Ok(());
@@ -774,13 +871,40 @@ pub async fn run_tui<B: ratatui::backend::Backend<Error = std::io::Error>>(
             }
         }
 
+        // Render throttling: skip this frame if we rendered less than
+        // RENDER_INTERVAL_US ago, unless there were pending events (which
+        // means state changed and we need to refresh).
+        let now = Instant::now();
+        let elapsed = now.duration_since(app.last_render_time);
+        if !had_events && elapsed.as_micros() < RENDER_INTERVAL_US as u128 {
+            // Still within the throttle window: just poll for keyboard input
+            // without rendering. This keeps the UI responsive while avoiding
+            // wasteful re-renders when nothing is happening.
+            if event::poll(Duration::from_millis(100))? {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        app.handle_key(key.code, key.modifiers);
+                    }
+                    Event::Mouse(mouse) => {
+                        app.handle_mouse(mouse);
+                    }
+                    _ => {}
+                }
+            }
+            if app.should_exit {
+                break;
+            }
+            continue;
+        }
+
         // Draw the UI (now with up-to-date state)
+        app.last_render_time = now;
         app.frame_count = app.frame_count.wrapping_add(1);
         app.toasts.tick(Instant::now());
         terminal.draw(|f| render(f, app))?;
 
         // Check for keyboard input (with timeout for responsiveness)
-        if event::poll(std::time::Duration::from_millis(50))? {
+        if event::poll(Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     app.handle_key(key.code, key.modifiers);

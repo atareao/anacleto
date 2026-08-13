@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-08-13
+
+### Fixed
+
+- **Dialog overflow** — `render_approval_dialog` and `render_question_dialog` now compute dynamic heights from wrapped content lines instead of fixed heights, and apply `Wrap { trim: false }` so long operations, questions, and options never overflow or get cut off.
+- **Dialog exchanges missing from chat** — approval requests, question prompts, and user answers (Y/N, Enter, Esc) are now logged to the chat history, so dialog interactions are visible in the transcript.
+- **Context compaction not triggering** — `estimate_tokens` now counts characters (not bytes, important for UTF-8 like accented Spanish) and uses a conservative ~3 chars/token heuristic that overestimates code-heavy conversations, so auto-compaction fires *before* the real context limit is reached.
+
+### Added
+
+- **Context warning indicator** — the status bar shows `⚠ ctx NN%` in yellow when context usage is ≥70% and `🔥 ctx NN%` in red at ≥90%.
+- **High-context toast** — a one-time warning toast suggests using `/compact` when context usage crosses 70%.
+
+## [0.27.0] - 2026-08-13
+
+### Fixed
+
+- **Word-wrap at word boundaries** — `prewrap_line` now splits long lines at spaces instead of span boundaries, preventing orphaned punctuation (e.g. `,` at line start). Added `split_at_word_boundary` and `push_span_across_lines` helpers.
+- **Table column width clamping** — `render_table_block` now accepts `content_width` and shrinks columns proportionally when the table exceeds the available width, with ellipsis (`…`) for truncated cells.
+
+## [0.26.0] - 2026-08-12
+
+### Added
+
+- **Subagent `when_to_use` field** — agents can now specify `when_to_use` descriptions for better subagent selection.
+- **Tool execution events** — tool calls and results are now emitted as structured events in the TUI.
+
+### Changed
+
+- **TUI performance** — optimized rendering pipeline for large conversations.
+- **Context improvements** — better context window management for long agent sessions.
+
 ## [0.25.0] - 2026-08-12
 
 ### Fixed
@@ -40,6 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `src/tui/navigation.rs`, `diff_viewer.rs`, `commands.rs`: Updated section rendering.
 
 [0.24.0]: https://github.com/atareao/anacleto/releases/tag/v0.24.0
+[0.25.0]: https://github.com/atareao/anacleto/releases/tag/v0.25.0
+[0.26.0]: https://github.com/atareao/anacleto/releases/tag/v0.26.0
+[0.27.0]: https://github.com/atareao/anacleto/releases/tag/v0.27.0
 
 ## [0.22.0] - 2026-08-11
 

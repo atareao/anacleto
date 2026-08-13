@@ -74,6 +74,7 @@ impl App {
                         let _ = self
                             .cmd_tx
                             .try_send(EngineCommand::ApprovalResponse { id, approved: true });
+                        self.push_msg(format!("[Aprobación] ✓ Aprobado: {}", approval.operation));
                         self.toasts.push("Aprobado", ToastKind::Success);
                     }
                 }
@@ -84,6 +85,7 @@ impl App {
                             id,
                             approved: false,
                         });
+                        self.push_msg(format!("[Aprobación] ✗ Denegado: {}", approval.operation));
                         self.toasts.push("Denegado", ToastKind::Info);
                     }
                 }
@@ -93,6 +95,7 @@ impl App {
                         let _ = self
                             .cmd_tx
                             .try_send(EngineCommand::ApprovalResponse { id, approved: true });
+                        self.push_msg(format!("[Aprobación] ✓ Aprobado: {}", approval.operation));
                         self.toasts.push("Aprobado", ToastKind::Success);
                     }
                 }
@@ -103,6 +106,7 @@ impl App {
                             id,
                             approved: false,
                         });
+                        self.push_msg(format!("[Aprobación] ✗ Denegado: {}", approval.operation));
                         self.toasts.push("Denegado", ToastKind::Info);
                     }
                 }
@@ -122,9 +126,11 @@ impl App {
                             q.answer_input.trim().to_string()
                         };
                         let id = q.id.clone();
-                        let _ = self
-                            .cmd_tx
-                            .try_send(EngineCommand::QuestionAnswer { id, answer });
+                        let _ = self.cmd_tx.try_send(EngineCommand::QuestionAnswer {
+                            id,
+                            answer: answer.clone(),
+                        });
+                        self.push_msg(format!("[Respuesta] {}", answer));
                     }
                 }
                 KeyCode::Esc => {
@@ -134,6 +140,7 @@ impl App {
                             id,
                             answer: String::new(),
                         });
+                        self.push_msg("[Respuesta] (cancelada)".to_string());
                     }
                 }
                 KeyCode::Up => {

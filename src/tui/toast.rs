@@ -16,6 +16,8 @@ pub enum ToastKind {
     Info,
     /// Successful operation.
     Success,
+    /// Warning / attention needed.
+    Warning,
     /// Error / failure.
     Error,
 }
@@ -89,6 +91,7 @@ impl ToastQueue {
             let (color, label) = match toast.kind {
                 ToastKind::Info => (Color::Cyan, " INFO "),
                 ToastKind::Success => (Color::Green, " OK "),
+                ToastKind::Warning => (Color::Yellow, " WARN "),
                 ToastKind::Error => (Color::Red, " ERR "),
             };
 

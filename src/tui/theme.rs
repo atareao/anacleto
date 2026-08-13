@@ -156,4 +156,17 @@ impl Theme {
             Theme::Solarized => Color::Rgb(108, 113, 196),
         }
     }
+
+    /// Border color (▐) for system status messages (subagent created/completed,
+    /// agent created, session switches, Anacleto lifecycle).
+    /// Orange tones to distinguish from AI (golden), user (green), tool (blue),
+    /// thinking (grey), and command (magenta).
+    pub(crate) fn status_border(&self) -> Color {
+        match self {
+            Theme::Default => Color::Rgb(255, 160, 40),
+            Theme::Nord => Color::Rgb(208, 135, 80),
+            Theme::Dracula => Color::Rgb(255, 184, 108),
+            Theme::Solarized => Color::Rgb(203, 75, 22),
+        }
+    }
 }

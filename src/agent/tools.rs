@@ -9,6 +9,40 @@ use crate::agent::lifecycle::{PendingApprovals, PendingQuestions};
 use crate::agent::retry::retry_with_backoff;
 use crate::agent::tool_store::truncate_output;
 use crate::agent::types::{Agent, AgentId, AgentMode, AgentRole, AgentStatus, TaskMode};
+
+// ---------------------------------------------------------------------------
+// Subagent outcome type
+// ---------------------------------------------------------------------------
+
+/// The result of a subagent's execution, indicating how it finished.
+#[derive(Debug, Clone)]
+pub(crate) enum SubagentOutcome {
+    /// The subagent completed its task successfully.
+    Completed(String),
+    /// The subagent exhausted its step limit without completing.
+    #[allow(dead_code)]
+    OutOfSteps { steps: u32, partial_result: String },
+    /// The subagent encountered an error.
+    Error(String),
+}
+
+impl SubagentOutcome {
+    /// Returns the content regardless of variant, for backward compatibility.
+    pub(crate) fn into_content(self) -> String {
+        match self {
+            SubagentOutcome::Completed(s)
+            | SubagentOutcome::OutOfSteps {
+                partial_result: s, ..
+            }
+            | SubagentOutcome::Error(s) => s,
+        }
+    }
+
+    /// Returns true if the subagent exhausted its steps.
+    pub(crate) fn is_out_of_steps(&self) -> bool {
+        matches!(self, SubagentOutcome::OutOfSteps { .. })
+    }
+}
 use crate::config::types::{AgentConfig, RetryConfig};
 use crate::db::session::Database;
 use crate::engine::jobs::JobRegistry;
@@ -1101,12 +1135,17 @@ pub(crate) fn subagent_config_to_tool_definition(config: &AgentConfig) -> ToolDe
         "required": ["task"]
     });
 
+    let mut desc = format!(
+        "Delegate a task to the '{}' subagent. What it does: {}",
+        config.name, config.description
+    );
+    if !config.when_to_use.is_empty() {
+        desc.push_str(&format!(" When to use: {}", config.when_to_use));
+    }
+
     ToolDefinition {
         name: config.name.clone(),
-        description: format!(
-            "Delegate a task to the '{}' subagent for specialized work",
-            config.name
-        ),
+        description: desc,
         input_schema,
     }
 }
@@ -1367,6 +1406,7 @@ pub(crate) async fn execute_task_tool(
         let config = AgentConfig {
             name: args.task_id.clone(),
             description: args.description.clone(),
+            when_to_use: String::new(),
             role: AgentRole::SubAgent,
             model,
             skills: Vec::new(), // skills resolved through registry in spawn_subagent_and_delegate
@@ -1423,7 +1463,13 @@ pub(crate) async fn execute_task_tool(
                 })
                 .await;
             match result {
-                Ok(r) => Ok(r),
+                Ok(outcome) => {
+                    if outcome.is_out_of_steps() {
+                        Err(format!("[Subagente sin pasos] {}", outcome.into_content()))
+                    } else {
+                        Ok(outcome.into_content())
+                    }
+                }
                 Err(e) => Err(format!("Subagent error: {e}")),
             }
         }
@@ -1434,7 +1480,13 @@ pub(crate) async fn execute_task_tool(
             let event_tx_owned = event_tx.clone();
             let handle = tokio::spawn(async move {
                 let summary = match spawn_subagent_and_delegate(sub_cfg).await {
-                    Ok(r) => r,
+                    Ok(outcome) => {
+                        if outcome.is_out_of_steps() {
+                            format!("[Subagente sin pasos] {}", outcome.into_content())
+                        } else {
+                            outcome.into_content()
+                        }
+                    }
                     Err(e) => format!("Subagent error: {e}"),
                 };
                 let _ = event_tx_owned
@@ -1520,8 +1572,11 @@ pub struct SpawnSubagentConfig {
 ///
 /// The subagent is created fresh with its own LLM provider and skills.
 /// It processes the task using its own model (which may differ from the parent's)
-/// and returns the text response. The subagent task is destroyed after responding.
-pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Result<String> {
+/// and returns a [`SubagentOutcome`] indicating how it finished.
+/// The subagent task is destroyed after responding.
+pub(crate) async fn spawn_subagent_and_delegate(
+    cfg: SpawnSubagentConfig,
+) -> Result<SubagentOutcome> {
     let SpawnSubagentConfig {
         config,
         parent_id,
@@ -1599,7 +1654,7 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
     let task_owned = task.to_string();
 
     // Create oneshot channel for the response
-    let (response_tx, response_rx) = tokio::sync::oneshot::channel::<String>();
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel::<SubagentOutcome>();
 
     // Spawn subagent task
     let subagent_history_limit = history_limit_percent;
@@ -1635,9 +1690,12 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
         'tool_loop: loop {
             step_count += 1;
             if step_count > max_steps {
-                let _ = response_tx.send(format!(
-                    "[Tarea incompleta] Se alcanzó el límite de {max_steps} pasos (turnos) sin completar la tarea."
-                ));
+                let _ = response_tx.send(SubagentOutcome::OutOfSteps {
+                    steps: max_steps,
+                    partial_result: format!(
+                        "[Tarea incompleta] Se alcanzó el límite de {max_steps} pasos (turnos) sin completar la tarea."
+                    ),
+                });
                 break 'tool_loop;
             }
             // Trim conversation to fit context window
@@ -1736,7 +1794,7 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
                     }
 
                     if let Some(err) = stream_error {
-                        let _ = response_tx.send(format!("[Error en subagente] {}", err));
+                        let _ = response_tx.send(SubagentOutcome::Error(err));
                         return;
                     }
 
@@ -1764,6 +1822,7 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
                                 agent_id: agent_id.clone(),
                                 agent_name: agent_name.clone(),
                                 total_tokens: usage.total_tokens,
+                                prompt_tokens: usage.prompt_tokens,
                                 context_window: provider.context_window() as u32,
                                 cost,
                             })
@@ -1804,7 +1863,7 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
 
                     if response.tool_calls.is_empty() {
                         // No tool calls — final response
-                        let _ = response_tx.send(response.content);
+                        let _ = response_tx.send(SubagentOutcome::Completed(response.content));
                         break 'tool_loop;
                     }
 
@@ -1839,7 +1898,8 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
                     // Loop back: LLM now has tool results
                 }
                 Err(e) => {
-                    let _ = response_tx.send(format!("Subagent error: {e}"));
+                    let _ = response_tx
+                        .send(SubagentOutcome::Error(format!("Subagent LLM error: {e}")));
                     break 'tool_loop;
                 }
             }
@@ -1856,16 +1916,17 @@ pub(crate) async fn spawn_subagent_and_delegate(cfg: SpawnSubagentConfig) -> Res
     });
 
     // Wait for the response
-    let response = response_rx
+    let outcome = response_rx
         .await
         .map_err(|_| Error::Agent("Subagent response channel closed".into()))?;
 
-    Ok(response)
+    Ok(outcome)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PermissionConfig;
 
     #[test]
     fn test_skill_to_tool_definition() {
@@ -2242,5 +2303,49 @@ mod tests {
             err.contains("not found"),
             "error should say not found: {err}"
         );
+    }
+
+    #[test]
+    fn test_subagent_config_to_tool_definition_with_when_to_use() {
+        let config = AgentConfig {
+            name: "documenter".into(),
+            description: "Documenta acciones".into(),
+            when_to_use: "Tras cada tool call".into(),
+            role: AgentRole::SubAgent,
+            model: "m".into(),
+            skills: vec![],
+            mcps: vec![],
+            permissions: PermissionConfig::default(),
+            subagents: vec![],
+            system_prompt: "".into(),
+            max_steps: 60,
+            subagent_depth: 3,
+        };
+        let def = subagent_config_to_tool_definition(&config);
+        assert!(def.description.contains("Documenta acciones"));
+        assert!(def.description.contains("Tras cada tool call"));
+        assert_eq!(def.name, "documenter");
+    }
+
+    #[test]
+    fn test_subagent_config_to_tool_definition_without_when_to_use() {
+        let config = AgentConfig {
+            name: "reviewer".into(),
+            description: "Revisa código".into(),
+            when_to_use: "".into(),
+            role: AgentRole::SubAgent,
+            model: "m".into(),
+            skills: vec![],
+            mcps: vec![],
+            permissions: PermissionConfig::default(),
+            subagents: vec![],
+            system_prompt: "".into(),
+            max_steps: 60,
+            subagent_depth: 3,
+        };
+        let def = subagent_config_to_tool_definition(&config);
+        assert!(def.description.contains("Revisa código"));
+        assert!(!def.description.contains("When to use"));
+        assert_eq!(def.name, "reviewer");
     }
 }

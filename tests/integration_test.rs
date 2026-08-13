@@ -93,6 +93,7 @@ fn test_config_merge_does_not_merge_agents() {
         agents: vec![AgentConfig {
             name: "root".into(),
             description: "root".into(),
+            when_to_use: String::new(),
             role: AgentRole::Root,
             model: "llama2".into(),
             skills: vec![],
@@ -110,6 +111,7 @@ fn test_config_merge_does_not_merge_agents() {
         agents: vec![AgentConfig {
             name: "root".into(),
             description: "new-root".into(),
+            when_to_use: String::new(),
             role: AgentRole::Root,
             model: "llama3.2".into(),
             skills: vec![],

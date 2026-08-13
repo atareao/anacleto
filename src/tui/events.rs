@@ -22,8 +22,21 @@ impl App {
                 self.push_msg(format!("Model changed to: {}", model));
                 self.chat_scroll = 0;
             }
-            EngineEvent::ConversationCompacted { .. } => {
-                self.push_msg("Conversación compactada.");
+            EngineEvent::ConversationCompacted {
+                tokens, agent_name, ..
+            } => {
+                // Reflect the post-compaction buffer size in the status panel.
+                self.context_tokens = tokens as u64;
+                self.context_window_pct = if self.context_window > 0 {
+                    (self.context_tokens as f64 / self.context_window as f64) * 100.0
+                } else {
+                    0.0
+                };
+                self.push_msg(format!(
+                    "Conversación compactada ({}) — contexto: {} tokens.",
+                    agent_name,
+                    crate::tui::render::format_tokens(tokens as u64)
+                ));
                 self.chat_scroll = 0;
             }
             EngineEvent::AgentCreated {
@@ -128,6 +141,7 @@ impl App {
             } => {
                 self.messages
                     .push(format!("Subagent '{}' created.", subagent_name));
+                self.messages_generation = self.messages_generation.wrapping_add(1);
                 self.chat_scroll = 0;
                 // Track subagent in the list (added later via AgentCreated?)
                 // Also bump parent's subagent_count
@@ -158,6 +172,7 @@ impl App {
             } => {
                 self.messages
                     .push(format!("Subagent '{}' completed.", subagent_name));
+                self.messages_generation = self.messages_generation.wrapping_add(1);
                 self.chat_scroll = 0;
                 if let Some(agent) = self.agents.iter_mut().find(|a| a.id == subagent_id) {
                     agent.status = AgentStatus::Completed;
@@ -207,7 +222,11 @@ impl App {
                 self.chat_scroll = 0;
             }
             EngineEvent::ApprovalRequired { id, operation } => {
-                self.pending_approval = Some(ApprovalRequest { id, operation });
+                self.pending_approval = Some(ApprovalRequest {
+                    id,
+                    operation: operation.clone(),
+                });
+                self.push_msg(format!("[Solicitud de aprobación] {}", operation));
                 self.toasts
                     .push("Aprobación requerida (Y/N)", ToastKind::Info);
             }
@@ -219,25 +238,48 @@ impl App {
             } => {
                 self.pending_question = Some(QuestionState {
                     id,
-                    question,
-                    options,
-                    recommended,
+                    question: question.clone(),
+                    options: options.clone(),
+                    recommended: recommended.clone(),
                     selected: 0,
                     answer_input: String::new(),
                 });
+                let opt_str = if options.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{} opciones]", options.len())
+                };
+                self.push_msg(format!("[Pregunta{}] {}", opt_str, question));
             }
             EngineEvent::TokenUsage {
                 total_tokens,
+                prompt_tokens,
                 context_window,
                 cost,
                 ..
             } => {
                 self.total_tokens += total_tokens as u64;
                 self.context_window = context_window as u64;
+                // `context_tokens` is non-cumulative: the prompt sent to the LLM
+                // is a good proxy for the current conversation buffer size, so
+                // it drops naturally after compaction instead of growing forever.
+                self.context_tokens = prompt_tokens as u64;
                 self.context_window_pct =
-                    (self.total_tokens as f64 / context_window as f64) * 100.0;
+                    (self.context_tokens as f64 / context_window as f64) * 100.0;
                 // Cost is computed in the engine from per-million-token prices.
                 self.total_cost += cost;
+
+                // Warn once when crossing the 70% threshold
+                if self.context_window_pct >= 70.0 && !self.context_warned {
+                    self.context_warned = true;
+                    self.toasts.push(
+                        "⚠ Contexto alto — usa /compact para compactar",
+                        ToastKind::Warning,
+                    );
+                } else if self.context_window_pct < 60.0 {
+                    // Reset the flag so the warning can fire again if it climbs back up
+                    self.context_warned = false;
+                }
             }
             EngineEvent::ToolExecution {
                 tool_name, task, ..
@@ -341,6 +383,7 @@ impl App {
                     self.messages.pop();
                     self.message_timestamps.pop();
                 }
+                self.messages_generation = self.messages_generation.wrapping_add(1);
                 self.push_msg("\u{21a9} Undo applied.");
                 self.chat_scroll = 0;
             }
