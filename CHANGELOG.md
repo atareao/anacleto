@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] - 2026-08-14
+
+### Fixed
+
+- **Subagent spinner never removed on step exhaustion / stream error** — when a subagent stopped because it ran out of steps, or died from a stream error, the TUI spinner kept spinning forever. The stream-error path used `return` and skipped the `SubagentCompleted` event entirely, leaving the subagent stuck in `Working`. It now falls through to emit the event, and the TUI always marks the subagent `Completed` regardless of outcome.
+- **Subagent outcome not reported to the parent** — `SubagentCompleted` always carried the hardcoded result `"completed"` even when the subagent actually ran out of steps or errored. It now reports the real outcome (`out_of_steps` / `error` / `completed`), and the TUI shows an accurate message plus a warning toast for the non-success cases.
+- **Partial subagent output lost on completion** — the `SubagentCompleted` handler did not commit pending stream/thinking blocks, so partial output (e.g. when a subagent ran out of steps mid-stream) was discarded. It now commits the pending stream and thinking blocks before finalizing.
+
 ## [0.28.0] - 2026-08-13
 
 ### Fixed
