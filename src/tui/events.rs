@@ -103,7 +103,7 @@ impl App {
                     thinking.push_str(&content);
                 }
             }
-            EngineEvent::AgentOutput { content, .. } => {
+            EngineEvent::AgentOutput { content, agent_name, .. } => {
                 // Commit any pending stream first (it arrived chronologically
                 // before any pending thinking block), then commit thinking.
                 if self.current_stream.is_some() {
@@ -111,7 +111,11 @@ impl App {
                 }
                 commit_thinking_block(self);
                 if !content.is_empty() {
-                    self.push_msg(content);
+                    self.push_msg(content.clone());
+                    self.append_to_log(&format!(
+                        "## {} \n\n{}\n\n",
+                        agent_name, content
+                    ));
                 }
                 self.chat_scroll = 0;
             }

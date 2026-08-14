@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -96,6 +97,11 @@ pub struct App {
     // ── Inline question dialog (`/question` tool) ─────────────────────
     /// Pending question from the agent (None if no pending question).
     pub(crate) pending_question: Option<QuestionState>,
+
+    /// Whether to log the conversation to a file.
+    pub log_enabled: bool,
+    /// Path to the current log file.
+    pub log_path: Option<PathBuf>,
 
     // ── Right panel data ──────────────────────────────────────────────
     /// Total tokens consumed in the current session (cumulative).
@@ -380,6 +386,8 @@ impl App {
             all_agent_names,
             pending_approval: None,
             pending_question: None,
+            log_enabled: false,
+            log_path: None,
             total_tokens: 0,
             context_tokens: 0,
             local_context_tokens: 0,
@@ -634,11 +642,22 @@ impl App {
         let item = self.prompt_queue.remove(0);
         if self.send_prompt(item.clone()) {
             self.push_msg(format!("[user]\n> {}\n[/user]", item));
+            self.append_to_log(&format!("## User\n\n{}\n\n", item));
         } else {
             // Channel full (or closed): put the prompt back at the front of
             // the queue so it is not lost; it will be retried on the next
             // drain.
             self.prompt_queue.insert(0, item);
+        }
+    }
+
+    /// Append text to the session log file, if logging is enabled.
+    pub(crate) fn append_to_log(&self, text: &str) {
+        if let Some(ref path) = self.log_path {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(false).open(path) {
+                let _ = write!(file, "{}", text);
+            }
         }
     }
 

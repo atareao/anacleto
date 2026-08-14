@@ -14,6 +14,7 @@ use crossterm::event::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tracing_subscriber::prelude::*;
+use uuid::Uuid;
 
 /// Anacleto — Agent orchestration engine.
 #[derive(Parser, Debug)]
@@ -46,6 +47,10 @@ struct Cli {
     /// Initial task/prompt for headless mode (ignored otherwise).
     #[arg(long)]
     task: Option<String>,
+
+    /// Resume a previous session by UUID.
+    #[arg(long)]
+    resume: Option<String>,
 }
 
 #[tokio::main]
@@ -102,9 +107,19 @@ async fn main() -> anyhow::Result<()> {
     let (event_tx, event_rx) = mpsc::channel::<EngineEvent>(4096);
     let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(64);
 
+    // Parse optional resume session ID
+    let resume_session_id = cli
+        .resume
+        .as_deref()
+        .map(|s| {
+            Uuid::parse_str(s)
+                .map_err(|e| anyhow::anyhow!("Invalid session UUID for --resume: {e}"))
+        })
+        .transpose()?;
+
     // Initialize engine
     let mut engine = Engine::new(config.clone(), event_tx.clone(), cmd_rx);
-    engine.initialize().await?;
+    engine.initialize(resume_session_id).await?;
 
     // SIGHUP handler for config hot-reload
     let sighup_cmd_tx = cmd_tx.clone();
