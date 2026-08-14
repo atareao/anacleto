@@ -31,6 +31,7 @@ pub(crate) const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/delete", "Delete a session"),
     ("/d", "Delete a session (alias)"),
     ("/rename", "Rename a session"),
+    ("/log", "Toggle session logging to file"),
     ("/reload", "Reload the active agent (config + skills)"),
     ("/rl", "Reload the active agent (alias)"),
     ("/agents", "Switch active agent"),

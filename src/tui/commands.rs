@@ -110,15 +110,71 @@ impl App {
                 }
             }
             "/rename" => {
-                if let (Some(id), Some(name)) = (parts.get(1), parts.get(2)) {
-                    self.push_msg(format!("> /rename {} {}", id, name));
-                    let _ = self.cmd_tx.try_send(EngineCommand::RenameSession(
-                        id.to_string(),
-                        name.to_string(),
-                    ));
+                match (parts.get(1), parts.get(2)) {
+                    (Some(name), None) => {
+                        // Rename active session
+                        if let Some(ref id) = self.session_id {
+                            let id = id.clone();
+                            self.push_msg(format!("> /rename {} {}", id, name));
+                            let _ = self.cmd_tx.try_send(EngineCommand::RenameSession(
+                                id,
+                                name.to_string(),
+                            ));
+                        } else {
+                            self.push_msg("No active session to rename.");
+                        }
+                    }
+                    (Some(id), Some(name)) => {
+                        self.push_msg(format!("> /rename {} {}", id, name));
+                        let _ = self.cmd_tx.try_send(EngineCommand::RenameSession(
+                            id.to_string(),
+                            name.to_string(),
+                        ));
+                    }
+                    _ => {
+                        self.messages
+                            .push("Usage: /rename [<session-id>] <new-name>".into());
+                    }
+                }
+            }
+            "/log" => {
+                if !self.log_enabled {
+                    // Enable logging
+                    if let Some(ref session_id) = self.session_id {
+                        let log_dir = dirs::data_dir()
+                            .unwrap_or_else(|| std::path::PathBuf::from("."))
+                            .join("anacleto")
+                            .join("logs");
+                        if let Err(e) = std::fs::create_dir_all(&log_dir) {
+                            self.push_msg(format!("Error creating log dir: {}", e));
+                            return;
+                        }
+                        let log_path = log_dir.join(format!("{}.md", session_id));
+                        // Write header
+                        let header = format!(
+                            "# Session log: {}\n\n",
+                            session_id
+                        );
+                        if let Err(e) = std::fs::write(&log_path, &header) {
+                            self.push_msg(format!("Error creating log file: {}", e));
+                            return;
+                        }
+                        self.log_path = Some(log_path.clone());
+                        self.log_enabled = true;
+                        self.push_msg(format!(
+                            "Logging enabled -> {}",
+                            log_path.display()
+                        ));
+                    } else {
+                        self.push_msg("No active session to log.");
+                    }
                 } else {
-                    self.messages
-                        .push("Usage: /rename <session-id> <new-name>".into());
+                    // Disable logging
+                    self.log_enabled = false;
+                    if let Some(ref path) = self.log_path {
+                        self.push_msg(format!("Logging disabled -> {}", path.display()));
+                    }
+                    self.log_path = None;
                 }
             }
             // ── Session pinning (FASE 4.5) ─────────────────────────

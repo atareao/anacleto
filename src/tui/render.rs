@@ -250,7 +250,6 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
         .map(|a| a.mcps.len())
         .sum();
 
-    let session_label = app.session_id.as_deref().unwrap_or("-");
     let mut all_spans: Vec<Span<'static>> = Vec::with_capacity(16);
     all_spans.push(Span::styled(
         " ⬡ anacleto ",
@@ -268,9 +267,17 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
     }
     all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
     all_spans.push(Span::styled(
-        format!(" {}:{} ", app.session_name, session_label),
+        format!(" {} ", app.session_name),
         Style::default().fg(Color::Cyan),
     ));
+    // Logging indicator
+    if app.log_enabled {
+        all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+        all_spans.push(Span::styled(
+            " \u{1f4dd} ",
+            Style::default().fg(Color::Rgb(255, 200, 100)),
+        ));
+    }
     all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
 
     // Active agent indicator
