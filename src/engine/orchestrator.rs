@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use chrono::Local;
+
 use crate::agent::lifecycle::{AgentHandle, SpawnAgentConfig, spawn_agent};
 use crate::agent::types::{Agent, AgentId, AgentMessage, AgentMode, AgentRole, AgentStatus};
 use crate::config::Config;
@@ -146,7 +148,7 @@ impl Engine {
         agents.iter().filter(|a| a.role == AgentRole::Root)
     }
 
-    pub async fn initialize(&mut self) -> Result<()> {
+    pub async fn initialize(&mut self, resume_session_id: Option<Uuid>) -> Result<()> {
         // Sync debug flag from config (--debug CLI flag sets this)
         self.debug
             .store(self.config.session.debug, Ordering::Relaxed);
@@ -158,12 +160,48 @@ impl Engine {
             .await
             .ok();
 
-        // Initialize database and create a session
+        // Initialize database
         let db = Database::open(&self.config.session.database_path).await?;
-        let session = db.create_session("default").await?;
-        let session_id = session.id;
         self.database = Some(db.clone());
-        self.active_session_id = Some(session_id);
+
+        // Create a new session or resume an existing one
+        match resume_session_id {
+            Some(session_id) => {
+                // Verify the session exists
+                let name = db
+                    .get_session_name(session_id)
+                    .await?
+                    .ok_or_else(|| Error::Session(format!("Session {} not found", session_id)))?;
+                self.active_session_id = Some(session_id);
+
+                self.event_tx
+                    .send(EngineEvent::SessionSwitched {
+                        id: session_id.to_string(),
+                        name,
+                    })
+                    .await
+                    .ok();
+            }
+            None => {
+                // Create a new session with a timestamp-based name
+                let now = Local::now();
+                let session_name = format!(
+                    "Session {}",
+                    now.format("%Y-%m-%d %H:%M:%S")
+                );
+                let session = db.create_session(&session_name).await?;
+                let session_id = session.id;
+                self.active_session_id = Some(session_id);
+
+                self.event_tx
+                    .send(EngineEvent::SessionSwitched {
+                        id: session_id.to_string(),
+                        name: session_name,
+                    })
+                    .await
+                    .ok();
+            }
+        }
 
         // Try to load the persisted active agent for this workspace.
         // If found and the agent still exists in config, override the default.
@@ -525,6 +563,11 @@ impl Engine {
 
             self.agents.insert(name, id.clone());
             self.handles.insert(id, handle);
+        }
+
+        // If resuming a session, load its history into the root agent
+        if let Some(session_id) = resume_session_id {
+            self.reload_history_to_root(session_id).await?;
         }
 
         // Fire OnStartup hooks and emit events
@@ -1432,7 +1475,7 @@ mod tests {
 
         let mut engine = Engine::new(config, event_tx, cmd_rx);
         // Should not panic
-        let result = engine.initialize().await;
+        let result = engine.initialize(None).await;
         // May fail if no database directory, but shouldn't panic
         assert!(result.is_ok() || result.is_err());
     }
