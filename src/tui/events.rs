@@ -269,39 +269,46 @@ impl App {
                 // Cost is computed in the engine from per-million-token prices.
                 self.total_cost += cost;
 
-                // Warn once when crossing the 70% threshold
-                if self.context_window_pct >= 70.0 && !self.context_warned {
+                // Warn once when the LOCAL estimate crosses the 70% threshold
+                // (same metric that compaction uses, not the API prompt_tokens)
+                let local_pct = if context_window > 0 {
+                    (self.local_context_tokens as f64 / context_window as f64) * 100.0
+                } else {
+                    0.0
+                };
+                if local_pct >= 70.0 && !self.context_warned {
                     self.context_warned = true;
                     self.toasts.push(
                         "⚠ Contexto alto — usa /compact para compactar",
                         ToastKind::Warning,
                     );
-                } else if self.context_window_pct < 60.0 {
+                } else if local_pct < 60.0 {
                     // Reset the flag so the warning can fire again if it climbs back up
                     self.context_warned = false;
                 }
             }
+            EngineEvent::ToolSettingsUpdated(settings) => {
+                self.tool_settings = settings;
+            }
             EngineEvent::ToolExecution {
                 tool_name, task, ..
             } => {
-                // Commit any pending thinking first (it arrived chronologically
-                // before the stream), then commit any pending stream content
-                // so it appears before the tool execution marker in the chat
-                // timeline, rather than being pushed below it.
+                // Commit any pending thinking first
                 commit_thinking_block(self);
                 commit_stream_block(self);
-                // Distinguish between executable tools (shell, filesystem, web)
-                // and passive skills that just load instructions.
-                let lower = tool_name.to_lowercase();
-                let is_tool = lower == "shell"
-                    || lower == "filesystem"
-                    || lower.contains("web")
-                    || lower.contains("research");
-                let msg = if is_tool {
-                    format!("\u{26a1} ejecutando: {}", one_line(&task, 500))
-                } else {
-                    format!("\u{1f4d6} leyendo: {}", tool_name)
-                };
+
+                // Push color marker if configured
+                if let Some(color) = self
+                    .tool_settings
+                    .get(&tool_name)
+                    .and_then(|s| s.color.as_ref())
+                {
+                    self.pending_tool_lines
+                        .push(format!("[tool-color:{}]", color));
+                }
+
+                let (icon, _) = tool_icon_and_label(&tool_name);
+                let msg = format!("{} {}: {}", icon, tool_name, one_line(&task, 500));
                 self.pending_tool_lines.push(msg);
                 self.chat_scroll = 0;
             }
@@ -314,23 +321,12 @@ impl App {
                 // Commit any thinking that arrived between ToolExecution
                 // and ToolResult, then push the result as its own message.
                 commit_thinking_block(self);
-                // Distinguish between executable tools and passive skills.
-                let lower = tool_name.to_lowercase();
-                let is_tool = lower == "shell"
-                    || lower == "filesystem"
-                    || lower.contains("web")
-                    || lower.contains("research");
-                let msg = if is_tool {
-                    let icon = if success { "\u{2705}" } else { "\u{274c}" };
-                    if success {
-                        format!("{} {} \u{2014} {}", icon, tool_name, summary)
-                    } else {
-                        format!("{} {} failed: {}", icon, tool_name, summary)
-                    }
+                let (_, label) = tool_icon_and_label(&tool_name);
+                let icon = if success { "\u{2705}" } else { "\u{274c}" };
+                let msg = if success {
+                    format!("{} {} \u{2014} {}", icon, label, summary)
                 } else {
-                    // Skills just show a brief confirmation; the full
-                    // instructions are not displayed in the chat.
-                    format!("\u{1f4d6} {} cargado", tool_name)
+                    format!("{} {} failed: {}", icon, label, summary)
                 };
                 // Split header from output so the renderer can style
                 // the output (JSON, shell text) with a dimmed style.
@@ -504,6 +500,9 @@ impl App {
                 let recent = frecency.into_iter().map(|(m, _)| m).collect();
                 self.model_picker.set_recent(recent);
             }
+            EngineEvent::LocalTokenEstimate { tokens } => {
+                self.local_context_tokens = tokens as u64;
+            }
             // ── FASE 1 y 2: build, jobs y snapshots ─────────────────
             EngineEvent::SubagentFinished { task_id, summary } => {
                 self.push_msg(format!(
@@ -622,8 +621,29 @@ fn commit_stream_block(app: &mut App) {
 /// it to at most `max_chars` characters, appending an ellipsis when cut.
 ///
 /// Used to keep tool execution/result markers compact in the chat.
+fn tool_icon_and_label(name: &str) -> (&'static str, String) {
+    match name {
+        "shell" => ("\u{26a1}", "shell".to_string()),
+        "filesystem" => ("\u{1f4c1}", "filesystem".to_string()),
+        "read" => ("\u{1f4d6}", "read".to_string()),
+        "grep" => ("\u{1f50d}", "grep".to_string()),
+        "glob" => ("\u{1f4c2}", "glob".to_string()),
+        "webfetch" => ("\u{1f310}", "webfetch".to_string()),
+        "websearch" => ("\u{1f50e}", "websearch".to_string()),
+        "todo" => ("\u{1f4dd}", "todo".to_string()),
+        "question" => ("\u{2753}", "question".to_string()),
+        "apply_patch" => ("\u{1f527}", "apply_patch".to_string()),
+        "lsp_query" => ("\u{1f52c}", "lsp_query".to_string()),
+        "task" => ("\u{1f916}", "task".to_string()),
+        _ if name.starts_with("mcp_") => ("\u{1f50c}", name.to_string()),
+        // Passive skills (loaded instructions)
+        _ => ("\u{1f4d6}", name.to_string()),
+    }
+}
+
 fn one_line(s: &str, max_chars: usize) -> String {
     let collapsed: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+
     if collapsed.chars().count() <= max_chars {
         collapsed
     } else {

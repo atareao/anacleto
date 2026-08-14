@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, ToolSettings};
 use crate::llm::types::LlmMessage;
 use crate::permissions::Permissions;
 
@@ -79,6 +80,9 @@ pub struct Agent {
 
     /// Maximum depth of dynamic subagent delegation via the `task` tool.
     pub subagent_depth: u32,
+
+    /// Per-tool configuration overrides.
+    pub tool_settings: HashMap<String, ToolSettings>,
 }
 
 impl Agent {
@@ -97,6 +101,7 @@ impl Agent {
             parent_id: None,
             max_steps: config.max_steps,
             subagent_depth: config.subagent_depth,
+            tool_settings: config.tools.clone(),
         }
     }
 
@@ -111,6 +116,7 @@ impl Agent {
         permissions: Permissions,
         max_steps: u32,
         parent_id: AgentId,
+        tool_settings: HashMap<String, ToolSettings>,
     ) -> Self {
         Self {
             id: AgentId::new(),
@@ -125,6 +131,7 @@ impl Agent {
             parent_id: Some(parent_id),
             max_steps,
             subagent_depth: 3,
+            tool_settings,
         }
     }
 

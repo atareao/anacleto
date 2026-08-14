@@ -33,9 +33,8 @@ pub(crate) const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/rename", "Rename a session"),
     ("/reload", "Reload the active agent (config + skills)"),
     ("/rl", "Reload the active agent (alias)"),
-    ("/agents", "List agents"),
+    ("/agents", "Switch active agent"),
     ("/a", "List agents (alias)"),
-    ("/agent", "Switch active agent"),
     ("/subagents", "List subagents"),
     ("/sa", "List subagents (alias)"),
     ("/copy", "Copy chat to clipboard"),
@@ -80,6 +79,8 @@ pub(crate) const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/stage", "Stage the conversation as a pending snapshot"),
     ("/clear", "Clear the staged snapshot"),
     ("/commit", "Commit the staged snapshot"),
+    ("/todos", "Show todo list"),
+    ("/t", "Show todo list (alias)"),
 ];
 
 #[derive(Debug, Clone)]

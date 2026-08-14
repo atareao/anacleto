@@ -5,6 +5,7 @@
 // LLM or MCP servers.
 
 use proptest::prelude::*;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Config parsing
@@ -103,6 +104,7 @@ fn test_config_merge_does_not_merge_agents() {
             system_prompt: "You are root.".into(),
             max_steps: 60,
             subagent_depth: 3,
+            tools: HashMap::new(),
         }],
         ..Default::default()
     };
@@ -121,6 +123,7 @@ fn test_config_merge_does_not_merge_agents() {
             system_prompt: "You are the new root.".into(),
             max_steps: 60,
             subagent_depth: 3,
+            tools: HashMap::new(),
         }],
         ..Default::default()
     };

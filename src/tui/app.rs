@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::types::{AgentRole, AgentStatus};
 use crate::config::Config;
-use crate::config::types::CustomCommand;
+use crate::config::types::{CustomCommand, ToolSettings};
 use crate::db::models::SessionSummary;
 use crate::engine::orchestrator::{
     EngineCommand, EngineEvent, McpStatus, SkillInfo, StatusInfo, TimelineEntry,
@@ -102,6 +102,9 @@ pub struct App {
     pub total_tokens: u64,
     /// Current context size (non-cumulative, reflects actual conversation buffer).
     pub context_tokens: u64,
+    /// Token count estimated locally by conversation_tokens(), used by compaction.
+    /// Stored alongside context_tokens (from API) so the TUI can show both.
+    pub local_context_tokens: u64,
     /// Percentage of the context window used.
     pub context_window_pct: f64,
     /// Total cost spent (in dollars).
@@ -151,6 +154,18 @@ pub struct App {
     pub(crate) model_matches: Vec<String>,
     /// Index of the currently highlighted model entry.
     pub(crate) model_index: usize,
+    /// Whether the workspace-selection combo is open (for `/workspace`).
+    pub(crate) show_workspace_palette: bool,
+    /// Workspace names matching the current `/workspace` query.
+    pub(crate) workspace_matches: Vec<String>,
+    /// Index of the currently highlighted workspace entry.
+    pub(crate) workspace_index: usize,
+    /// Whether the skill-selection combo is open (for `/skill`).
+    pub(crate) show_skill_palette: bool,
+    /// Skill names matching the current `/skill` query.
+    pub(crate) skill_matches: Vec<String>,
+    /// Index of the currently highlighted skill entry.
+    pub(crate) skill_index: usize,
     /// Vertical scroll offset for the chat panel (0 = bottom, auto-scroll).
     pub chat_scroll: u16,
     /// Timestamp of the last 'g' press, used to detect a double-'g' (gg) jump.
@@ -189,6 +204,10 @@ pub struct App {
     pub show_mcps: bool,
     /// Index of the highlighted MCP entry.
     pub(crate) mcps_index: usize,
+    /// Whether the todo list panel is open.
+    pub show_todos: bool,
+    /// Index of the highlighted todo entry.
+    pub(crate) todos_index: usize,
     /// Active `/init` flow (None when not running).
     pub(crate) init_flow: Option<InitFlow>,
     /// Todo list for the active session (from the `todo` tool).
@@ -233,6 +252,8 @@ pub struct App {
     /// The full rendered chat lines from the last frame, used by mouse-click
     /// handling to map a click row back to an absolute rendered line.
     pub(crate) rendered_chat_lines: Vec<ratatui::text::Line<'static>>,
+    /// Tool display settings (colors, templates) for the active agent.
+    pub(crate) tool_settings: HashMap<String, ToolSettings>,
     /// Set of collapsed section IDs (ephemeral, per-session).
     pub(crate) collapsed_sections: HashSet<String>,
     /// Per-frame mapping: line index in rendered_chat_lines → section_id.
@@ -361,6 +382,7 @@ impl App {
             pending_question: None,
             total_tokens: 0,
             context_tokens: 0,
+            local_context_tokens: 0,
             context_window_pct: 0.0,
             total_cost: 0.0,
             context_window: 0,
@@ -394,6 +416,12 @@ impl App {
             show_model_palette: false,
             model_matches: Vec::new(),
             model_index: 0,
+            show_workspace_palette: false,
+            workspace_matches: Vec::new(),
+            workspace_index: 0,
+            show_skill_palette: false,
+            skill_matches: Vec::new(),
+            skill_index: 0,
             chat_scroll: 0,
             last_g_press: None,
             frame_count: 0,
@@ -412,6 +440,8 @@ impl App {
             timeline_index: 0,
             show_mcps: false,
             mcps_index: 0,
+            show_todos: false,
+            todos_index: 0,
             init_flow: None,
             todos: Vec::new(),
             keymap,
@@ -431,6 +461,7 @@ impl App {
             code_block_positions: Vec::new(),
             pending_tool_lines: Vec::new(),
             rendered_chat_lines: Vec::new(),
+            tool_settings: HashMap::new(),
             collapsed_sections: HashSet::new(),
             section_line_map: Vec::new(),
             section_info: Vec::new(),

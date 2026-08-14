@@ -22,6 +22,8 @@ pub enum Action {
     OpenWhichKey,
     /// Open the model picker.
     OpenModelPicker,
+    /// Open the agent picker (Ctrl+A).
+    OpenAgentPicker,
     /// Open the external editor.
     OpenEditor,
     /// Scroll the chat up by one line.
@@ -204,6 +206,7 @@ impl Default for Keymap {
         km.bind(Action::ToggleDiffViewer, vec![key_event('g', true)]);
         km.bind(Action::OpenWhichKey, vec![key_event('x', true)]);
         km.bind(Action::OpenModelPicker, vec![key_event('m', true)]);
+        km.bind(Action::OpenAgentPicker, vec![key_event('a', true)]);
         km.bind(Action::OpenEditor, vec![key_event('e', true)]);
         km.bind(
             Action::ScrollUp,

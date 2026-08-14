@@ -14,6 +14,7 @@ Anacleto es un motor de orquestación de agentes construido en Rust. Gestiona un
 2. [Conceptos clave](#2-conceptos-clave)
 3. [Configuración](#3-configuración)
 4. [Agentes y subagentes](#4-agentes-y-subagentes)
+    - [Tools (herramientas built-in)](#tools-herramientas-built-in)
 5. [Skills](#5-skills)
 6. [MCPs (Model Context Protocol)](#6-mcps-model-context-protocol)
 7. [Permisos](#7-permisos)
@@ -372,6 +373,35 @@ You are a code review specialist...
 ```
 
 Para ver subagentes activos: `/subagents` o `/sa`.
+
+### Tools (herramientas built-in)
+
+Cada agente declara explícitamente qué herramientas built-in necesita en su frontmatter `tools:`. Si una herramienta no está en la lista, el agente no tiene acceso a ella.
+
+**Principios:**
+
+- **Sin herramientas core** — Ni `task`, `question`, ni `todo` son obligatorias.
+- **Sin herencia** — Los subagentes no heredan herramientas del padre.
+- **Declaración explícita** — Cada agente lista sus herramientas.
+
+**Ejemplo:**
+
+```yaml
+tools:
+  read:
+    color: cyan
+  grep:
+    color: blue
+  bash:
+    color: green
+    display: "$ {command}"
+  question:
+    color: yellow
+```
+
+Las herramientas disponibles son: `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `todo`, `question`, `task`, `compress`, `skill`, `apply_patch`, `mcp_list_resources`, `mcp_read_resource`, `mcp_list_resource_templates`, `lsp_query`.
+
+Los valores por defecto (description, show, display, color) se pueden configurar globalmente en `~/.config/anacleto/config.yaml` bajo la clave `tools:`.
 
 ---
 

@@ -19,26 +19,20 @@ const MAX_MATCHES: usize = 500;
 pub fn grep_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "grep".to_string(),
-        description: "Search files for a regular expression pattern. Returns \
-                       matches as 'path:line:content'. `path` optionally limits \
-                       the search to a file or directory (relative to the \
-                       workspace); `include` optionally filters files by glob \
-                       (e.g. '*.rs')."
+        description: "Search files for a regex pattern. Returns path:line:content. \
+                       Supports optional path and include (glob) filters."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "pattern": {
-                    "type": "string",
-                    "description": "The regular expression to search for."
+                    "type": "string"
                 },
                 "path": {
-                    "type": "string",
-                    "description": "Optional file or directory to search (relative to the workspace)."
+                    "type": "string"
                 },
                 "include": {
-                    "type": "string",
-                    "description": "Optional glob to filter files, e.g. '*.rs'."
+                    "type": "string"
                 }
             },
             "required": ["pattern"]

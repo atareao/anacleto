@@ -1,142 +1,464 @@
-# Plan: Subagentes auto-descriptivos (self-describing subagents)
-
-> **Histórico:** Este plan reemplaza al anterior "Mejoras en manejo de capacidades MCP + tool descriptions"
-> (ya implementado y completado: verificación de capacidades MCP en client.rs, tool descriptions
-> mejoradas en tools/mcp.rs, y actualización comportamental de root.md y dev-manager.md).
+# Workspace obligatorio para subagentes — Implementation Plan
 
 ## Objetivo
 
-Cuando un usuario declara `subagents: [documenter]` en el frontmatter YAML de un agente, el agente
-padre debe **saber automáticamente** qué hace cada subagente y **cuándo invocarlo**, sin necesidad de
-editar el system prompt (cuerpo Markdown) del agente padre.
+Propagar el `workspace` del agente padre al subagente haciendo que sea un campo requerido en el `task` tool, de modo que el subagente sepa en qué directorio trabajar.
 
-Hoy, `subagent_config_to_tool_definition` (src/agent/tools.rs:1123) genera una descripción genérica
-("Delegate a task to the 'X' subagent for specialized work") que no incluye ni la `description` real
-del subagente ni ninguna directriz de uso. El resultado: el agente padre no sabe cuándo usar sus
-subagentes salvo que se le instruya manualmente en su Markdown.
+## Arquitectura
 
-### Decisiones de diseño confirmadas por el usuario
+Se añade `workspace: PathBuf` como campo requerido en `TaskToolArgs`, `SpawnSubagentConfig`, y como parámetro de `execute_task_tool`. En `spawn_subagent_and_delegate` se usa para renderizar el system prompt del subagente (inyectando `{workspace}` via `render_template`), replicando lo que ya hace `spawn_agent` en `lifecycle.rs`.
 
-1. `when_to_use` es **texto libre** interpretado por el LLM del padre (no triggers estructurados del motor).
-2. **NO** se inyecta el cuerpo Markdown completo del subagente — solo `description` + `when_to_use`.
-3. `when_to_use` es **opcional** (`#[serde(default)]`), cero ruptura con configs existentes.
+## Tareas
 
----
+### Tarea 1: Añadir `workspace` a `TaskToolArgs` y su parseo
 
-## Tarea 1: Añadir campo `when_to_use` a `AgentConfig`
+**Archivos:**
+- Modificar: `src/agent/tools.rs:1135-1195`
 
-### Archivo: `src/config/types.rs`
+- [ ] **Paso 1.1:** Añadir `use std::path::PathBuf;` si no existe ya al inicio del archivo.
 
-Añadir al struct `AgentConfig` (después de `description`):
+- [ ] **Paso 1.2:** Añadir el campo `workspace: PathBuf` a la struct `TaskToolArgs`:
 
 ```rust
-/// Directrices de cuándo el agente padre debe invocar este subagente
-/// (texto libre, inyectado automáticamente en el system prompt del padre).
-#[serde(default)]
-pub when_to_use: String,
-```
-
-## Tarea 2: Parsear `when_to_use` del frontmatter
-
-### Archivo: `src/agent/loader.rs`
-
-Añadir al struct `Frontmatter` (struct de deserialización local en `parse_agent`):
-
-```rust
-#[serde(default)]
-when_to_use: String,
-```
-
-La construcción de `AgentConfig` ya asigna todos los campos del frontmatter; añadir la asignación.
-
-## Tarea 3: Enriquecer la tool definition del subagente
-
-### Archivo: `src/agent/tools.rs` — función `subagent_config_to_tool_definition`
-
-Cambiar la descripción genérica por una que incluya `description` y, si no está vacío, `when_to_use`:
-
-```rust
-description: {
-    let mut desc = format!(
-        "Delegate a task to the '{}' subagent. What it does: {}",
-        config.name, config.description
-    );
-    if !config.when_to_use.is_empty() {
-        desc.push_str(&format!(" When to use: {}", config.when_to_use));
-    }
-    desc
+struct TaskToolArgs {
+    task_id: String,
+    description: String,
+    mode: TaskMode,
+    model: Option<String>,
+    tools: Vec<String>,
+    /// Optional name of a configured subagent type (e.g. "reviewer") used as
+    /// the template for this subagent. When `None`, a dynamic subagent is
+    /// created from the task description.
+    agent: Option<String>,
+    /// The workspace directory where the subagent will operate.
+    workspace: PathBuf,
 }
 ```
 
-El input_schema (campo `task`) se mantiene igual.
-
-## Tarea 4: Auto-inyección en el system prompt del padre
-
-### Archivo: `src/agent/lifecycle.rs` — función `spawn_agent`
-
-Después de renderizar el system prompt (`render_template(&agent.description, &vars)`, ~línea 225),
-si `subagent_configs` no está vacío, concatenar un bloque auto-generado:
+- [ ] **Paso 1.3:** En el método `parse`, añadir el parseo de `workspace` entre el parseo de `tools` y `agent`:
 
 ```rust
-// Auto-inyectar el bloque de subagentes: el padre descubre qué hacen y
-// cuándo usarlos sin editar su Markdown.
-if !subagent_configs.is_empty() {
-    system_prompt.push_str("\n\n--- Subagents disponibles ---\n");
-    for sc in &subagent_configs {
-        system_prompt.push_str(&format!("• **{}** — {}\n", sc.name, sc.description));
-        if !sc.when_to_use.is_empty() {
-            system_prompt.push_str(&format!("  *Cómo usarlo*: {}\n", sc.when_to_use));
-        }
-    }
+        let workspace = args
+            .get("workspace")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "task requires 'workspace'".to_string())?
+            .to_string();
+```
+
+Y añadirlo al `Ok(Self { ... })`:
+
+```rust
+        Ok(Self {
+            task_id,
+            description,
+            mode,
+            model,
+            tools,
+            workspace: PathBuf::from(workspace),
+            agent,
+        })
+```
+
+### Tarea 2: Actualizar `task_tool_definition()` schema
+
+**Archivos:**
+- Modificar: `src/agent/tools.rs:1200-1260`
+
+- [ ] **Paso 2.1:** Añadir la propiedad `"workspace"` al objeto `"properties"` en `input_schema`:
+
+```rust
+                "workspace": {
+                    "type": "string",
+                    "description": "The workspace directory where the subagent will operate."
+                },
+```
+
+- [ ] **Paso 2.2:** Añadir `"workspace"` al array `"required"`:
+
+```rust
+            "required": ["task_id", "description", "workspace"]
+```
+
+### Tarea 3: Añadir `workspace` a `SpawnSubagentConfig`
+
+**Archivos:**
+- Modificar: `src/agent/tools.rs:1517-1550`
+
+- [ ] **Paso 3.1:** Añadir el campo `pub workspace: PathBuf` a la struct `SpawnSubagentConfig`:
+
+```rust
+pub(crate) struct SpawnSubagentConfig {
+    pub(crate) parent_id: AgentId,
+    pub(crate) parent_name: String,
+    pub(crate) task_id: String,
+    pub(crate) description: String,
+    pub(crate) mode: TaskMode,
+    pub(crate) model: Option<String>,
+    pub(crate) tools: Vec<String>,
+    pub(crate) workspace: PathBuf,
+    pub(crate) permissions: Permissions,
+    pub(crate) event_tx: mpsc::Sender<EngineEvent>,
+    pub(crate) usage_tx: Option<mpsc::Sender<UsageEvent>>,
+    pub(crate) db: Option<Database>,
+    pub(crate) session_id: Option<Uuid>,
+    pub(crate) history_limit_percent: f64,
+    pub(crate) retry_config: RetryConfig,
+    pub(crate) debug: Arc<AtomicBool>,
+    pub(crate) depth: u32,
+    pub(crate) subagent_depth: u32,
+    pub(crate) job_registry: Option<Arc<tokio::sync::Mutex<JobRegistry>>>,
+    pub(crate) agent: Option<AgentConfig>,
+    pub(crate) llm_registry: LlmProviderRegistry,
+    pub(crate) skill_registry: crate::skill::registry::SharedSkillRegistry,
+    pub(crate) skill_names: Vec<String>,
 }
 ```
 
-Además, añadir una variable de template `subagents` al HashMap `vars` (con el mismo bloque, sin
-encabezado) para que un agente pueda posicionarlo explícitamente con `{subagents}` si lo desea.
-NOTA: `render_template` deja las variables desconocidas como literal, así que los agentes que no
-usen `{subagents}` no se ven afectados.
+### Tarea 4: Añadir parámetro `workspace` a `execute_task_tool`
 
-## Tarea 5: Tests
+**Archivos:**
+- Modificar: `src/agent/tools.rs:1285-1515`
 
-- `src/agent/loader.rs`: test de parseo de `when_to_use` en frontmatter (presente y ausente → vacío).
-- `src/agent/tools.rs`: test de `subagent_config_to_tool_definition` con y sin `when_to_use`.
-- `src/agent/lifecycle.rs` o donde mejor encaje: test del bloque auto-generado de subagentes.
-- Actualizar los constructores literales de `AgentConfig` en tests existentes (loader.rs, etc.) que
-  ahora requerirán el campo `when_to_use` (usar `String::new()` o `when_to_use: "".into()`).
+- [ ] **Paso 4.1:** Añadir `workspace: &Path` como nuevo parámetro en la firma de `execute_task_tool`:
 
-## Archivos a modificar (resumen)
-
-1. `src/config/types.rs` — campo `when_to_use` en `AgentConfig`
-2. `src/agent/loader.rs` — frontmatter + test
-3. `src/agent/tools.rs` — tool description enriquecida + test
-4. `src/agent/lifecycle.rs` — bloque auto-generado + variable `{subagents}` + test
-
-## Ejemplo de uso
-
-`.agents/agents/documenter.md`:
-```yaml
----
-name: documenter
-description: Documenta todas las acciones del agente
-when_to_use: >
-  Tras CADA ejecución de herramienta (tool call), delega al documenter
-  un resumen de la acción realizada, con qué tool, qué resultado obtuvo
-  y por qué la hizo.
----
-Documenta cada acción que realiza el agente principal...
+```rust
+pub(crate) async fn execute_task_tool(
+    tool_call: &ToolCall,
+    parent_permissions: &Permissions,
+    llm_registry: &LlmProviderRegistry,
+    parent_skill_registry: &crate::skill::registry::SharedSkillRegistry,
+    parent_skill_names: &[String],
+    event_tx: &mpsc::Sender<EngineEvent>,
+    usage_tx: &Option<mpsc::Sender<UsageEvent>>,
+    db: &Option<Database>,
+    session_id: Option<Uuid>,
+    history_limit_percent: f64,
+    retry_config: &RetryConfig,
+    debug: &Arc<AtomicBool>,
+    depth: u32,
+    subagent_depth: u32,
+    parent_name: &str,
+    parent_id: &AgentId,
+    parent_model: &str,
+    job_registry: &Option<Arc<tokio::sync::Mutex<JobRegistry>>>,
+    subagent_configs: &[AgentConfig],
+    workspace: &Path,
+) -> std::result::Result<String, String> {
 ```
 
-Al declarar `subagents: [documenter]` en el padre, este automáticamente ve el tool `documenter`
-con descripción rica Y recibe la instrucción de delegarle tras cada tool call. Sin tocar su Markdown.
+### Tarea 5: Pasar `workspace` en ambas ramas de `execute_task_tool`
 
-## Orden de ejecución
+**Archivos:**
+- Modificar: `src/agent/tools.rs` (dentro de `execute_task_tool`, ~líneas 1310-1400)
 
-1. Tarea 1 (types.rs)
-2. Tarea 2 (loader.rs)
-3. Tarea 3 (tools.rs)
-4. Tarea 4 (lifecycle.rs)
-5. Tarea 5 (tests)
+- [ ] **Paso 5.1:** En la rama donde se construye `SpawnSubagentConfig` para un agente configurado (`if let Some(agent_name) = &args.agent`), añadir `workspace: workspace.to_path_buf()`:
 
-## Verificación final
+```rust
+            let sub_cfg = SpawnSubagentConfig {
+                parent_id: parent_id.clone(),
+                parent_name: parent_name.to_string(),
+                task_id: args.task_id.clone(),
+                description: args.description.clone(),
+                mode: args.mode,
+                model: args.model.clone(),
+                tools: args.tools.clone(),
+                workspace: workspace.to_path_buf(),
+                permissions: config.permissions.clone(),
+                event_tx: event_tx.clone(),
+                usage_tx: usage_tx.clone(),
+                db: db.clone(),
+                session_id,
+                history_limit_percent,
+                retry_config: retry_config.clone(),
+                debug: debug.clone(),
+                depth: depth + 1,
+                subagent_depth,
+                job_registry: job_registry.clone(),
+                agent: Some(config),
+                llm_registry: llm_registry.clone(),
+                skill_registry: skill_registry.clone(),
+                skill_names: skill_names.to_vec(),
+            };
+```
 
-- `cargo fmt --check && cargo clippy && cargo test`
+- [ ] **Paso 5.2:** En la rama del agente dinámico (`else`), hacer lo mismo:
+
+```rust
+            let sub_cfg = SpawnSubagentConfig {
+                parent_id: parent_id.clone(),
+                parent_name: parent_name.to_string(),
+                task_id: args.task_id.clone(),
+                description: args.description.clone(),
+                mode: args.mode,
+                model: args.model.clone(),
+                tools: args.tools.clone(),
+                workspace: workspace.to_path_buf(),
+                permissions: parent_permissions.clone(),
+                event_tx: event_tx.clone(),
+                usage_tx: usage_tx.clone(),
+                db: db.clone(),
+                session_id,
+                history_limit_percent,
+                retry_config: retry_config.clone(),
+                debug: debug.clone(),
+                depth: depth + 1,
+                subagent_depth,
+                job_registry: job_registry.clone(),
+                agent: None,
+                llm_registry: llm_registry.clone(),
+                skill_registry: skill_registry.clone(),
+                skill_names: parent_skill_names.to_vec(),
+            };
+```
+
+### Tarea 6: Usar `workspace` en `spawn_subagent_and_delegate` para renderizar system prompt
+
+**Archivos:**
+- Modificar: `src/agent/tools.rs:1552-1700`
+
+- [ ] **Paso 6.1:** Añadir los imports necesarios al inicio del archivo si no existen:
+
+```rust
+use std::collections::HashMap;
+use crate::llm::template::render_template;
+```
+
+- [ ] **Paso 6.2:** En `spawn_subagent_and_delegate`, destructure `workspace` del config y renderizar el system prompt:
+
+```rust
+pub(crate) async fn spawn_subagent_and_delegate(
+    cfg: SpawnSubagentConfig,
+) -> Result<SubagentOutcome> {
+    let SpawnSubagentConfig {
+        parent_id,
+        parent_name,
+        task_id,
+        description,
+        mode,
+        model,
+        tools,
+        workspace,
+        permissions,
+        event_tx,
+        usage_tx,
+        db,
+        session_id,
+        history_limit_percent,
+        retry_config,
+        debug,
+        depth,
+        subagent_depth,
+        job_registry,
+        agent,
+        llm_registry,
+        skill_registry,
+        skill_names,
+    } = cfg;
+```
+
+- [ ] **Paso 6.3:** Renderizar el system prompt usando `render_template` donde antes se usaba `agent.description.clone()`. Buscar el lugar donde se asigna el system prompt (aproximadamente línea 1690) y reemplazar:
+
+```rust
+                    // Render the system prompt with workspace variable
+                    let mut vars = HashMap::new();
+                    vars.insert("workspace".to_string(), workspace.to_string_lossy().to_string());
+                    let system_prompt = render_template(&agent.description, &vars);
+```
+
+Luego usar `system_prompt` en el mensaje System del subagente en lugar de `agent.description.clone()`.
+
+Ejemplo del contexto donde se usa (aproximadamente líneas 1680-1700):
+
+```rust
+                    messages.push(SystemMessage {
+                        content: system_prompt,  // antes era: agent.description.clone()
+                        ..Default::default()
+                    });
+```
+
+### Tarea 7: Actualizar el caller en `lifecycle.rs`
+
+**Archivos:**
+- Modificar: `src/agent/lifecycle.rs:814-835`
+
+- [ ] **Paso 7.1:** Localizar la llamada a `execute_task_tool` (~línea 814). El workspace ya está disponible en el `SpawnAgentConfig` que posee la función `spawn_agent`. Añadirlo como último argumento:
+
+```rust
+                                            let task_result = execute_task_tool(
+                                                &tc,
+                                                agent_permissions,
+                                                llm_registry,
+                                                skill_registry,
+                                                skill_names,
+                                                event_tx,
+                                                usage_tx,
+                                                db,
+                                                session_id,
+                                                history_limit_percent,
+                                                retry_config,
+                                                debug_mode,
+                                                depth,
+                                                subagent_depth,
+                                                agent_name,
+                                                agent_id,
+                                                model_name,
+                                                job_registry,
+                                                subagent_configs,
+                                                &workspace,   // <-- nuevo parámetro
+                                            )
+                                            .await;
+```
+
+### Tarea 8: Actualizar tests existentes
+
+**Archivos:**
+- Modificar: `src/agent/tools.rs:2218-2260` (tests)
+
+- [ ] **Paso 8.1:** En `test_task_tool_args_parse_with_agent` (~línea 2218), actualizar el JSON para incluir `"workspace":"/tmp/test"` y añadir assert:
+
+```rust
+    #[test]
+    fn test_task_tool_args_parse_with_agent() {
+        let json = r#"{
+            "task_id": "t1",
+            "description": "do something",
+            "agent": "reviewer",
+            "workspace": "/tmp/test"
+        }"#;
+        let args = TaskToolArgs::parse(json).unwrap();
+        assert_eq!(args.task_id, "t1");
+        assert_eq!(args.description, "do something");
+        assert_eq!(args.agent, Some("reviewer".to_string()));
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
+    }
+```
+
+- [ ] **Paso 8.2:** En `test_task_tool_args_parse_without_agent` (~línea 2228), actualizar el JSON para incluir `"workspace":"/tmp/test"` y añadir assert:
+
+```rust
+    #[test]
+    fn test_task_tool_args_parse_without_agent() {
+        let json = r#"{
+            "task_id": "t2",
+            "description": "do something else",
+            "workspace": "/tmp/test"
+        }"#;
+        let args = TaskToolArgs::parse(json).unwrap();
+        assert_eq!(args.task_id, "t2");
+        assert_eq!(args.description, "do something else");
+        assert_eq!(args.agent, None);
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
+    }
+```
+
+- [ ] **Paso 8.3:** En `test_task_tool_args_parse_background_with_model_and_tools` (~línea 1175), actualizar el JSON:
+
+```rust
+    #[test]
+    fn test_task_tool_args_parse_background_with_model_and_tools() {
+        let json = r#"{
+            "task_id": "t3",
+            "description": "bg task",
+            "mode": "background",
+            "model": "gpt-4",
+            "tools": ["shell", "read"],
+            "workspace": "/tmp/test"
+        }"#;
+        let args = TaskToolArgs::parse(json).unwrap();
+        assert_eq!(args.mode, TaskMode::Background);
+        assert_eq!(args.model, Some("gpt-4".to_string()));
+        assert_eq!(args.tools, vec!["shell", "read"]);
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
+    }
+```
+
+- [ ] **Paso 8.4:** En `test_execute_task_tool_agent_not_found` (~línea 2237), actualizar el JSON y la llamada:
+
+```rust
+    #[tokio::test]
+    async fn test_execute_task_tool_agent_not_found() {
+        let json = r#"{
+            "task_id": "t4",
+            "description": "do x",
+            "agent": "nonexistent",
+            "workspace": "/tmp/test"
+        }"#;
+        let tool_call = ToolCall {
+            id: "call_1".to_string(),
+            function: FunctionCall {
+                name: "task".to_string(),
+                arguments: json.to_string(),
+            },
+        };
+        let result = execute_task_tool(
+            &tool_call,
+            &permissions,
+            &llm_registry,
+            &skill_registry,
+            &skill_names,
+            &event_tx,
+            &None,
+            &None,
+            None,
+            0.5,
+            &retry_config,
+            &Arc::new(AtomicBool::new(false)),
+            0,
+            5,
+            "parent",
+            &AgentId("parent-id".to_string()),
+            "claude-3",
+            &None,
+            &[],
+            &Path::new("/tmp/test"),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+```
+
+- [ ] **Paso 8.5:** En `test_task_tool_args_parse_defaults` (~línea 1185), actualizar el JSON:
+
+```rust
+    #[test]
+    fn test_task_tool_args_parse_defaults() {
+        let json = r#"{
+            "task_id": "t5",
+            "description": "defaults test",
+            "workspace": "/tmp/test"
+        }"#;
+        let args = TaskToolArgs::parse(json).unwrap();
+        assert_eq!(args.mode, TaskMode::Foreground);
+        assert_eq!(args.model, None);
+        assert!(args.tools.is_empty());
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
+    }
+```
+
+### Tarea 9: Añadir test nuevo para `workspace` faltante
+
+**Archivos:**
+- Modificar: `src/agent/tools.rs` (añadir test nuevo cerca de los demás tests de parseo)
+
+- [ ] **Paso 9.1:** Añadir test `test_task_tool_args_parse_missing_workspace`:
+
+```rust
+    #[test]
+    fn test_task_tool_args_parse_missing_workspace() {
+        let json = r#"{
+            "task_id": "t6",
+            "description": "missing workspace"
+        }"#;
+        let result = TaskToolArgs::parse(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("workspace"));
+    }
+```
+
+## Resumen de cambios
+
+| Archivo | Cambio |
+|---|---|
+| `src/agent/tools.rs` | Añadir `workspace: PathBuf` a `TaskToolArgs`, parseo, schema, `SpawnSubagentConfig`, parámetro de `execute_task_tool`, renderizado en `spawn_subagent_and_delegate`, tests |
+| `src/agent/lifecycle.rs` | Pasar `&workspace` como argumento adicional a `execute_task_tool` |

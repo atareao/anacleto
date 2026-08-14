@@ -19,7 +19,10 @@ use super::code_block::CodeBlockHighlighter;
 use super::markdown::{
     render_markdown_line_with_syntect, render_table_block, select_visible_start, visual_line_count,
 };
-use super::palette::{render_agent_palette, render_command_palette, render_model_palette};
+use super::palette::{
+    render_agent_palette, render_command_palette, render_model_palette, render_skill_palette,
+    render_workspace_palette,
+};
 use super::theme::Theme;
 use super::types::{AgentInfo, CollapsedSection, Focus};
 use crate::agent::types::{AgentRole, AgentStatus, TaskMode};
@@ -61,6 +64,14 @@ pub(crate) fn render(f: &mut Frame, app: &mut App) {
     // Render the model-selection combo above the input if open.
     if app.show_model_palette && !app.model_matches.is_empty() {
         render_model_palette(f, chunks[2], app);
+    }
+    // Render the workspace-selection combo above the input if open.
+    if app.show_workspace_palette && !app.workspace_matches.is_empty() {
+        render_workspace_palette(f, chunks[2], app);
+    }
+    // Render the skill-selection combo above the input if open.
+    if app.show_skill_palette && !app.skill_matches.is_empty() {
+        render_skill_palette(f, chunks[2], app);
     }
 
     // Render approval dialog on top if pending
@@ -312,19 +323,19 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
             .add_modifier(Modifier::BOLD),
     ));
 
-    // Context window warning indicator
+    // Context window warning indicator (based on local estimate, same metric as compaction)
     if app.context_window > 0 {
-        let pct = app.context_window_pct;
-        if pct >= 90.0 {
+        let local_pct = (app.local_context_tokens as f64 / app.context_window as f64) * 100.0;
+        if local_pct >= 90.0 {
             all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
             all_spans.push(Span::styled(
-                format!(" 🔥 ctx {:.0}% ", pct),
+                format!(" 🔥 ctx {:.0}% ", local_pct),
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ));
-        } else if pct >= 70.0 {
+        } else if local_pct >= 70.0 {
             all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
             all_spans.push(Span::styled(
-                format!(" ⚠ ctx {:.0}% ", pct),
+                format!(" ⚠ ctx {:.0}% ", local_pct),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
@@ -375,12 +386,14 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-/// Render the left panel: session list, agent list, subagent tree, or chat.
+/// Render the left panel: session list, agent list, subagent tree, todos, or chat.
 fn render_left_panel(f: &mut Frame, area: Rect, app: &mut App) {
     if app.show_timeline {
         render_timeline_panel(f, area, app);
     } else if app.show_mcps {
         render_mcp_list_panel(f, area, app);
+    } else if app.show_todos {
+        render_todo_panel(f, area, app);
     } else if app.show_session_list {
         render_session_list(f, area, app);
     } else if app.show_agents {
@@ -460,6 +473,78 @@ fn render_mcp_list_panel(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(list, area);
 }
 
+/// Render the todo list panel (`/todos`).
+fn render_todo_panel(f: &mut Frame, area: Rect, app: &App) {
+    let items: Vec<ListItem> = if app.todos.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "(no hay tareas — usa el tool `todo` para crear una)",
+            Style::default().fg(Color::DarkGray),
+        )))]
+    } else {
+        app.todos
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let selected = i == app.todos_index;
+                let sel = |s: Style| -> Style {
+                    if selected {
+                        s.bg(app.theme.accent()).fg(Color::Black)
+                    } else {
+                        s
+                    }
+                };
+
+                // Status emoji
+                let (status_emoji, status_color) = match t.status.as_str() {
+                    "completed" => ("✅", Color::Green),
+                    "in_progress" => ("🔄", Color::Yellow),
+                    "cancelled" => ("❌", Color::Red),
+                    _ => ("⬜", Color::DarkGray), // pending
+                };
+
+                // Priority indicator
+                let priority_str = match t.priority.as_deref() {
+                    Some("high") => " 🔥",
+                    Some("medium") => " ⚡",
+                    Some("low") => " ↓",
+                    _ => "",
+                };
+
+                let mut spans = Vec::new();
+                spans.push(Span::styled(
+                    format!("{} ", status_emoji),
+                    sel(Style::default()
+                        .fg(status_color)
+                        .add_modifier(Modifier::BOLD)),
+                ));
+                spans.push(Span::styled(t.content.clone(), sel(Style::default())));
+                if !priority_str.is_empty() {
+                    spans.push(Span::styled(
+                        priority_str,
+                        sel(Style::default().fg(status_color)),
+                    ));
+                }
+
+                ListItem::new(Line::from(spans))
+            })
+            .collect()
+    };
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Rgb(100, 200, 255)))
+            .title(format!(
+                " Todos ({}/{}) ",
+                app.todos.iter().filter(|t| t.status == "completed").count(),
+                app.todos.len()
+            )),
+    );
+
+    f.render_widget(list, area);
+}
+
 /// Render the right panel: 4 stacked info panels (Status, Info-tabs, Agents, Queue).
 fn render_right_panels(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
@@ -485,15 +570,24 @@ fn render_right_panels(f: &mut Frame, area: Rect, app: &App) {
 fn render_status_panel(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(1)].as_ref())
+        .constraints([Constraint::Length(6), Constraint::Min(1)].as_ref())
         .split(area);
 
+    let local_pct = if app.context_window > 0 {
+        (app.local_context_tokens as f64 / app.context_window as f64) * 100.0
+    } else {
+        0.0
+    };
+
     let text = format!(
-        "Tokens (session): {}\nCost: ${:.2}\nContext: {:.1}% ({} / {})",
+        "Tokens (session): {}\nCost: ${:.2}\nContext (API):   {:.1}% ({} / {})\nContext (local): {:.1}% ({} / {})",
         format_tokens(app.total_tokens),
         app.total_cost,
         app.context_window_pct,
         format_tokens(app.context_tokens),
+        format_tokens(app.context_window),
+        local_pct,
+        format_tokens(app.local_context_tokens),
         format_tokens(app.context_window)
     );
 
@@ -508,10 +602,15 @@ fn render_status_panel(f: &mut Frame, area: Rect, app: &App) {
         .wrap(Wrap { trim: false });
     f.render_widget(paragraph, chunks[0]);
 
+    let gauge_pct = if app.context_window > 0 {
+        ((app.local_context_tokens as f64 / app.context_window as f64).min(1.0) * 100.0) as u16
+    } else {
+        0
+    };
     let gauge = Gauge::default()
         .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(20, 40, 60)))
-        .percent((app.context_window_pct.min(100.0)) as u16)
-        .label(format!("Context: {:.1}%", app.context_window_pct));
+        .percent(gauge_pct)
+        .label(format!("Context (local): {:.1}%", local_pct));
     f.render_widget(gauge, chunks[1]);
 }
 
@@ -1364,6 +1463,37 @@ pub(crate) fn trim_block_blank_lines(content: &str) -> String {
     result_lines.join("\n")
 }
 
+/// Parse a color name or hex code into a ratatui Color.
+fn parse_color_name(name: &str) -> Option<Color> {
+    match name.to_lowercase().trim() {
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "yellow" => Some(Color::Yellow),
+        "blue" => Some(Color::Blue),
+        "magenta" => Some(Color::Magenta),
+        "cyan" => Some(Color::Cyan),
+        "white" => Some(Color::White),
+        "black" => Some(Color::Black),
+        "gray" | "grey" => Some(Color::Gray),
+        "dark_gray" | "dark_grey" => Some(Color::DarkGray),
+        "light_red" => Some(Color::LightRed),
+        "light_green" => Some(Color::LightGreen),
+        "light_yellow" => Some(Color::LightYellow),
+        "light_blue" => Some(Color::LightBlue),
+        "light_magenta" => Some(Color::LightMagenta),
+        "light_cyan" => Some(Color::LightCyan),
+        "light_white" => Some(Color::White),
+        // Hex color support: "#ff8800"
+        hex if hex.starts_with('#') && hex.len() == 7 => {
+            let r = u8::from_str_radix(&hex[1..3], 16).ok()?;
+            let g = u8::from_str_radix(&hex[3..5], 16).ok()?;
+            let b = u8::from_str_radix(&hex[5..7], 16).ok()?;
+            Some(Color::Rgb(r, g, b))
+        }
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::needless_option_as_deref)]
 fn render_sectioned_block(
@@ -1645,6 +1775,19 @@ fn render_sectioned_block(
         if marker == "[tool-error]" && section == "tool" {
             tool_style = styles.tool_error;
             continue;
+        }
+
+        // ── [tool-color:NAME] marker: custom color from tool settings ──
+        if let Some(cname) = marker
+            .strip_prefix("[tool-color:")
+            .and_then(|m| m.strip_suffix(']'))
+        {
+            if section == "tool" {
+                if let Some(color) = parse_color_name(cname) {
+                    tool_style = Style::default().fg(color);
+                }
+                continue;
+            }
         }
 
         // ── [normal] / [/normal] markers ──

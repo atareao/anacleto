@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::agent::types::AgentRole;
-use crate::config::types::{AgentConfig, PermissionConfig, default_subagent_depth};
+use crate::config::types::{AgentConfig, PermissionConfig, ToolSettings, default_subagent_depth};
 use crate::error::{Error, Result};
 
 /// Parse an agent from a Markdown string with YAML frontmatter.
@@ -69,6 +70,8 @@ pub fn parse_agent(content: &str, default_max_steps: u32) -> Result<AgentConfig>
         max_steps: Option<u32>,
         #[serde(default)]
         subagent_depth: Option<u32>,
+        #[serde(default)]
+        tools: HashMap<String, ToolSettings>,
     }
 
     let frontmatter: Frontmatter = serde_yaml::from_str(frontmatter_str)
@@ -89,6 +92,7 @@ pub fn parse_agent(content: &str, default_max_steps: u32) -> Result<AgentConfig>
         subagent_depth: frontmatter
             .subagent_depth
             .unwrap_or(default_subagent_depth()),
+        tools: frontmatter.tools,
     })
 }
 
@@ -363,6 +367,7 @@ role: root
             system_prompt: "global prompt".into(),
             max_steps: 60,
             subagent_depth: 3,
+            tools: HashMap::new(),
         }];
         let project = vec![AgentConfig {
             name: "root".into(),
@@ -377,6 +382,7 @@ role: root
             system_prompt: "project prompt".into(),
             max_steps: 60,
             subagent_depth: 3,
+            tools: HashMap::new(),
         }];
 
         let merged = merge_agents(global, project).unwrap();
@@ -401,6 +407,7 @@ role: root
             system_prompt: "root prompt".into(),
             max_steps: 60,
             subagent_depth: 3,
+            tools: HashMap::new(),
         }];
         let project = vec![AgentConfig {
             name: "reviewer".into(),
@@ -415,6 +422,7 @@ role: root
             system_prompt: "reviewer prompt".into(),
             max_steps: 60,
             subagent_depth: 3,
+            tools: HashMap::new(),
         }];
 
         let merged = merge_agents(global, project).unwrap();
@@ -437,6 +445,7 @@ role: root
             system_prompt: "p".into(),
             max_steps: 60,
             subagent_depth: 3,
+            tools: HashMap::new(),
         }];
         assert!(merge_agents(no_root, vec![]).is_err());
 
@@ -455,6 +464,7 @@ role: root
                 system_prompt: "p".into(),
                 max_steps: 60,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
             AgentConfig {
                 name: "b".into(),
@@ -469,6 +479,7 @@ role: root
                 system_prompt: "p".into(),
                 max_steps: 60,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
         ];
         assert!(merge_agents(two_roots, vec![]).is_ok());
@@ -487,6 +498,7 @@ role: root
             system_prompt: "p".into(),
             max_steps: 60,
             subagent_depth: 3,
+            tools: HashMap::new(),
         }];
         assert!(merge_agents(one_root, vec![]).is_ok());
     }

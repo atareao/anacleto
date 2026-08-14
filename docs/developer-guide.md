@@ -20,10 +20,11 @@
 9. [TUI](#9-tui)
 10. [Sistema de hooks](#10-sistema-de-hooks)
 11. [Plugins](#11-plugins)
-12. [Persistencia (SQLite)](#12-persistencia-sqlite)
-13. [ADRs (Architecture Decision Records)](#13-adrs)
-14. [Flujo de trabajo típico](#14-flujo-de-trabajo-típico)
-15. [Cómo contribuir](#15-cómo-contribuir)
+12. [Sistema de Tools](#12-sistema-de-tools)
+13. [Persistencia (SQLite)](#13-persistencia-sqlite)
+14. [ADRs (Architecture Decision Records)](#14-adrs)
+15. [Flujo de trabajo típico](#15-flujo-de-trabajo-típico)
+16. [Cómo contribuir](#16-cómo-contribuir)
 
 ---
 
@@ -271,11 +272,11 @@ La función principal es `run_agent_loop()`. Secuencia:
 3. Cargar skills del agente en SkillRegistry
 4. Cargar MCPs y colectar herramientas
 5. Convertir skills a ToolDefinitions para el LLM
-6. Añadir built-in tools:
-   - read, grep, glob, webfetch, websearch
-   - lsp_query, MCP resource tools
-   - todo, question, task (spawn subagent)
-   - apply_patch
+6. Añadir tools del agente:
+   - Solo las tools declaradas en `tools:` del frontmatter del agente
+   - Las tools se resuelven contra el registro de built-in tools
+   - Las descripciones se fusionan con los defaults de `config.yaml`
+   - Skills y subagentes se añaden siempre como tools
 7. Bucle LLM + tools:
    a. Enviar request al LLM (con streaming)
    b. Recibir respuesta (texto + tool_calls)
@@ -296,6 +297,77 @@ Almacena los outputs COMPLETOS de las tools (el LLM solo recibe una versión tru
 - FIFO con capacidad máxima (default: 100 entradas)
 - Se usa durante la compactación para generar resúmenes con información completa
 - Permite consultar outputs previos sin re-ejecutar
+
+### Sistema de Tools (`src/config/types.rs`, `src/agent/lifecycle.rs`)
+
+Anacleto tiene un sistema de tools configurable. Cada agente declara explícitamente qué built-in tools usa en su frontmatter `tools:`. Si una tool no está en la lista, el agente no tiene acceso a ella.
+
+**Principios:**
+
+1. **Sin tools core** — Ni `task`, `question`, ni `todo` son obligatorias. Cada agente declara lo que necesita.
+2. **Sin herencia** — Los subagentes no heredan tools del padre.
+3. **Declaración explícita** — Cada agente lista sus tools en el frontmatter.
+4. **Defaults globales** — `config.yaml` puede definir valores por defecto (description, show, display, color) para cada tool.
+5. **Overrides por agente** — El frontmatter del agente puede sobrescribir cualquier propiedad.
+
+**Flujo de carga:**
+
+1. `config.yaml` define `tools:` con defaults globales (`ToolDefaults`).
+2. El frontmatter del agente lista `tools:` con los nombres y overrides.
+3. `spawn_agent()` en `lifecycle.rs` filtra las built-in tools: solo las declaradas en el agente.
+4. Las descripciones se fusionan: global default → agente override.
+5. Skills, subagentes y MCP tools se añaden siempre (no pasan por este filtro).
+
+**Built-in tools disponibles:**
+
+| Tool | Descripción |
+|---|---|
+| `read` | Leer archivos del sistema de archivos |
+| `grep` | Buscar contenido en archivos |
+| `glob` | Buscar archivos por patrón |
+| `bash` | Ejecutar comandos shell |
+| `webfetch` | Obtener contenido web |
+| `websearch` | Buscar en la web |
+| `todo` | Gestionar lista de tareas |
+| `question` | Preguntar al usuario |
+| `task` | Delegar a un subagente |
+| `compress` | Compactar contexto |
+| `skill` | Cargar un skill |
+| `apply_patch` | Aplicar parches de código |
+| `mcp_list_resources` | Listar recursos MCP |
+| `mcp_read_resource` | Leer recurso MCP |
+| `mcp_list_resource_templates` | Listar plantillas MCP |
+| `lsp_query` | Consultar LSP |
+
+**Ejemplo en frontmatter:**
+
+```yaml
+tools:
+  read:
+    color: cyan
+  grep:
+    color: blue
+  bash:
+    color: green
+    display: "$ {command}"
+  question:
+    color: yellow
+```
+
+**Ejemplo en config.yaml:**
+
+```yaml
+tools:
+  read:
+    description: "Read files from the filesystem"
+    show: true
+    color: cyan
+  bash:
+    description: "Execute shell commands"
+    show: true
+    color: green
+    display: "$ {command}"
+```
 
 ### Compaction (`agent/context.rs`)
 
@@ -783,7 +855,11 @@ Los plugins se cargan desde `~/.config/anacleto/plugins/`.
 
 ---
 
-## 12. Persistencia (SQLite)
+## 12. Sistema de Tools
+
+Ver sección [Sistema de Tools](#sistema-de-tools-srcconfigtypessrc-agentlifecyclers) arriba.
+
+## 13. Persistencia (SQLite)
 
 ### Esquema de base de datos
 
@@ -868,7 +944,7 @@ impl Database {
 
 ---
 
-## 13. ADRs
+## 14. ADRs
 
 | ADR | Título | Decisión clave |
 |---|---|---|
@@ -883,7 +959,7 @@ impl Database {
 
 ---
 
-## 14. Flujo de trabajo típico
+## 15. Flujo de trabajo típico
 
 ### Para desarrollar una nueva funcionalidad
 
@@ -921,7 +997,7 @@ impl Database {
 
 ---
 
-## 15. Cómo contribuir
+## 16. Cómo contribuir
 
 1. Haz fork del repositorio
 2. Crea una rama con nombre descriptivo: `feat/nueva-funcionalidad`

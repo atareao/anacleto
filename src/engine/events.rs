@@ -8,9 +8,11 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::agent::types::{AgentId, AgentRole, AgentStatus, TaskMode};
+use crate::config::types::ToolSettings;
 use crate::db::models::{SessionSummary, Snapshot};
 
 /// Events emitted by the engine for the TUI to display.
@@ -133,6 +135,8 @@ pub enum EngineEvent {
         model: String,
         payload: String,
     },
+    /// Tool settings for the current agent (fired once on agent start).
+    ToolSettingsUpdated(HashMap<String, ToolSettings>),
     /// The model for the root agent changed.
     ModelChanged { model: String },
     /// The active root agent changed (via `/agent`).
@@ -223,6 +227,12 @@ pub enum EngineEvent {
     SkillsDiscovered {
         /// List of all discovered skill names.
         skills: Vec<String>,
+    },
+    /// Local token estimate emitted after conversation modifications.
+    /// Used by the TUI to show the same metric that compaction uses.
+    LocalTokenEstimate {
+        /// Estimated token count from conversation_tokens().
+        tokens: usize,
     },
 }
 

@@ -21,9 +21,33 @@ pub(crate) fn estimate_tokens(text: &str) -> usize {
     }
 }
 
+/// Estimate the total tokens for a single message, including tool_calls and tool_call_id.
+pub(crate) fn estimate_message_tokens(m: &LlmMessage) -> usize {
+    let mut total = estimate_tokens(&m.content);
+
+    // Count tool_calls (e.g. assistant messages with tool invocations)
+    if let Some(tool_calls) = &m.tool_calls {
+        for tc in tool_calls {
+            // Serialize id + type + function name + arguments as one blob
+            let serialized = format!(
+                "{} {} {} {}",
+                tc.id, tc.call_type, tc.function.name, tc.function.arguments
+            );
+            total += estimate_tokens(&serialized);
+        }
+    }
+
+    // Count tool_call_id (e.g. tool result messages)
+    if let Some(tool_call_id) = &m.tool_call_id {
+        total += estimate_tokens(tool_call_id);
+    }
+
+    total
+}
+
 /// Estimate the total number of tokens across a conversation buffer.
 pub(crate) fn conversation_tokens(messages: &[LlmMessage]) -> usize {
-    messages.iter().map(|m| estimate_tokens(&m.content)).sum()
+    messages.iter().map(estimate_message_tokens).sum()
 }
 
 /// Fraction of the token budget at which compaction is triggered automatically.
@@ -116,7 +140,7 @@ fn trim_conversation(messages: &mut Vec<LlmMessage>, max_tokens: usize) -> bool 
     }
 
     // Quick check: if already under budget, do nothing
-    let total: usize = messages.iter().map(|m| estimate_tokens(&m.content)).sum();
+    let total: usize = messages.iter().map(estimate_message_tokens).sum();
     if total <= max_tokens {
         return false;
     }
@@ -140,7 +164,7 @@ fn trim_conversation(messages: &mut Vec<LlmMessage>, max_tokens: usize) -> bool 
         let test_total: usize = system_msgs
             .iter()
             .chain(non_system_msgs.iter())
-            .map(|m| estimate_tokens(&m.content))
+            .map(estimate_message_tokens)
             .sum();
 
         if test_total <= max_tokens {
@@ -284,7 +308,7 @@ pub(crate) async fn summarize_conversation(
 mod tests {
     use super::*;
     use crate::error::Result;
-    use crate::llm::types::{LlmResponse, LlmStreamChunk, LlmUsage};
+    use crate::llm::types::{LlmResponse, LlmStreamChunk, LlmUsage, ToolCall, ToolFunction};
 
     #[test]
     fn test_build_summary_prompt_contains_anchored_sections() {
@@ -586,6 +610,167 @@ mod tests {
         assert_eq!(msgs[msgs.len() - 2].content, "msg2");
         assert_eq!(msgs[msgs.len() - 1].content, "resp2");
     }
+    #[test]
+    fn test_estimate_message_tokens_with_tool_calls() {
+        let msg = LlmMessage {
+            role: MessageRole::Assistant,
+            content: String::new(),
+            tool_calls: Some(vec![
+                ToolCall {
+                    id: "call_abc".into(),
+                    call_type: "function".into(),
+                    function: ToolFunction {
+                        name: "read_file".into(),
+                        arguments: r#"{"path": "/src/main.rs"}"#.into(),
+                    },
+                },
+                ToolCall {
+                    id: "call_def".into(),
+                    call_type: "function".into(),
+                    function: ToolFunction {
+                        name: "grep_search".into(),
+                        arguments: r#"{"pattern": "fn main", "include": "*.rs"}"#.into(),
+                    },
+                },
+            ]),
+            tool_call_id: None,
+        };
+        let tokens = estimate_message_tokens(&msg);
+        // content is empty (0 tokens), but tool_calls should add tokens
+        assert!(tokens > 0, "tool_calls should contribute tokens");
+        // Should be substantially more than estimate_tokens(&"") which is 0
+        assert!(
+            tokens > estimate_tokens(&msg.content),
+            "tool_calls should add more tokens than empty content"
+        );
+    }
+
+    #[test]
+    fn test_estimate_message_tokens_with_tool_call_id() {
+        let msg = LlmMessage {
+            role: MessageRole::Tool,
+            content: "result data".into(),
+            tool_calls: None,
+            tool_call_id: Some("call_abc123".into()),
+        };
+        let tokens = estimate_message_tokens(&msg);
+        let content_only = estimate_tokens(&msg.content);
+        assert!(tokens > content_only, "tool_call_id should add tokens");
+    }
+
+    #[test]
+    fn test_estimate_message_tokens_content_only() {
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: "hello world".into(),
+            tool_calls: None,
+            tool_call_id: None,
+        };
+        let tokens = estimate_message_tokens(&msg);
+        let expected = estimate_tokens(&msg.content);
+        assert_eq!(
+            tokens, expected,
+            "content-only message should match estimate_tokens"
+        );
+    }
+
+    #[test]
+    fn test_conversation_tokens_mixed() {
+        let messages = vec![
+            LlmMessage {
+                role: MessageRole::User,
+                content: "hello".into(),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            LlmMessage {
+                role: MessageRole::Assistant,
+                content: String::new(),
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_1".into(),
+                    call_type: "function".into(),
+                    function: ToolFunction {
+                        name: "shell".into(),
+                        arguments: r#"{"command": "ls"}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+            LlmMessage {
+                role: MessageRole::Tool,
+                content: "file list".into(),
+                tool_calls: None,
+                tool_call_id: Some("call_1".into()),
+            },
+        ];
+        let total = conversation_tokens(&messages);
+        // Should be sum of all three messages with their tool fields
+        let expected: usize = messages.iter().map(estimate_message_tokens).sum();
+        assert_eq!(total, expected);
+        // Should be greater than content-only estimate
+        let content_only: usize = messages.iter().map(|m| estimate_tokens(&m.content)).sum();
+        assert!(total >= content_only);
+    }
+
+    #[test]
+    fn test_trim_conversation_respects_tool_calls() {
+        let mut messages = vec![
+            LlmMessage {
+                role: MessageRole::System,
+                content: "System prompt".into(),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            LlmMessage {
+                role: MessageRole::User,
+                content: "msg1".into(),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            LlmMessage {
+                role: MessageRole::Assistant,
+                content: String::new(),
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_big".into(),
+                    call_type: "function".into(),
+                    function: ToolFunction {
+                        name: "large_tool".into(),
+                        arguments: "x".repeat(300),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+            LlmMessage {
+                role: MessageRole::Tool,
+                content: "result".into(),
+                tool_calls: None,
+                tool_call_id: Some("call_big".into()),
+            },
+            LlmMessage {
+                role: MessageRole::User,
+                content: "msg2".into(),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            LlmMessage {
+                role: MessageRole::Assistant,
+                content: "resp2".into(),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+        // Budget that fits system + last exchange when counting tool_calls
+        let total_with_tools: usize = messages.iter().map(estimate_message_tokens).sum();
+        let budget = total_with_tools; // exactly fits
+        let changed = trim_conversation(&mut messages, budget);
+        // Should NOT trim anything since it fits exactly
+        assert!(
+            !changed,
+            "should not trim when budget exactly fits with tool_calls"
+        );
+        assert_eq!(messages.len(), 6);
+    }
+
     /// Minimal `LlmProvider` stub that returns a fixed summary, used to test
     /// `summarize_conversation` without hitting a real LLM API.
     struct MockProvider;

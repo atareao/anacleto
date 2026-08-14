@@ -363,6 +363,20 @@ impl Engine {
                     }
                 }
             }
+
+            // Auto-discover skills from ~/.config/anacleto/skills
+            // Same structure: one subdirectory per skill with a SKILL.md file.
+            let anacleto_skills_dir = crate::config::paths::anacleto_skills_dir();
+            if anacleto_skills_dir.is_dir()
+                && let Ok(entries) = std::fs::read_dir(&anacleto_skills_dir)
+            {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        all_skill_paths.push(path);
+                    }
+                }
+            }
             if !all_skill_paths.is_empty() {
                 let mut reg = self.skill_registry.write().await;
                 if let Err(e) = reg.load_from_paths(&all_skill_paths) {
@@ -505,6 +519,7 @@ impl Engine {
                 concurrency_semaphore: concurrency_semaphore.clone(),
                 hook_registry: self.hook_registry.clone(),
                 cancel_flag: Some(cancel_flag),
+                tool_defaults: self.config.tools.clone(),
             })
             .await;
 
@@ -1001,6 +1016,7 @@ impl Engine {
             concurrency_semaphore: concurrency_semaphore.clone(),
             hook_registry: self.hook_registry.clone(),
             cancel_flag: Some(cancel_flag),
+            tool_defaults: self.config.tools.clone(),
         })
         .await;
 
@@ -1181,6 +1197,7 @@ impl Engine {
                         concurrency_semaphore: concurrency_semaphore.clone(),
                         hook_registry: self.hook_registry.clone(),
                         cancel_flag: Some(cancel_flag),
+                        tool_defaults: self.config.tools.clone(),
                     })
                     .await;
 
@@ -1382,6 +1399,7 @@ mod tests {
                 system_prompt: String::new(),
                 max_steps: 90,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
             AgentConfig {
                 name: "tech-writer".into(),
@@ -1396,6 +1414,7 @@ mod tests {
                 system_prompt: String::new(),
                 max_steps: 90,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
         ];
 
@@ -1488,6 +1507,7 @@ mod tests {
             crate::permissions::Permissions::default(),
             60,
             AgentId::new(),
+            std::collections::HashMap::new(),
         );
         let result = engine.resolve_agent_provider(&agent);
         assert!(result.is_ok());
@@ -1683,6 +1703,7 @@ mod tests {
                 system_prompt: String::new(),
                 max_steps: 90,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
             AgentConfig {
                 name: "writer".into(),
@@ -1697,6 +1718,7 @@ mod tests {
                 system_prompt: String::new(),
                 max_steps: 90,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
             AgentConfig {
                 name: "helper".into(),
@@ -1711,6 +1733,7 @@ mod tests {
                 system_prompt: String::new(),
                 max_steps: 90,
                 subagent_depth: 3,
+                tools: HashMap::new(),
             },
         ];
         let mut engine = Engine::new(config, event_tx, cmd_rx);
@@ -1776,6 +1799,7 @@ mod tests {
             system_prompt: String::new(),
             max_steps: 90,
             subagent_depth: 3,
+            tools: HashMap::new(),
         });
         // `orphan` is NOT in `self.agents` (not spawned).
         let err = engine.handle_switch_agent("orphan").await.unwrap_err();
@@ -1817,6 +1841,7 @@ mod tests {
             system_prompt: String::new(),
             max_steps: 90,
             subagent_depth: 3,
+            tools: HashMap::new(),
         }];
 
         engine.reload_config(new_config);

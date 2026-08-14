@@ -204,6 +204,31 @@ impl LspClient {
         Ok(format::format_lsp_result("diagnostic", &result))
     }
 
+    /// Format a document using `textDocument/formatting`.
+    ///
+    /// Sends a formatting request with `tabSize: 4` and `insertSpaces: true`,
+    /// applies the returned `TextEdit` array to the given `content` (in
+    /// descending offset order so earlier positions stay valid), and returns
+    /// the resulting formatted string.
+    pub async fn format_document(&mut self, uri: &str, content: &str) -> Result<String> {
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        });
+        let result = self.request("textDocument/formatting", params).await?;
+
+        // The result may be null (no formatter) or an array of TextEdit.
+        if result.is_null() {
+            return Ok(content.to_string());
+        }
+
+        let edits = result.as_array().ok_or_else(|| {
+            Error::Lsp("Expected array of TextEdits from textDocument/formatting".into())
+        })?;
+
+        apply_text_edits(content, edits)
+    }
+
     /// Run a single query against a freshly spawned server and tear it down.
     ///
     /// This is a convenience for the `lsp_query` tool: it spawns the server,
@@ -316,6 +341,92 @@ impl Default for LspClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TextEdit application helpers
+// ---------------------------------------------------------------------------
+
+/// A parsed LSP [`TextEdit`](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textEdit).
+struct TextEdit {
+    start_line: usize,
+    start_char: usize,
+    end_line: usize,
+    end_char: usize,
+    new_text: String,
+}
+
+/// Apply a list of LSP `TextEdit` values to a document string.
+///
+/// Edits are applied in **descending** start-position order so that earlier
+/// byte offsets remain valid after each replacement.
+fn apply_text_edits(content: &str, edits: &[serde_json::Value]) -> Result<String> {
+    if edits.is_empty() {
+        return Ok(content.to_string());
+    }
+
+    let mut parsed: Vec<TextEdit> = edits
+        .iter()
+        .filter_map(|e| {
+            let range = e.get("range")?;
+            let start = range.get("start")?;
+            let end = range.get("end")?;
+            Some(TextEdit {
+                start_line: start.get("line")?.as_u64()? as usize,
+                start_char: start.get("character")?.as_u64()? as usize,
+                end_line: end.get("line")?.as_u64()? as usize,
+                end_char: end.get("character")?.as_u64()? as usize,
+                new_text: e.get("newText")?.as_str()?.to_string(),
+            })
+        })
+        .collect();
+
+    // Sort by descending start position so we edit from end to start.
+    parsed.sort_by(|a, b| {
+        b.start_line
+            .cmp(&a.start_line)
+            .then_with(|| b.start_char.cmp(&a.start_char))
+    });
+
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut result = content.to_string();
+
+    for edit in &parsed {
+        let start = line_char_to_byte_offset(&lines, edit.start_line, edit.start_char);
+        let end = line_char_to_byte_offset(&lines, edit.end_line, edit.end_char);
+
+        if start > result.len() || end > result.len() || start > end {
+            return Err(Error::Lsp(format!(
+                "Invalid TextEdit range: {}:{} -> {}:{}",
+                edit.start_line, edit.start_char, edit.end_line, edit.end_char
+            )));
+        }
+
+        result = format!("{}{}{}", &result[..start], edit.new_text, &result[end..]);
+    }
+
+    Ok(result)
+}
+
+/// Convert a 0-based line/character pair to a byte offset in `text`.
+///
+/// `lines` is the result of `text.split('\n')` — it is passed pre-computed
+/// for callers that need to call this function multiple times efficiently.
+fn line_char_to_byte_offset(lines: &[&str], line: usize, character: usize) -> usize {
+    let line_start: usize = lines[..line.min(lines.len())]
+        .iter()
+        .map(|l| l.len() + 1) // +1 for the newline
+        .sum();
+    if line >= lines.len() {
+        return line_start.saturating_sub(1);
+    }
+    let line_str = lines[line];
+    let char_offset = line_str
+        .char_indices()
+        .nth(character)
+        .map(|(i, _)| i)
+        .unwrap_or(line_str.len());
+    line_start + char_offset
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +447,105 @@ mod tests {
             Some(LspQueryType::Diagnostic)
         );
         assert_eq!(LspQueryType::parse("bogus"), None);
+    }
+
+    #[test]
+    fn test_apply_text_edits_empty() {
+        let content = "fn foo() {}";
+        let edits = vec![];
+        let result = apply_text_edits(content, &edits).unwrap();
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_apply_text_edits_null() {
+        let content = "fn foo() {}";
+        let result = apply_text_edits(content, &[]).unwrap();
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_apply_text_edits_single() {
+        let content = "fn  foo() {}";
+        // Replace "fn  foo" with "fn foo" (remove extra space)
+        let edits = vec![serde_json::json!({
+            "range": {
+                "start": { "line": 0, "character": 3 },
+                "end":   { "line": 0, "character": 4 }
+            },
+            "newText": ""
+        })];
+        let result = apply_text_edits(content, &edits).unwrap();
+        assert_eq!(result, "fn foo() {}");
+    }
+
+    #[test]
+    fn test_apply_text_edits_multiline() {
+        let content = "fn foo() {\nlet x = 1;\n}";
+        // Replace from '{' (0,10) to end of file — reindent the body.
+        let edits = vec![serde_json::json!({
+            "range": {
+                "start": { "line": 0, "character": 9 },
+                "end":   { "line": 2, "character": 0 }
+            },
+            "newText": " {\n    let x = 1;\n    let y = 2;\n}"
+        })];
+        let result = apply_text_edits(content, &edits).unwrap();
+        // The range starts at char 9 (the space before '{') and ends at
+        // line-2 char-0 (the '}'), so the original space + '{' + newline
+        // + "let x = 1;" + newline is replaced by the new text which also
+        // includes a leading space + '{' — giving a double space and
+        // double '}}' (the trailing '}' from the original is preserved).
+        assert_eq!(result, "fn foo()  {\n    let x = 1;\n    let y = 2;\n}}");
+    }
+
+    #[test]
+    fn test_apply_text_edits_multiple_descending() {
+        // Two edits — second one comes first in the file (indentation fix),
+        // first one comes later (add trailing newline at the very end).
+        let content = "  fn foo() {\n  return 1;\n}";
+        let edits = vec![
+            serde_json::json!({
+                "range": {
+                    "start": { "line": 2, "character": 0 },
+                    "end":   { "line": 2, "character": 1 }
+                },
+                "newText": "}\n"
+            }),
+            serde_json::json!({
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end":   { "line": 0, "character": 2 }
+                },
+                "newText": ""
+            }),
+        ];
+        let result = apply_text_edits(content, &edits).unwrap();
+        assert_eq!(result, "fn foo() {\n  return 1;\n}\n");
+    }
+
+    #[test]
+    fn test_line_char_to_byte_offset_simple() {
+        // "hello\nworld\nfoo" = 15 bytes total
+        let text = "hello\nworld\nfoo";
+        let lines: Vec<&str> = text.split('\n').collect();
+        assert_eq!(line_char_to_byte_offset(&lines, 0, 0), 0, "start of file");
+        assert_eq!(line_char_to_byte_offset(&lines, 0, 5), 5, "end of 'hello'");
+        assert_eq!(
+            line_char_to_byte_offset(&lines, 1, 0),
+            6,
+            "start of 'world'"
+        );
+        assert_eq!(line_char_to_byte_offset(&lines, 1, 5), 11, "end of 'world'");
+        assert_eq!(line_char_to_byte_offset(&lines, 2, 0), 12, "start of 'foo'");
+        assert_eq!(line_char_to_byte_offset(&lines, 2, 3), 15, "end of 'foo'");
+    }
+
+    #[test]
+    fn test_line_char_to_byte_offset_past_end() {
+        let text = "hi";
+        let lines: Vec<&str> = text.split('\n').collect();
+        // Past last line -> clamped to end of text
+        assert_eq!(line_char_to_byte_offset(&lines, 5, 0), 2);
     }
 }

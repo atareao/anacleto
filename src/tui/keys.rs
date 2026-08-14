@@ -241,6 +241,25 @@ impl App {
             return;
         }
 
+        // Todo list navigation.
+        if self.show_todos {
+            match key {
+                KeyCode::Up => {
+                    self.todos_index = self.todos_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if !self.todos.is_empty() {
+                        self.todos_index = (self.todos_index + 1) % self.todos.len();
+                    }
+                }
+                KeyCode::Esc => {
+                    self.show_todos = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // ── Model picker navigation ──────────────────────────────────
         if self.model_picker.visible {
             match key {
@@ -558,8 +577,17 @@ impl App {
                 return;
             }
             if self.keymap.matches(key_event, Action::OpenModelPicker) {
-                self.model_picker.visible = true;
-                let _ = self.cmd_tx.try_send(EngineCommand::ListModelFrecency);
+                // Focus input and start typing /models, then show palette immediately
+                self.focus = Focus::Input;
+                self.set_textarea_text("/models ");
+                self.update_model_palette();
+                return;
+            }
+            if self.keymap.matches(key_event, Action::OpenAgentPicker) {
+                // Focus input and start typing /agent, then show palette immediately
+                self.focus = Focus::Input;
+                self.set_textarea_text("/agent ");
+                self.update_agent_palette();
                 return;
             }
             if self.keymap.matches(key_event, Action::OpenEditor) {

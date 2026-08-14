@@ -17,8 +17,7 @@ use crate::agent::tools::{
     todo_tool_definition,
 };
 use crate::agent::types::{Agent, AgentMessage, AgentMode, AgentStatus, TaskMode};
-use crate::config::types::AgentConfig;
-use crate::config::types::RetryConfig;
+use crate::config::types::{AgentConfig, RetryConfig, ToolSettings};
 use crate::db::session::Database;
 use crate::engine::jobs::JobRegistry;
 use crate::engine::orchestrator::{EngineEvent, UsageEvent};
@@ -32,6 +31,11 @@ use crate::llm::types::{
 use crate::mcp::client::McpRegistry;
 use crate::plugin::PluginRegistry;
 use crate::skill::registry::SharedSkillRegistry;
+use crate::tools::edit::{
+    delete_lines_tool_definition, execute_delete_lines_tool, execute_insert_lines_tool,
+    execute_replace_lines_tool, insert_lines_tool_definition, replace_lines_tool_definition,
+};
+use crate::tools::format::{execute_format_document_tool, format_document_tool_definition};
 use crate::tools::glob::{execute_glob_tool, glob_tool_definition};
 use crate::tools::grep::{execute_grep_tool, grep_tool_definition};
 use crate::tools::lsp::{execute_lsp_query_tool, lsp_query_tool_definition};
@@ -41,6 +45,7 @@ use crate::tools::mcp::{
     mcp_list_resources_tool_definition, mcp_read_resource_tool_definition,
 };
 use crate::tools::read::{execute_read_tool, read_tool_definition};
+use crate::tools::search_symbol::{execute_search_symbol_tool, search_symbol_tool_definition};
 use crate::tools::web::{
     execute_webfetch_tool, execute_websearch_tool, webfetch_tool_definition,
     websearch_tool_definition,
@@ -128,6 +133,10 @@ pub struct SpawnAgentConfig {
     pub hook_registry: HookRegistry,
     /// Optional external cancel flag. If provided, used instead of creating one internally.
     pub cancel_flag: Option<Arc<AtomicBool>>,
+
+    /// Default tool display properties from config.yaml.
+    /// Used to populate display settings for tools the agent declares.
+    pub tool_defaults: HashMap<String, crate::config::ToolDefaults>,
 }
 
 /// Spawn a new agent task and return a handle to it.
@@ -164,6 +173,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         concurrency_semaphore,
         hook_registry,
         cancel_flag,
+        tool_defaults,
     } = config;
     let (tx, mut rx) = mpsc::channel::<AgentMessage>(256);
     let handle = AgentHandle::new(tx);
@@ -174,6 +184,8 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     let agent_permissions = agent.permissions.clone();
     let max_steps = agent.max_steps;
     let subagent_depth = agent.subagent_depth;
+    let tool_settings = Arc::new(agent.tool_settings);
+    let tool_settings_clone = (*tool_settings).clone();
 
     // Load agent description as system prompt (rendered as a template below)
 
@@ -189,19 +201,25 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     for sc in &subagent_configs {
         tools.push(subagent_config_to_tool_definition(sc));
     }
-    tools.push(todo_tool_definition());
-    tools.push(question_tool_definition());
-    tools.push(apply_patch_tool_definition());
-    tools.push(read_tool_definition());
-    tools.push(grep_tool_definition());
-    tools.push(glob_tool_definition());
-    tools.push(webfetch_tool_definition());
-    tools.push(websearch_tool_definition());
-    tools.push(mcp_list_resources_tool_definition());
-    tools.push(mcp_read_resource_tool_definition());
-    tools.push(mcp_list_resource_templates_tool_definition());
-    tools.push(lsp_query_tool_definition());
-    tools.push(task_tool_definition());
+
+    // Add built-in tools based on agent's tool declarations.
+    // Only tools listed in the agent's `tools:` frontmatter are included.
+    // Display properties are merged from config.yaml defaults + agent overrides.
+    let builtin_tools = builtin_tool_definitions();
+    for (tool_name, agent_settings) in &tool_settings_clone {
+        if !agent_settings.enabled {
+            continue;
+        }
+        if let Some(mut def) = builtin_tools.get(tool_name).cloned() {
+            // Merge description from config.yaml defaults
+            if let Some(defaults) = tool_defaults.get(tool_name)
+                && !defaults.description.is_empty()
+            {
+                def.description = defaults.description.clone();
+            }
+            tools.push(def);
+        }
+    }
 
     // Add custom tools registered by plugins.
     if let Some(plugins) = &plugins {
@@ -261,6 +279,11 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     } else {
         system_prompt
     };
+
+    // Send tool settings to the TUI for display customization.
+    let _ = event_tx
+        .send(EngineEvent::ToolSettingsUpdated(tool_settings_clone))
+        .await;
 
     // Clone what the task needs
     let agent_mcp_names = agent.mcps.clone();
@@ -370,11 +393,17 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                     )
                     .await;
                     if compacted {
+                        let tokens = conversation_tokens(&conversation) as u32;
                         let _ = event_tx
                             .send(EngineEvent::ConversationCompacted {
                                 agent_id: agent_id.clone(),
                                 agent_name: agent_name.clone(),
-                                tokens: conversation_tokens(&conversation) as u32,
+                                tokens,
+                            })
+                            .await;
+                        let _ = event_tx
+                            .send(EngineEvent::LocalTokenEstimate {
+                                tokens: tokens as usize,
                             })
                             .await;
                     }
@@ -426,11 +455,17 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                         )
                         .await;
                         if compacted {
+                            let tokens = conversation_tokens(&conversation) as u32;
                             let _ = event_tx
                                 .send(EngineEvent::ConversationCompacted {
                                     agent_id: agent_id.clone(),
                                     agent_name: agent_name.clone(),
-                                    tokens: conversation_tokens(&conversation) as u32,
+                                    tokens,
+                                })
+                                .await;
+                            let _ = event_tx
+                                .send(EngineEvent::LocalTokenEstimate {
+                                    tokens: tokens as usize,
                                 })
                                 .await;
                         }
@@ -671,268 +706,515 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                 let mode = &mode;
                                 let concurrency_semaphore = &concurrency_semaphore;
                                 let hook_registry = &hook_registry;
+                                let ts = Arc::clone(&tool_settings);
 
                                 // Shared flag: set to true when a subagent runs out of
                                 // steps, signalling the tool loop to stop.
                                 let subagent_stopped = Arc::new(AtomicBool::new(false));
                                 let subagent_stopped = &subagent_stopped;
 
-                                let execute_one = |tc: ToolCall| async move {
-                                    if cancel_flag.load(Ordering::Relaxed) {
-                                        return (
-                                            tc.id.clone(),
-                                            "[Cancelled] Operation stopped by user".to_string(),
-                                        );
-                                    }
-                                    // Fire BeforeTool hook
-                                    {
-                                        let ctx = HookContext {
-                                            tool_name: Some(tc.function.name.clone()),
-                                            agent_name: Some(agent_name.clone()),
-                                            ..Default::default()
-                                        };
-                                        let hook_results =
-                                            hook_registry.run(HookPoint::BeforeTool, &ctx).await;
-                                        for r in &hook_results {
-                                            let _ = event_tx
-                                                .send(EngineEvent::HookExecuted {
-                                                    point: format!("{:?}", HookPoint::BeforeTool),
-                                                    command: r.command.clone(),
-                                                    success: r.exit_code == Some(0),
-                                                    output: if r.stdout.is_empty() {
-                                                        r.stderr.clone()
-                                                    } else {
-                                                        r.stdout.clone()
-                                                    },
-                                                })
-                                                .await;
+                                let execute_one = |tc: ToolCall| {
+                                    let ts = ts.clone();
+                                    async move {
+                                        if cancel_flag.load(Ordering::Relaxed) {
+                                            return (
+                                                tc.id.clone(),
+                                                "[Cancelled] Operation stopped by user".to_string(),
+                                            );
                                         }
-                                    }
-
-                                    // Check permissions before executing
-                                    let permission_ok = check_tool_permission(
-                                        &tc,
-                                        agent_permissions,
-                                        pending_approvals,
-                                        event_tx,
-                                        agent_name,
-                                    )
-                                    .await;
-
-                                    // In Plan mode, block write tools (read-only).
-                                    let plan_blocked = plan_mode_blocked(
-                                        mode,
-                                        &tc.function.name,
-                                        &tc.function.arguments,
-                                    );
-
-                                    let result = if let Some(msg) = plan_blocked {
-                                        msg
-                                    } else if !permission_ok {
-                                        format!(
-                                            "Operation '{}' was denied by user or permissions.",
-                                            tc.function.name
-                                        )
-                                    } else if let Some(hook_result) =
-                                        plugins.as_ref().and_then(|p| p.on_tool_call(&tc))
-                                    {
-                                        // A plugin short-circuited this tool call.
-                                        hook_result
-                                    } else if tc.function.name == "task" {
-                                        // Acquire concurrency permit if semaphore is configured
-                                        let _permit = if let Some(sem) = concurrency_semaphore {
-                                            match sem.acquire().await {
-                                                Ok(permit) => Some(permit),
-                                                Err(e) => {
-                                                    return (
-                                                        tc.id.clone(),
-                                                        format!("Semaphore error: {e}"),
-                                                    );
-                                                }
+                                        // Fire BeforeTool hook
+                                        {
+                                            let ctx = HookContext {
+                                                tool_name: Some(tc.function.name.clone()),
+                                                agent_name: Some(agent_name.clone()),
+                                                ..Default::default()
+                                            };
+                                            let hook_results = hook_registry
+                                                .run(HookPoint::BeforeTool, &ctx)
+                                                .await;
+                                            for r in &hook_results {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::HookExecuted {
+                                                        point: format!(
+                                                            "{:?}",
+                                                            HookPoint::BeforeTool
+                                                        ),
+                                                        command: r.command.clone(),
+                                                        success: r.exit_code == Some(0),
+                                                        output: if r.stdout.is_empty() {
+                                                            r.stderr.clone()
+                                                        } else {
+                                                            r.stdout.clone()
+                                                        },
+                                                    })
+                                                    .await;
                                             }
-                                        } else {
-                                            None
-                                        };
-                                        execute_task_tool(
-                                            &tc,
-                                            agent_permissions,
-                                            llm_registry,
-                                            skill_registry,
-                                            skill_names,
-                                            event_tx,
-                                            usage_tx,
-                                            db,
-                                            session_id,
-                                            history_limit_percent,
-                                            retry_config,
-                                            debug_mode,
-                                            depth,
-                                            subagent_depth,
-                                            agent_name,
-                                            agent_id,
-                                            model,
-                                            job_registry,
-                                            subagent_configs,
-                                        )
-                                        .await
-                                        .unwrap_or_else(|e| e)
-                                    } else if tc.function.name == "todo" {
-                                        execute_todo_tool(db, session_id, &tc, event_tx)
-                                            .await
-                                            .unwrap_or_else(|e| e)
-                                    } else if tc.function.name == "question" {
-                                        execute_question_tool(pending_questions, &tc, event_tx)
-                                            .await
-                                            .unwrap_or_else(|e| e)
-                                    } else if tc.function.name == "apply_patch" {
-                                        let apply_ctx = HookContext {
-                                            tool_name: Some(tc.function.name.clone()),
-                                            agent_name: Some(agent_name.clone()),
-                                            ..Default::default()
-                                        };
-                                        let hook_results = hook_registry
-                                            .run(HookPoint::BeforeApply, &apply_ctx)
-                                            .await;
-                                        for r in &hook_results {
-                                            let _ = event_tx
-                                                .send(EngineEvent::HookExecuted {
-                                                    point: format!("{:?}", HookPoint::BeforeApply),
-                                                    command: r.command.clone(),
-                                                    success: r.exit_code == Some(0),
-                                                    output: if r.stdout.is_empty() {
-                                                        r.stderr.clone()
-                                                    } else {
-                                                        r.stdout.clone()
-                                                    },
-                                                })
-                                                .await;
                                         }
-                                        let apply_result = execute_apply_patch_tool(
-                                            workspace,
+
+                                        // Check permissions before executing
+                                        let permission_ok = check_tool_permission(
+                                            &tc,
                                             agent_permissions,
                                             pending_approvals,
                                             event_tx,
                                             agent_name,
-                                            &tc,
                                         )
-                                        .await
-                                        .unwrap_or_else(|e| e);
-                                        let hook_results = hook_registry
-                                            .run(HookPoint::AfterApply, &apply_ctx)
-                                            .await;
-                                        for r in &hook_results {
-                                            let _ = event_tx
-                                                .send(EngineEvent::HookExecuted {
-                                                    point: format!("{:?}", HookPoint::AfterApply),
-                                                    command: r.command.clone(),
-                                                    success: r.exit_code == Some(0),
-                                                    output: if r.stdout.is_empty() {
-                                                        r.stderr.clone()
-                                                    } else {
-                                                        r.stdout.clone()
-                                                    },
-                                                })
-                                                .await;
-                                        }
-                                        apply_result
-                                    } else if tc.function.name == "read" {
-                                        execute_read_tool(workspace, agent_permissions, &tc)
-                                            .await
-                                            .unwrap_or_else(|e| e)
-                                    } else if tc.function.name == "grep" {
-                                        execute_grep_tool(workspace, agent_permissions, &tc)
-                                            .await
-                                            .unwrap_or_else(|e| e)
-                                    } else if tc.function.name == "glob" {
-                                        execute_glob_tool(workspace, agent_permissions, &tc)
-                                            .await
-                                            .unwrap_or_else(|e| e)
-                                    } else if tc.function.name == "webfetch" {
-                                        execute_webfetch_tool(agent_permissions, &tc)
-                                            .await
-                                            .unwrap_or_else(|e| e)
-                                    } else if tc.function.name == "websearch" {
-                                        execute_websearch_tool(agent_permissions, &tc)
-                                            .await
-                                            .unwrap_or_else(|e| e)
-                                    } else if tc.function.name == "mcp_list_resources" {
-                                        // Emit tool execution event
-                                        let _ = event_tx
-                                            .send(EngineEvent::ToolExecution {
-                                                agent_id: agent_id.clone(),
-                                                agent_name: agent_name.clone(),
-                                                tool_name: "mcp_list_resources".to_string(),
-                                                task: tc.function.arguments.clone(),
-                                            })
-                                            .await;
-                                        match mcp_registry {
-                                            Some(reg) => {
-                                                match execute_mcp_list_resources_tool(
-                                                    reg,
-                                                    agent_permissions,
-                                                    &tc,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(output) => {
-                                                        let _ = event_tx
-                                                            .send(EngineEvent::ToolResult {
-                                                                agent_id: agent_id.clone(),
-                                                                agent_name: agent_name.clone(),
-                                                                tool_name: "mcp_list_resources"
-                                                                    .to_string(),
-                                                                success: true,
-                                                                summary: truncate_output(
-                                                                    &output, 5000,
-                                                                ),
-                                                            })
-                                                            .await;
-                                                        output
-                                                    }
+                                        .await;
+
+                                        // In Plan mode, block write tools (read-only).
+                                        let plan_blocked = plan_mode_blocked(
+                                            mode,
+                                            &tc.function.name,
+                                            &tc.function.arguments,
+                                        );
+
+                                        let result = if let Some(msg) = plan_blocked {
+                                            msg
+                                        } else if !permission_ok {
+                                            format!(
+                                                "Operation '{}' was denied by user or permissions.",
+                                                tc.function.name
+                                            )
+                                        } else if let Some(hook_result) =
+                                            plugins.as_ref().and_then(|p| p.on_tool_call(&tc))
+                                        {
+                                            // A plugin short-circuited this tool call.
+                                            hook_result
+                                        } else if tc.function.name == "task" {
+                                            // Acquire concurrency permit if semaphore is configured
+                                            let _permit = if let Some(sem) = concurrency_semaphore {
+                                                match sem.acquire().await {
+                                                    Ok(permit) => Some(permit),
                                                     Err(e) => {
-                                                        let _ = event_tx
-                                                            .send(EngineEvent::ToolResult {
-                                                                agent_id: agent_id.clone(),
-                                                                agent_name: agent_name.clone(),
-                                                                tool_name: "mcp_list_resources"
-                                                                    .to_string(),
-                                                                success: false,
-                                                                summary: e.clone(),
-                                                            })
-                                                            .await;
-                                                        e
+                                                        return (
+                                                            tc.id.clone(),
+                                                            format!("Semaphore error: {e}"),
+                                                        );
                                                     }
                                                 }
+                                            } else {
+                                                None
+                                            };
+                                            let show_task = should_emit_tool(ts.as_ref(), "task");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "task",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_task {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "task".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
                                             }
-                                            None => {
-                                                let msg =
-                                                    "MCP registry not available for mcp_list_resources"
-                                                        .to_string();
+                                            let task_result = execute_task_tool(
+                                                &tc,
+                                                agent_permissions,
+                                                llm_registry,
+                                                skill_registry,
+                                                skill_names,
+                                                workspace,
+                                                event_tx,
+                                                usage_tx,
+                                                db,
+                                                session_id,
+                                                history_limit_percent,
+                                                retry_config,
+                                                debug_mode,
+                                                depth,
+                                                subagent_depth,
+                                                agent_name,
+                                                agent_id,
+                                                model,
+                                                job_registry,
+                                                subagent_configs,
+                                            )
+                                            .await;
+                                            let (is_ok, output) = match &task_result {
+                                                Ok(o) => (true, o.clone()),
+                                                Err(e) => (false, e.clone()),
+                                            };
+                                            if show_task {
                                                 let _ = event_tx
                                                     .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "task".to_string(),
+                                                        success: is_ok,
+                                                        summary: truncate_output(&output, 5000),
+                                                    })
+                                                    .await;
+                                            }
+                                            task_result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "todo" {
+                                            let show_todo = should_emit_tool(ts.as_ref(), "todo");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "todo",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_todo {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "todo".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result =
+                                                execute_todo_tool(db, session_id, &tc, event_tx)
+                                                    .await;
+                                            if show_todo {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "todo".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "question" {
+                                            let show_q = should_emit_tool(ts.as_ref(), "question");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "question",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_q {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "question".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_question_tool(
+                                                pending_questions,
+                                                &tc,
+                                                event_tx,
+                                            )
+                                            .await;
+                                            if show_q {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "question".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "apply_patch" {
+                                            let show_ap =
+                                                should_emit_tool(ts.as_ref(), "apply_patch");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "apply_patch",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_ap {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "apply_patch".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let apply_ctx = HookContext {
+                                                tool_name: Some(tc.function.name.clone()),
+                                                agent_name: Some(agent_name.clone()),
+                                                ..Default::default()
+                                            };
+                                            let hook_results = hook_registry
+                                                .run(HookPoint::BeforeApply, &apply_ctx)
+                                                .await;
+                                            for r in &hook_results {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::HookExecuted {
+                                                        point: format!(
+                                                            "{:?}",
+                                                            HookPoint::BeforeApply
+                                                        ),
+                                                        command: r.command.clone(),
+                                                        success: r.exit_code == Some(0),
+                                                        output: if r.stdout.is_empty() {
+                                                            r.stderr.clone()
+                                                        } else {
+                                                            r.stdout.clone()
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            let apply_result = execute_apply_patch_tool(
+                                                workspace,
+                                                agent_permissions,
+                                                pending_approvals,
+                                                event_tx,
+                                                agent_name,
+                                                &tc,
+                                            )
+                                            .await
+                                            .unwrap_or_else(|e| e);
+                                            let hook_results = hook_registry
+                                                .run(HookPoint::AfterApply, &apply_ctx)
+                                                .await;
+                                            for r in &hook_results {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::HookExecuted {
+                                                        point: format!(
+                                                            "{:?}",
+                                                            HookPoint::AfterApply
+                                                        ),
+                                                        command: r.command.clone(),
+                                                        success: r.exit_code == Some(0),
+                                                        output: if r.stdout.is_empty() {
+                                                            r.stderr.clone()
+                                                        } else {
+                                                            r.stdout.clone()
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            if show_ap {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "apply_patch".to_string(),
+                                                        success: true,
+                                                        summary: truncate_output(
+                                                            &apply_result,
+                                                            5000,
+                                                        ),
+                                                    })
+                                                    .await;
+                                            }
+                                            apply_result
+                                        } else if tc.function.name == "read" {
+                                            let show = should_emit_tool(ts.as_ref(), "read");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "read",
+                                                &tc.function.arguments,
+                                            );
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "read".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_read_tool(
+                                                workspace,
+                                                agent_permissions,
+                                                &tc,
+                                            )
+                                            .await;
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "read".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "grep" {
+                                            let show_grep = should_emit_tool(ts.as_ref(), "grep");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "grep",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_grep {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "grep".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_grep_tool(
+                                                workspace,
+                                                agent_permissions,
+                                                &tc,
+                                            )
+                                            .await;
+                                            if show_grep {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "grep".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "glob" {
+                                            let show_glob = should_emit_tool(ts.as_ref(), "glob");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "glob",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_glob {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "glob".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_glob_tool(
+                                                workspace,
+                                                agent_permissions,
+                                                &tc,
+                                            )
+                                            .await;
+                                            if show_glob {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "glob".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "webfetch" {
+                                            let show_wf = should_emit_tool(ts.as_ref(), "webfetch");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "webfetch",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_wf {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "webfetch".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result =
+                                                execute_webfetch_tool(agent_permissions, &tc).await;
+                                            if show_wf {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "webfetch".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "websearch" {
+                                            let show_ws =
+                                                should_emit_tool(ts.as_ref(), "websearch");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "websearch",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_ws {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "websearch".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result =
+                                                execute_websearch_tool(agent_permissions, &tc)
+                                                    .await;
+                                            if show_ws {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "websearch".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "mcp_list_resources" {
+                                            let show_mcp_lr =
+                                                should_emit_tool(ts.as_ref(), "mcp_list_resources");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "mcp_list_resources",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_mcp_lr {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
                                                         agent_id: agent_id.clone(),
                                                         agent_name: agent_name.clone(),
                                                         tool_name: "mcp_list_resources".to_string(),
-                                                        success: false,
-                                                        summary: msg.clone(),
+                                                        task: task_preview,
                                                     })
                                                     .await;
-                                                msg
                                             }
-                                        }
-                                    } else if tc.function.name == "mcp_read_resource" {
-                                        // Emit tool execution event
-                                        let _ = event_tx
-                                            .send(EngineEvent::ToolExecution {
-                                                agent_id: agent_id.clone(),
-                                                agent_name: agent_name.clone(),
-                                                tool_name: "mcp_read_resource".to_string(),
-                                                task: tc.function.arguments.clone(),
-                                            })
-                                            .await;
-                                        match mcp_registry {
-                                            Some(reg) => {
-                                                match execute_mcp_read_resource_tool(
+                                            match mcp_registry {
+                                                Some(reg) => match execute_mcp_list_resources_tool(
                                                     reg,
                                                     agent_permissions,
                                                     &tc,
@@ -940,301 +1222,676 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                                 .await
                                                 {
                                                     Ok(output) => {
-                                                        let _ = event_tx
-                                                            .send(EngineEvent::ToolResult {
-                                                                agent_id: agent_id.clone(),
-                                                                agent_name: agent_name.clone(),
-                                                                tool_name: "mcp_read_resource"
-                                                                    .to_string(),
-                                                                success: true,
-                                                                summary: truncate_output(
-                                                                    &output, 5000,
-                                                                ),
-                                                            })
-                                                            .await;
+                                                        if show_mcp_lr {
+                                                            let _ = event_tx
+                                                                .send(EngineEvent::ToolResult {
+                                                                    agent_id: agent_id.clone(),
+                                                                    agent_name: agent_name.clone(),
+                                                                    tool_name: "mcp_list_resources"
+                                                                        .to_string(),
+                                                                    success: true,
+                                                                    summary: truncate_output(
+                                                                        &output, 5000,
+                                                                    ),
+                                                                })
+                                                                .await;
+                                                        }
                                                         output
                                                     }
                                                     Err(e) => {
+                                                        if show_mcp_lr {
+                                                            let _ = event_tx
+                                                                .send(EngineEvent::ToolResult {
+                                                                    agent_id: agent_id.clone(),
+                                                                    agent_name: agent_name.clone(),
+                                                                    tool_name: "mcp_list_resources"
+                                                                        .to_string(),
+                                                                    success: false,
+                                                                    summary: e.clone(),
+                                                                })
+                                                                .await;
+                                                        }
+                                                        e
+                                                    }
+                                                },
+                                                None => {
+                                                    let msg =
+                                                    "MCP registry not available for mcp_list_resources"
+                                                        .to_string();
+                                                    if show_mcp_lr {
                                                         let _ = event_tx
                                                             .send(EngineEvent::ToolResult {
                                                                 agent_id: agent_id.clone(),
                                                                 agent_name: agent_name.clone(),
-                                                                tool_name: "mcp_read_resource"
+                                                                tool_name: "mcp_list_resources"
                                                                     .to_string(),
                                                                 success: false,
-                                                                summary: e.clone(),
+                                                                summary: msg.clone(),
                                                             })
                                                             .await;
-                                                        e
                                                     }
+                                                    msg
                                                 }
                                             }
-                                            None => {
-                                                let msg =
-                                                    "MCP registry not available for mcp_read_resource"
-                                                        .to_string();
+                                        } else if tc.function.name == "mcp_read_resource" {
+                                            let show_mcp_rr =
+                                                should_emit_tool(ts.as_ref(), "mcp_read_resource");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "mcp_read_resource",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_mcp_rr {
                                                 let _ = event_tx
-                                                    .send(EngineEvent::ToolResult {
+                                                    .send(EngineEvent::ToolExecution {
                                                         agent_id: agent_id.clone(),
                                                         agent_name: agent_name.clone(),
                                                         tool_name: "mcp_read_resource".to_string(),
-                                                        success: false,
-                                                        summary: msg.clone(),
+                                                        task: task_preview,
                                                     })
                                                     .await;
-                                                msg
                                             }
-                                        }
-                                    } else if tc.function.name == "mcp_list_resource_templates" {
-                                        // Emit tool execution event
-                                        let _ = event_tx
-                                            .send(EngineEvent::ToolExecution {
-                                                agent_id: agent_id.clone(),
-                                                agent_name: agent_name.clone(),
-                                                tool_name: "mcp_list_resource_templates"
-                                                    .to_string(),
-                                                task: tc.function.arguments.clone(),
-                                            })
-                                            .await;
-                                        match mcp_registry {
-                                            Some(reg) => {
-                                                match execute_mcp_list_resource_templates_tool(
-                                                    reg,
-                                                    agent_permissions,
-                                                    &tc,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(output) => {
-                                                        let _ = event_tx
-                                                            .send(EngineEvent::ToolResult {
-                                                                agent_id: agent_id.clone(),
-                                                                agent_name: agent_name.clone(),
-                                                                tool_name:
-                                                                    "mcp_list_resource_templates"
-                                                                        .to_string(),
-                                                                success: true,
-                                                                summary: truncate_output(
-                                                                    &output, 5000,
-                                                                ),
-                                                            })
-                                                            .await;
-                                                        output
-                                                    }
-                                                    Err(e) => {
-                                                        let _ = event_tx
-                                                            .send(EngineEvent::ToolResult {
-                                                                agent_id: agent_id.clone(),
-                                                                agent_name: agent_name.clone(),
-                                                                tool_name:
-                                                                    "mcp_list_resource_templates"
-                                                                        .to_string(),
-                                                                success: false,
-                                                                summary: e.clone(),
-                                                            })
-                                                            .await;
-                                                        e
+                                            match mcp_registry {
+                                                Some(reg) => {
+                                                    match execute_mcp_read_resource_tool(
+                                                        reg,
+                                                        agent_permissions,
+                                                        &tc,
+                                                    )
+                                                    .await
+                                                    {
+                                                        Ok(output) => {
+                                                            if show_mcp_rr {
+                                                                let _ = event_tx
+                                                                    .send(EngineEvent::ToolResult {
+                                                                        agent_id: agent_id.clone(),
+                                                                        agent_name: agent_name
+                                                                            .clone(),
+                                                                        tool_name:
+                                                                            "mcp_read_resource"
+                                                                                .to_string(),
+                                                                        success: true,
+                                                                        summary: truncate_output(
+                                                                            &output, 5000,
+                                                                        ),
+                                                                    })
+                                                                    .await;
+                                                            }
+                                                            output
+                                                        }
+                                                        Err(e) => {
+                                                            if show_mcp_rr {
+                                                                let _ = event_tx
+                                                                    .send(EngineEvent::ToolResult {
+                                                                        agent_id: agent_id.clone(),
+                                                                        agent_name: agent_name
+                                                                            .clone(),
+                                                                        tool_name:
+                                                                            "mcp_read_resource"
+                                                                                .to_string(),
+                                                                        success: false,
+                                                                        summary: e.clone(),
+                                                                    })
+                                                                    .await;
+                                                            }
+                                                            e
+                                                        }
                                                     }
                                                 }
+                                                None => {
+                                                    let msg =
+                                                    "MCP registry not available for mcp_read_resource"
+                                                        .to_string();
+                                                    if show_mcp_rr {
+                                                        let _ = event_tx
+                                                            .send(EngineEvent::ToolResult {
+                                                                agent_id: agent_id.clone(),
+                                                                agent_name: agent_name.clone(),
+                                                                tool_name: "mcp_read_resource"
+                                                                    .to_string(),
+                                                                success: false,
+                                                                summary: msg.clone(),
+                                                            })
+                                                            .await;
+                                                    }
+                                                    msg
+                                                }
                                             }
-                                            None => {
-                                                let msg = "MCP registry not available for mcp_list_resource_templates"
-                                                    .to_string();
+                                        } else if tc.function.name == "mcp_list_resource_templates"
+                                        {
+                                            let show_mcp_lrt = should_emit_tool(
+                                                ts.as_ref(),
+                                                "mcp_list_resource_templates",
+                                            );
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "mcp_list_resource_templates",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_mcp_lrt {
                                                 let _ = event_tx
-                                                    .send(EngineEvent::ToolResult {
+                                                    .send(EngineEvent::ToolExecution {
                                                         agent_id: agent_id.clone(),
                                                         agent_name: agent_name.clone(),
                                                         tool_name: "mcp_list_resource_templates"
                                                             .to_string(),
-                                                        success: false,
-                                                        summary: msg.clone(),
+                                                        task: task_preview,
                                                     })
                                                     .await;
-                                                msg
                                             }
-                                        }
-                                    } else if tc.function.name == "lsp_query" {
-                                        execute_lsp_query_tool(agent_permissions, &tc)
-                                            .await
-                                            .unwrap_or_else(|e| e)
-                                    } else if skill_names.contains(&tc.function.name) {
-                                        let reg = skill_registry.read().await;
-                                        execute_skill_tool(
-                                            &reg,
-                                            agent_name,
-                                            &tc,
-                                            event_tx,
-                                            agent_id,
-                                            Some(hook_registry),
-                                        )
-                                        .await
-                                        .unwrap_or_else(|e| e)
-                                    } else if let Some(config) =
-                                        subagent_configs.iter().find(|c| c.name == tc.function.name)
-                                    {
-                                        // Extract task from tool call arguments
-                                        let args: serde_json::Value =
-                                            serde_json::from_str(&tc.function.arguments)
-                                                .unwrap_or_default();
-                                        let task =
-                                            args.get("task").and_then(|v| v.as_str()).unwrap_or("");
-
-                                        // Emit status: WaitingForSubAgent
-                                        let _ = event_tx
-                                            .send(EngineEvent::AgentStatusChanged {
-                                                agent_id: agent_id.clone(),
-                                                agent_name: agent_name.clone(),
-                                                status: AgentStatus::WaitingForSubAgent,
-                                            })
-                                            .await;
-
-                                        match spawn_subagent_and_delegate(SpawnSubagentConfig {
-                                            config: config.clone(),
-                                            parent_id: agent_id.clone(),
-                                            llm_registry: llm_registry.clone(),
-                                            task: task.to_string(),
-                                            db: db.clone(),
-                                            session_id,
-                                            event_tx: event_tx.clone(),
-                                            usage_tx: usage_tx.clone(),
-                                            history_limit_percent,
-                                            retry_config: retry_config.clone(),
-                                            debug: debug_mode.clone(),
-                                            max_steps: config.max_steps,
-                                            depth: depth + 1,
-                                            skill_registry: skill_registry.clone(),
-                                            skill_names: skill_names.clone(),
-                                            permissions_override: None,
-                                            agent_type: Some(config.name.clone()),
-                                            mode: TaskMode::Foreground,
-                                        })
-                                        .await
-                                        {
-                                            Ok(outcome) => {
-                                                if outcome.is_out_of_steps() {
-                                                    // Subagent ran out of steps — set the
-                                                    // shared flag so the tool loop stops.
-                                                    subagent_stopped.store(true, Ordering::Relaxed);
-                                                    let msg = outcome.into_content();
-                                                    let _ = event_tx
-                                                        .send(EngineEvent::AgentOutput {
-                                                            agent_id: agent_id.clone(),
-                                                            agent_name: agent_name.clone(),
-                                                            content: format!(
-                                                                "[Subagente sin pasos] {msg}"
-                                                            ),
-                                                        })
-                                                        .await;
-                                                    format!("[Subagente sin pasos] {msg}")
-                                                } else {
-                                                    outcome.into_content()
+                                            match mcp_registry {
+                                                Some(reg) => {
+                                                    match execute_mcp_list_resource_templates_tool(
+                                                        reg,
+                                                        agent_permissions,
+                                                        &tc,
+                                                    )
+                                                    .await
+                                                    {
+                                                        Ok(output) => {
+                                                            if show_mcp_lrt {
+                                                                let _ = event_tx
+                                                                .send(EngineEvent::ToolResult {
+                                                                    agent_id: agent_id.clone(),
+                                                                    agent_name: agent_name.clone(),
+                                                                    tool_name:
+                                                                        "mcp_list_resource_templates"
+                                                                            .to_string(),
+                                                                    success: true,
+                                                                    summary: truncate_output(
+                                                                        &output, 5000,
+                                                                    ),
+                                                                })
+                                                                .await;
+                                                            }
+                                                            output
+                                                        }
+                                                        Err(e) => {
+                                                            if show_mcp_lrt {
+                                                                let _ = event_tx
+                                                                .send(EngineEvent::ToolResult {
+                                                                    agent_id: agent_id.clone(),
+                                                                    agent_name: agent_name.clone(),
+                                                                    tool_name:
+                                                                        "mcp_list_resource_templates"
+                                                                            .to_string(),
+                                                                    success: false,
+                                                                    summary: e.clone(),
+                                                                })
+                                                                .await;
+                                                            }
+                                                            e
+                                                        }
+                                                    }
+                                                }
+                                                None => {
+                                                    let msg = "MCP registry not available for mcp_list_resource_templates"
+                                                    .to_string();
+                                                    if show_mcp_lrt {
+                                                        let _ = event_tx
+                                                            .send(EngineEvent::ToolResult {
+                                                                agent_id: agent_id.clone(),
+                                                                agent_name: agent_name.clone(),
+                                                                tool_name:
+                                                                    "mcp_list_resource_templates"
+                                                                        .to_string(),
+                                                                success: false,
+                                                                summary: msg.clone(),
+                                                            })
+                                                            .await;
+                                                    }
+                                                    msg
                                                 }
                                             }
-                                            Err(e) => format!("Subagent error: {e}"),
-                                        }
-                                    } else if let Some((server_name, original_name)) =
-                                        mcp_tool_map.get(&tc.function.name)
-                                    {
-                                        // Emit tool execution event
-                                        let _ = event_tx
-                                            .send(EngineEvent::ToolExecution {
-                                                agent_id: agent_id.clone(),
-                                                agent_name: agent_name.clone(),
-                                                tool_name: tc.function.name.clone(),
-                                                task: tc.function.arguments.clone(),
-                                            })
-                                            .await;
-                                        // Execute MCP tool with retries
-                                        let args: serde_json::Value =
-                                            serde_json::from_str(&tc.function.arguments)
-                                                .unwrap_or_default();
-                                        let mcp_result_str = if let Some(mcp_reg) = mcp_registry {
-                                            let mcp_retry_cfg = retry_config.clone();
-                                            let mcp_server = server_name.clone();
-                                            let mcp_tool = original_name.clone();
-                                            let mcp_args = args.clone();
-                                            let mcp_clone = mcp_reg.clone();
-                                            let mcp_result = retry_with_backoff(
-                                                |_attempt| {
-                                                    let srv = mcp_server.clone();
-                                                    let t = mcp_tool.clone();
-                                                    let a = mcp_args.clone();
-                                                    let reg = mcp_clone.clone();
-                                                    async move {
-                                                        reg.lock()
-                                                            .await
-                                                            .call_tool(&srv, &t, a)
-                                                            .await
-                                                    }
-                                                },
-                                                &mcp_retry_cfg,
-                                                &format!(
-                                                    "MCP tool '{}_{}'",
-                                                    server_name, original_name
-                                                ),
+                                        } else if tc.function.name == "lsp_query" {
+                                            let show_lsp =
+                                                should_emit_tool(ts.as_ref(), "lsp_query");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "lsp_query",
+                                                &tc.function.arguments,
+                                            );
+                                            if show_lsp {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "lsp_query".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result =
+                                                execute_lsp_query_tool(agent_permissions, &tc)
+                                                    .await;
+                                            if show_lsp {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "lsp_query".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "insert_lines" {
+                                            let show =
+                                                should_emit_tool(ts.as_ref(), "insert_lines");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "insert_lines",
+                                                &tc.function.arguments,
+                                            );
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "insert_lines".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_insert_lines_tool(
+                                                workspace,
+                                                agent_permissions,
+                                                &tc,
                                             )
                                             .await;
-                                            match mcp_result {
-                                                Ok(result) => result,
-                                                Err(e) => {
-                                                    format!("MCP tool error after retries: {e}")
-                                                }
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "insert_lines".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
                                             }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "replace_lines" {
+                                            let show =
+                                                should_emit_tool(ts.as_ref(), "replace_lines");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "replace_lines",
+                                                &tc.function.arguments,
+                                            );
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "replace_lines".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_replace_lines_tool(
+                                                workspace,
+                                                agent_permissions,
+                                                &tc,
+                                            )
+                                            .await;
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "replace_lines".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "delete_lines" {
+                                            let show =
+                                                should_emit_tool(ts.as_ref(), "delete_lines");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "delete_lines",
+                                                &tc.function.arguments,
+                                            );
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "delete_lines".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_delete_lines_tool(
+                                                workspace,
+                                                agent_permissions,
+                                                &tc,
+                                            )
+                                            .await;
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "delete_lines".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "format_document" {
+                                            let show =
+                                                should_emit_tool(ts.as_ref(), "format_document");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "format_document",
+                                                &tc.function.arguments,
+                                            );
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "format_document".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_format_document_tool(
+                                                agent_permissions,
+                                                &tc,
+                                            )
+                                            .await;
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "format_document".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "search_symbol" {
+                                            let show =
+                                                should_emit_tool(ts.as_ref(), "search_symbol");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "search_symbol",
+                                                &tc.function.arguments,
+                                            );
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "search_symbol".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = match mcp_registry {
+                                                Some(reg) => {
+                                                    execute_search_symbol_tool(
+                                                        reg,
+                                                        agent_permissions,
+                                                        &tc,
+                                                    )
+                                                    .await
+                                                    .unwrap_or_else(|e| e)
+                                                }
+                                                None => {
+                                                    "CodeGraph MCP server is not available. Use 'grep' for text-based search.".to_string()
+                                                }
+                                            };
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "search_symbol".to_string(),
+                                                        success: true,
+                                                        summary: truncate_output(&result, 5000),
+                                                    })
+                                                    .await;
+                                            }
+                                            result
+                                        } else if skill_names.contains(&tc.function.name) {
+                                            let show_skill =
+                                                should_emit_tool(ts.as_ref(), &tc.function.name);
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                &tc.function.name,
+                                                &tc.function.arguments,
+                                            );
+                                            let reg = skill_registry.read().await;
+                                            execute_skill_tool(
+                                                &reg,
+                                                agent_name,
+                                                &tc,
+                                                event_tx,
+                                                agent_id,
+                                                Some(hook_registry),
+                                                show_skill,
+                                                &task_preview,
+                                            )
+                                            .await
+                                            .unwrap_or_else(|e| e)
+                                        } else if let Some(config) = subagent_configs
+                                            .iter()
+                                            .find(|c| c.name == tc.function.name)
+                                        {
+                                            // Extract task from tool call arguments
+                                            let args: serde_json::Value =
+                                                serde_json::from_str(&tc.function.arguments)
+                                                    .unwrap_or_default();
+                                            let task = args
+                                                .get("task")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+
+                                            // Emit status: WaitingForSubAgent
+                                            let _ = event_tx
+                                                .send(EngineEvent::AgentStatusChanged {
+                                                    agent_id: agent_id.clone(),
+                                                    agent_name: agent_name.clone(),
+                                                    status: AgentStatus::WaitingForSubAgent,
+                                                })
+                                                .await;
+
+                                            match spawn_subagent_and_delegate(SpawnSubagentConfig {
+                                                config: config.clone(),
+                                                parent_id: agent_id.clone(),
+                                                llm_registry: llm_registry.clone(),
+                                                task: task.to_string(),
+                                                workspace: workspace.to_path_buf(),
+                                                db: db.clone(),
+                                                session_id,
+                                                event_tx: event_tx.clone(),
+                                                usage_tx: usage_tx.clone(),
+                                                history_limit_percent,
+                                                retry_config: retry_config.clone(),
+                                                debug: debug_mode.clone(),
+                                                max_steps: config.max_steps,
+                                                depth: depth + 1,
+                                                skill_registry: skill_registry.clone(),
+                                                skill_names: skill_names.clone(),
+                                                permissions_override: None,
+                                                agent_type: Some(config.name.clone()),
+                                                mode: TaskMode::Foreground,
+                                            })
+                                            .await
+                                            {
+                                                Ok(outcome) => {
+                                                    if outcome.is_out_of_steps() {
+                                                        // Subagent ran out of steps — set the
+                                                        // shared flag so the tool loop stops.
+                                                        subagent_stopped
+                                                            .store(true, Ordering::Relaxed);
+                                                        let msg = outcome.into_content();
+                                                        let _ = event_tx
+                                                            .send(EngineEvent::AgentOutput {
+                                                                agent_id: agent_id.clone(),
+                                                                agent_name: agent_name.clone(),
+                                                                content: format!(
+                                                                    "[Subagente sin pasos] {msg}"
+                                                                ),
+                                                            })
+                                                            .await;
+                                                        format!("[Subagente sin pasos] {msg}")
+                                                    } else {
+                                                        outcome.into_content()
+                                                    }
+                                                }
+                                                Err(e) => format!("Subagent error: {e}"),
+                                            }
+                                        } else if let Some((server_name, original_name)) =
+                                            mcp_tool_map.get(&tc.function.name)
+                                        {
+                                            let show_mcp_tool =
+                                                should_emit_tool(ts.as_ref(), &tc.function.name);
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                &tc.function.name,
+                                                &tc.function.arguments,
+                                            );
+                                            if show_mcp_tool {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: tc.function.name.clone(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            // Execute MCP tool with retries
+                                            let args: serde_json::Value =
+                                                serde_json::from_str(&tc.function.arguments)
+                                                    .unwrap_or_default();
+                                            let mcp_result_str = if let Some(mcp_reg) = mcp_registry
+                                            {
+                                                let mcp_retry_cfg = retry_config.clone();
+                                                let mcp_server = server_name.clone();
+                                                let mcp_tool = original_name.clone();
+                                                let mcp_args = args.clone();
+                                                let mcp_clone = mcp_reg.clone();
+                                                let mcp_result = retry_with_backoff(
+                                                    |_attempt| {
+                                                        let srv = mcp_server.clone();
+                                                        let t = mcp_tool.clone();
+                                                        let a = mcp_args.clone();
+                                                        let reg = mcp_clone.clone();
+                                                        async move {
+                                                            reg.lock()
+                                                                .await
+                                                                .call_tool(&srv, &t, a)
+                                                                .await
+                                                        }
+                                                    },
+                                                    &mcp_retry_cfg,
+                                                    &format!(
+                                                        "MCP tool '{}_{}'",
+                                                        server_name, original_name
+                                                    ),
+                                                )
+                                                .await;
+                                                match mcp_result {
+                                                    Ok(result) => result,
+                                                    Err(e) => {
+                                                        format!("MCP tool error after retries: {e}")
+                                                    }
+                                                }
+                                            } else {
+                                                format!(
+                                                    "MCP registry not available for tool: {}",
+                                                    tc.function.name
+                                                )
+                                            };
+                                            // Emit tool result event
+                                            let success = !mcp_result_str
+                                                .starts_with("MCP tool error")
+                                                && !mcp_result_str
+                                                    .starts_with("MCP registry not available");
+                                            if show_mcp_tool {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: tc.function.name.clone(),
+                                                        success,
+                                                        summary: truncate_output(
+                                                            &mcp_result_str,
+                                                            5000,
+                                                        ),
+                                                    })
+                                                    .await;
+                                            }
+                                            mcp_result_str
+                                        } else if let Some(handler) = plugins
+                                            .as_ref()
+                                            .and_then(|p| p.custom_tool_handler(&tc.function.name))
+                                        {
+                                            handler(&tc)
                                         } else {
                                             format!(
-                                                "MCP registry not available for tool: {}",
+                                                "Unknown tool or subagent: {}",
                                                 tc.function.name
                                             )
                                         };
-                                        // Emit tool result event
-                                        let success = !mcp_result_str.starts_with("MCP tool error")
-                                            && !mcp_result_str
-                                                .starts_with("MCP registry not available");
-                                        let _ = event_tx
-                                            .send(EngineEvent::ToolResult {
-                                                agent_id: agent_id.clone(),
-                                                agent_name: agent_name.clone(),
-                                                tool_name: tc.function.name.clone(),
-                                                success,
-                                                summary: truncate_output(&mcp_result_str, 5000),
-                                            })
-                                            .await;
-                                        mcp_result_str
-                                    } else if let Some(handler) = plugins
-                                        .as_ref()
-                                        .and_then(|p| p.custom_tool_handler(&tc.function.name))
-                                    {
-                                        handler(&tc)
-                                    } else {
-                                        format!("Unknown tool or subagent: {}", tc.function.name)
-                                    };
 
-                                    // Fire AfterTool hook
-                                    {
-                                        let ctx = HookContext {
-                                            tool_name: Some(tc.function.name.clone()),
-                                            agent_name: Some(agent_name.clone()),
-                                            ..Default::default()
-                                        };
-                                        let hook_results =
-                                            hook_registry.run(HookPoint::AfterTool, &ctx).await;
-                                        for r in &hook_results {
-                                            let _ = event_tx
-                                                .send(EngineEvent::HookExecuted {
-                                                    point: format!("{:?}", HookPoint::AfterTool),
-                                                    command: r.command.clone(),
-                                                    success: r.exit_code == Some(0),
-                                                    output: if r.stdout.is_empty() {
-                                                        r.stderr.clone()
-                                                    } else {
-                                                        r.stdout.clone()
-                                                    },
-                                                })
-                                                .await;
+                                        // Fire AfterTool hook
+                                        {
+                                            let ctx = HookContext {
+                                                tool_name: Some(tc.function.name.clone()),
+                                                agent_name: Some(agent_name.clone()),
+                                                ..Default::default()
+                                            };
+                                            let hook_results =
+                                                hook_registry.run(HookPoint::AfterTool, &ctx).await;
+                                            for r in &hook_results {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::HookExecuted {
+                                                        point: format!(
+                                                            "{:?}",
+                                                            HookPoint::AfterTool
+                                                        ),
+                                                        command: r.command.clone(),
+                                                        success: r.exit_code == Some(0),
+                                                        output: if r.stdout.is_empty() {
+                                                            r.stderr.clone()
+                                                        } else {
+                                                            r.stdout.clone()
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
                                         }
-                                    }
 
-                                    (tc.id.clone(), result)
+                                        (tc.id.clone(), result)
+                                    }
                                 };
 
                                 // Count how many `task` tool calls are in this batch.
@@ -1267,6 +1924,11 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             tool_call_id: Some(tool_call_id),
                                         });
                                     }
+                                    let _ = event_tx
+                                        .send(EngineEvent::LocalTokenEstimate {
+                                            tokens: conversation_tokens(&conversation),
+                                        })
+                                        .await;
                                 } else {
                                     // Sequential execution (0 or 1 `task` calls): preserve the
                                     // exact original behavior.
@@ -1287,6 +1949,11 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             tool_call_id: Some(tool_call_id),
                                         });
                                     }
+                                    let _ = event_tx
+                                        .send(EngineEvent::LocalTokenEstimate {
+                                            tokens: conversation_tokens(&conversation),
+                                        })
+                                        .await;
                                 }
 
                                 // If a subagent ran out of steps, stop the tool loop.
@@ -1346,11 +2013,17 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                         Some(&retry_config),
                     )
                     .await;
+                    let tokens = conversation_tokens(&conversation) as u32;
                     let _ = event_tx
                         .send(EngineEvent::ConversationCompacted {
                             agent_id: agent_id.clone(),
                             agent_name: agent_name.clone(),
-                            tokens: conversation_tokens(&conversation) as u32,
+                            tokens,
+                        })
+                        .await;
+                    let _ = event_tx
+                        .send(EngineEvent::LocalTokenEstimate {
+                            tokens: tokens as usize,
                         })
                         .await;
                 }
@@ -1365,10 +2038,262 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     handle
 }
 
+/// Extract a human-readable task preview from tool call arguments JSON.
+fn extract_task_preview(tool_name: &str, args: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+    let preview: Option<String> = match tool_name {
+        "read" => v
+            .get("filePath")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        "grep" => v
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        "glob" => v
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        "webfetch" => v.get("url").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        "websearch" => v
+            .get("query")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        "todo" => {
+            let action = v.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let content = v.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            if content.is_empty() {
+                Some(action.to_string())
+            } else {
+                Some(format!("{action}: {content}"))
+            }
+        }
+        "question" => v
+            .get("question")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        "apply_patch" => v
+            .get("operations")
+            .and_then(|v| v.as_array())
+            .map(|a| format!("{} operaciones", a.len())),
+        "lsp_query" => v
+            .get("query")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        "task" => v
+            .get("task")
+            .or_else(|| v.get("description"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        "insert_lines" => v.get("path").and_then(|v| v.as_str()).map(|path| {
+            let after = v.get("after_line").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("insert after line {after} in {path}")
+        }),
+        "replace_lines" => v.get("path").and_then(|v| v.as_str()).map(|path| {
+            let start = v.get("start_line").and_then(|v| v.as_u64()).unwrap_or(0);
+            let end = v.get("end_line").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("replace lines {start}-{end} in {path}")
+        }),
+        "delete_lines" => v.get("path").and_then(|v| v.as_str()).map(|path| {
+            let start = v.get("start_line").and_then(|v| v.as_u64()).unwrap_or(0);
+            let end = v.get("end_line").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("delete lines {start}-{end} in {path}")
+        }),
+        "format_document" => v
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|path| format!("format {path}")),
+        "search_symbol" => v
+            .get("query")
+            .and_then(|v| v.as_str())
+            .map(|query| format!("search symbol: {query}")),
+        _ => None,
+    };
+    match preview {
+        Some(s) if s.len() > 120 => format!("{}…", &s[..120]),
+        Some(s) => s,
+        None => {
+            if args.len() > 120 {
+                format!("{}…", &args[..120])
+            } else {
+                args.to_string()
+            }
+        }
+    }
+}
+
+/// Returns all built-in tool definitions keyed by tool name.
+/// These are the tools that agents can declare in their `tools:` frontmatter.
+pub fn builtin_tool_definitions() -> HashMap<String, ToolDefinition> {
+    let mut map = HashMap::new();
+    for def in [
+        todo_tool_definition(),
+        question_tool_definition(),
+        apply_patch_tool_definition(),
+        read_tool_definition(),
+        grep_tool_definition(),
+        glob_tool_definition(),
+        webfetch_tool_definition(),
+        websearch_tool_definition(),
+        mcp_list_resources_tool_definition(),
+        mcp_read_resource_tool_definition(),
+        mcp_list_resource_templates_tool_definition(),
+        lsp_query_tool_definition(),
+        insert_lines_tool_definition(),
+        replace_lines_tool_definition(),
+        delete_lines_tool_definition(),
+        format_document_tool_definition(),
+        search_symbol_tool_definition(),
+        task_tool_definition(),
+    ] {
+        map.insert(def.name.clone(), def);
+    }
+    map
+}
+
+/// Check whether tool execution should be shown in the chat based on `show` setting.
+fn should_emit_tool(tool_settings: &HashMap<String, ToolSettings>, tool_name: &str) -> bool {
+    tool_settings.get(tool_name).is_none_or(|s| s.show)
+}
+
+/// Resolve display template from tool settings; fall back to `extract_task_preview`.
+fn resolve_tool_preview(
+    tool_settings: &HashMap<String, ToolSettings>,
+    tool_name: &str,
+    args: &str,
+) -> String {
+    if let Some(template) = tool_settings
+        .get(tool_name)
+        .and_then(|s| s.display.as_deref())
+    {
+        let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+        let mut result = template.to_string();
+        // Replace {param} placeholders with actual values from args
+        if let Some(obj) = v.as_object() {
+            for (key, val) in obj {
+                if let Some(s) = val.as_str() {
+                    result = result.replace(&format!("{{{key}}}"), s);
+                }
+            }
+        }
+        result
+    } else {
+        extract_task_preview(tool_name, args)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::types::AgentRole;
+    use crate::skill::types::Skill;
+    use crate::tools::glob::glob_tool_definition;
+    use crate::tools::grep::grep_tool_definition;
+    use crate::tools::lsp::lsp_query_tool_definition;
+    use crate::tools::mcp::{
+        mcp_list_resource_templates_tool_definition, mcp_list_resources_tool_definition,
+        mcp_read_resource_tool_definition,
+    };
+    use crate::tools::read::read_tool_definition;
+    use crate::tools::web::{webfetch_tool_definition, websearch_tool_definition};
+
+    #[test]
+    fn test_chat_agent_payload_size() {
+        // Simulate the 3 skills of the chat agent: weather, web-research, shell
+        let weather_skill = Skill {
+            name: "weather".into(),
+            description: "Consulta meteorológica para cualquier localidad del mundo. Proporciona temperatura actual, sensación térmica, humedad, viento, probabilidad de lluvia, estado del cielo, amanecer/anochecer y previsión por horas/días.".into(),
+            instructions: String::new(),
+            metadata: Default::default(),
+            hooks: Default::default(),
+        };
+        let web_research_skill = Skill {
+            name: "web-research".into(),
+            description: "Investiga cualquier tema combinando búsqueda web con SearXNG y fetch de URLs — encuentra fuentes, las analiza y sintetiza un informe estructurado".into(),
+            instructions: String::new(),
+            metadata: Default::default(),
+            hooks: Default::default(),
+        };
+        let shell_skill = Skill {
+            name: "shell".into(),
+            description: "Execute shell commands in the workspace environment".into(),
+            instructions: String::new(),
+            metadata: Default::default(),
+            hooks: Default::default(),
+        };
+
+        // Build the exact same tool list as spawn_agent() does
+        let tools: Vec<ToolDefinition> = vec![
+            skill_to_tool_definition(&weather_skill),
+            skill_to_tool_definition(&web_research_skill),
+            skill_to_tool_definition(&shell_skill),
+            todo_tool_definition(),
+            question_tool_definition(),
+            apply_patch_tool_definition(),
+            read_tool_definition(),
+            grep_tool_definition(),
+            glob_tool_definition(),
+            webfetch_tool_definition(),
+            websearch_tool_definition(),
+            mcp_list_resources_tool_definition(),
+            mcp_read_resource_tool_definition(),
+            mcp_list_resource_templates_tool_definition(),
+            lsp_query_tool_definition(),
+            task_tool_definition(),
+        ];
+
+        // Construct realistic messages (system prompt + "Hola")
+        let messages = vec![
+            LlmMessage {
+                role: MessageRole::System,
+                content: "You are **Chat**, a friendly and helpful conversational agent within the Anacleto orchestration engine. Your purpose is to have natural, engaging conversations with users while being especially good at checking the weather.\n\n## Personality\n\n- **Warm and approachable** — You greet users with enthusiasm and maintain a friendly tone throughout the conversation.\n- **Conversational** — You can chat about almost anything: daily life, tech, recommendations, casual topics. You're like a knowledgeable friend.\n- **Concise but complete** — You give clear, useful answers without being overly verbose unless the user asks for details.\n- **Proactive** — If someone mentions travel, outdoor plans, or events, you offer to check the weather for them.".into(),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            LlmMessage {
+                role: MessageRole::User,
+                content: "> Hola".into(),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        // Serialize the full LlmRequest to JSON (this is what gets sent to the API)
+        let request = LlmRequest {
+            model: "deepseek/deepseek-v4-flash".into(),
+            messages,
+            tools,
+            max_tokens: None,
+            temperature: None,
+            stream: true,
+            cache_control: None,
+        };
+
+        let json = serde_json::to_string_pretty(&request).unwrap();
+        let char_count = json.len();
+
+        // Estimate tokens: most models use ~4 chars per token for JSON
+        let estimated_tokens = char_count / 4;
+
+        println!("========================================");
+        println!("CHAT AGENT LLM REQUEST PAYLOAD");
+        println!("========================================");
+        println!("JSON characters: {}", char_count);
+        println!("Estimated tokens (4 chars/token): {}", estimated_tokens);
+        println!("Number of tool definitions: {}", request.tools.len());
+
+        // Also measure each component separately
+        let tools_json = serde_json::to_string_pretty(&request.tools).unwrap();
+        let messages_json = serde_json::to_string_pretty(&request.messages).unwrap();
+        println!("Tools section chars: {}", tools_json.len());
+        println!("Tools estimated tokens: {}", tools_json.len() / 4);
+        println!("Messages section chars: {}", messages_json.len());
+        println!("Messages estimated tokens: {}", messages_json.len() / 4);
+        println!("========================================");
+
+        // Sanity check: the payload must be non-trivial
+        assert!(char_count > 1000, "Payload too small: {} chars", char_count);
+    }
 
     #[test]
     fn test_agent_id_unique() {
@@ -1392,6 +2317,7 @@ mod tests {
             system_prompt: "You are a test agent.".into(),
             max_steps: 60,
             subagent_depth: 3,
+            tools: HashMap::new(),
         };
         let root = Agent::from_config(&config, AgentRole::Root);
         assert!(root.is_root());
