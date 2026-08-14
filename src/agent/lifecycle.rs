@@ -31,6 +31,11 @@ use crate::llm::types::{
 use crate::mcp::client::McpRegistry;
 use crate::plugin::PluginRegistry;
 use crate::skill::registry::SharedSkillRegistry;
+use crate::tools::edit::{
+    delete_lines_tool_definition, execute_delete_lines_tool, execute_insert_lines_tool,
+    execute_replace_lines_tool, insert_lines_tool_definition, replace_lines_tool_definition,
+};
+use crate::tools::format::{execute_format_document_tool, format_document_tool_definition};
 use crate::tools::glob::{execute_glob_tool, glob_tool_definition};
 use crate::tools::grep::{execute_grep_tool, grep_tool_definition};
 use crate::tools::lsp::{execute_lsp_query_tool, lsp_query_tool_definition};
@@ -40,6 +45,7 @@ use crate::tools::mcp::{
     mcp_list_resources_tool_definition, mcp_read_resource_tool_definition,
 };
 use crate::tools::read::{execute_read_tool, read_tool_definition};
+use crate::tools::search_symbol::{execute_search_symbol_tool, search_symbol_tool_definition};
 use crate::tools::web::{
     execute_webfetch_tool, execute_websearch_tool, webfetch_tool_definition,
     websearch_tool_definition,
@@ -811,6 +817,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                                 llm_registry,
                                                 skill_registry,
                                                 skill_names,
+                                                workspace,
                                                 event_tx,
                                                 usage_tx,
                                                 db,
@@ -1472,6 +1479,205 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                                     .await;
                                             }
                                             result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "insert_lines" {
+                                            let show =
+                                                should_emit_tool(ts.as_ref(), "insert_lines");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "insert_lines",
+                                                &tc.function.arguments,
+                                            );
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "insert_lines".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_insert_lines_tool(
+                                                workspace,
+                                                agent_permissions,
+                                                &tc,
+                                            )
+                                            .await;
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "insert_lines".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "replace_lines" {
+                                            let show =
+                                                should_emit_tool(ts.as_ref(), "replace_lines");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "replace_lines",
+                                                &tc.function.arguments,
+                                            );
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "replace_lines".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_replace_lines_tool(
+                                                workspace,
+                                                agent_permissions,
+                                                &tc,
+                                            )
+                                            .await;
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "replace_lines".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "delete_lines" {
+                                            let show =
+                                                should_emit_tool(ts.as_ref(), "delete_lines");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "delete_lines",
+                                                &tc.function.arguments,
+                                            );
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "delete_lines".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_delete_lines_tool(
+                                                workspace,
+                                                agent_permissions,
+                                                &tc,
+                                            )
+                                            .await;
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "delete_lines".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "format_document" {
+                                            let show =
+                                                should_emit_tool(ts.as_ref(), "format_document");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "format_document",
+                                                &tc.function.arguments,
+                                            );
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "format_document".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = execute_format_document_tool(
+                                                agent_permissions,
+                                                &tc,
+                                            )
+                                            .await;
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "format_document".to_string(),
+                                                        success: result.is_ok(),
+                                                        summary: match &result {
+                                                            Ok(s) => truncate_output(s, 5000),
+                                                            Err(e) => e.clone(),
+                                                        },
+                                                    })
+                                                    .await;
+                                            }
+                                            result.unwrap_or_else(|e| e)
+                                        } else if tc.function.name == "search_symbol" {
+                                            let show =
+                                                should_emit_tool(ts.as_ref(), "search_symbol");
+                                            let task_preview = resolve_tool_preview(
+                                                ts.as_ref(),
+                                                "search_symbol",
+                                                &tc.function.arguments,
+                                            );
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolExecution {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "search_symbol".to_string(),
+                                                        task: task_preview,
+                                                    })
+                                                    .await;
+                                            }
+                                            let result = match mcp_registry {
+                                                Some(reg) => {
+                                                    execute_search_symbol_tool(
+                                                        reg,
+                                                        agent_permissions,
+                                                        &tc,
+                                                    )
+                                                    .await
+                                                    .unwrap_or_else(|e| e)
+                                                }
+                                                None => {
+                                                    "CodeGraph MCP server is not available. Use 'grep' for text-based search.".to_string()
+                                                }
+                                            };
+                                            if show {
+                                                let _ = event_tx
+                                                    .send(EngineEvent::ToolResult {
+                                                        agent_id: agent_id.clone(),
+                                                        agent_name: agent_name.clone(),
+                                                        tool_name: "search_symbol".to_string(),
+                                                        success: true,
+                                                        summary: truncate_output(&result, 5000),
+                                                    })
+                                                    .await;
+                                            }
+                                            result
                                         } else if skill_names.contains(&tc.function.name) {
                                             let show_skill =
                                                 should_emit_tool(ts.as_ref(), &tc.function.name);
@@ -1520,6 +1726,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                                 parent_id: agent_id.clone(),
                                                 llm_registry: llm_registry.clone(),
                                                 task: task.to_string(),
+                                                workspace: workspace.to_path_buf(),
                                                 db: db.clone(),
                                                 session_id,
                                                 event_tx: event_tx.clone(),
@@ -1878,6 +2085,28 @@ fn extract_task_preview(tool_name: &str, args: &str) -> String {
             .or_else(|| v.get("description"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        "insert_lines" => v.get("path").and_then(|v| v.as_str()).map(|path| {
+            let after = v.get("after_line").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("insert after line {after} in {path}")
+        }),
+        "replace_lines" => v.get("path").and_then(|v| v.as_str()).map(|path| {
+            let start = v.get("start_line").and_then(|v| v.as_u64()).unwrap_or(0);
+            let end = v.get("end_line").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("replace lines {start}-{end} in {path}")
+        }),
+        "delete_lines" => v.get("path").and_then(|v| v.as_str()).map(|path| {
+            let start = v.get("start_line").and_then(|v| v.as_u64()).unwrap_or(0);
+            let end = v.get("end_line").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("delete lines {start}-{end} in {path}")
+        }),
+        "format_document" => v
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|path| format!("format {path}")),
+        "search_symbol" => v
+            .get("query")
+            .and_then(|v| v.as_str())
+            .map(|query| format!("search symbol: {query}")),
         _ => None,
     };
     match preview {
@@ -1910,6 +2139,11 @@ pub fn builtin_tool_definitions() -> HashMap<String, ToolDefinition> {
         mcp_read_resource_tool_definition(),
         mcp_list_resource_templates_tool_definition(),
         lsp_query_tool_definition(),
+        insert_lines_tool_definition(),
+        replace_lines_tool_definition(),
+        delete_lines_tool_definition(),
+        format_document_tool_definition(),
+        search_symbol_tool_definition(),
         task_tool_definition(),
     ] {
         map.insert(def.name.clone(), def);

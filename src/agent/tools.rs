@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
@@ -1135,6 +1135,7 @@ pub(crate) fn subagent_config_to_tool_definition(config: &AgentConfig) -> ToolDe
 struct TaskToolArgs {
     task_id: String,
     description: String,
+    workspace: PathBuf,
     mode: TaskMode,
     model: Option<String>,
     tools: Vec<String>,
@@ -1159,6 +1160,11 @@ impl TaskToolArgs {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "task requires 'description'".to_string())?
             .to_string();
+        let workspace_str = args
+            .get("workspace")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "task requires 'workspace'".to_string())?;
+        let workspace = PathBuf::from(workspace_str);
         let mode = match args
             .get("mode")
             .and_then(|v| v.as_str())
@@ -1181,6 +1187,7 @@ impl TaskToolArgs {
         Ok(Self {
             task_id,
             description,
+            workspace,
             mode,
             model,
             tools,
@@ -1214,6 +1221,10 @@ pub(crate) fn task_tool_definition() -> ToolDefinition {
                     "type": "string",
                     "description": "The task to delegate."
                 },
+                "workspace": {
+                    "type": "string",
+                    "description": "The workspace directory where the subagent will operate."
+                },
                 "mode": {
                     "type": "string",
                     "enum": ["foreground", "background"],
@@ -1233,7 +1244,7 @@ pub(crate) fn task_tool_definition() -> ToolDefinition {
                     "description": "Optional subagent config template name."
                 }
             },
-            "required": ["task_id", "description"]
+            "required": ["task_id", "description", "workspace"]
         }),
     }
 }
@@ -1288,6 +1299,7 @@ pub(crate) async fn execute_task_tool(
     llm_registry: &LlmProviderRegistry,
     parent_skill_registry: &crate::skill::registry::SharedSkillRegistry,
     parent_skill_names: &[String],
+    workspace: &Path,
     event_tx: &mpsc::Sender<EngineEvent>,
     usage_tx: &Option<mpsc::Sender<UsageEvent>>,
     db: &Option<Database>,
@@ -1339,6 +1351,7 @@ pub(crate) async fn execute_task_tool(
             parent_id: parent_id.clone(),
             llm_registry: llm_registry.clone(),
             task: args.description.clone(),
+            workspace: workspace.to_path_buf(),
             db: db.clone(),
             session_id,
             event_tx: event_tx.clone(),
@@ -1398,6 +1411,7 @@ pub(crate) async fn execute_task_tool(
             parent_id: parent_id.clone(),
             llm_registry: llm_registry.clone(),
             task: args.description.clone(),
+            workspace: workspace.to_path_buf(),
             db: db.clone(),
             session_id,
             event_tx: event_tx.clone(),
@@ -1519,6 +1533,7 @@ pub struct SpawnSubagentConfig {
     pub parent_id: AgentId,
     pub llm_registry: LlmProviderRegistry,
     pub task: String,
+    pub workspace: PathBuf,
     pub db: Option<Database>,
     pub session_id: Option<Uuid>,
     pub event_tx: mpsc::Sender<EngineEvent>,
@@ -1571,6 +1586,7 @@ pub(crate) async fn spawn_subagent_and_delegate(
         permissions_override,
         agent_type,
         mode,
+        workspace,
     } = cfg;
     // Create agent with SubAgent role
     let mut agent = Agent::from_config(&config, AgentRole::SubAgent);
@@ -1622,8 +1638,15 @@ pub(crate) async fn spawn_subagent_and_delegate(
         subagent_registry.insert(skill.clone());
     }
 
-    // Load subagent description as system prompt
-    let system_prompt = agent.description.clone();
+    // Render the system prompt template (supports {workspace}).
+    let system_prompt = {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "workspace".to_string(),
+            workspace.to_string_lossy().to_string(),
+        );
+        crate::llm::template::render_template(&agent.description, &vars)
+    };
 
     // Owned copies for the spawned task
     let task_owned = task.to_string();
@@ -2137,11 +2160,12 @@ mod tests {
     #[test]
     fn test_task_tool_args_parse_foreground() {
         let args = TaskToolArgs::parse(
-            r#"{"task_id":"t1","description":"do the thing","mode":"foreground"}"#,
+            r#"{"task_id":"t1","description":"do the thing","workspace":"/tmp/test","mode":"foreground"}"#,
         )
         .unwrap();
         assert_eq!(args.task_id, "t1");
         assert_eq!(args.description, "do the thing");
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
         assert_eq!(args.mode, TaskMode::Foreground);
         assert_eq!(args.model, None);
         assert!(args.tools.is_empty());
@@ -2150,27 +2174,37 @@ mod tests {
     #[test]
     fn test_task_tool_args_parse_background_with_model_and_tools() {
         let args = TaskToolArgs::parse(
-            r#"{"task_id":"t2","description":"research","mode":"background","model":"claude-opus-4","tools":["shell","read"]}"#,
+            r#"{"task_id":"t2","description":"research","workspace":"/tmp/test","mode":"background","model":"claude-opus-4","tools":["shell","read"]}"#,
         )
         .unwrap();
         assert_eq!(args.task_id, "t2");
         assert_eq!(args.mode, TaskMode::Background);
         assert_eq!(args.model.as_deref(), Some("claude-opus-4"));
         assert_eq!(args.tools, vec!["shell".to_string(), "read".to_string()]);
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
     }
 
     #[test]
     fn test_task_tool_args_defaults_mode_and_task_id() {
         // Missing mode defaults to foreground; missing task_id is generated.
-        let args = TaskToolArgs::parse(r#"{"description":"just a task"}"#).unwrap();
+        let args = TaskToolArgs::parse(r#"{"description":"just a task","workspace":"/tmp/test"}"#)
+            .unwrap();
         assert_eq!(args.mode, TaskMode::Foreground);
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
         assert!(!args.task_id.is_empty());
     }
 
     #[test]
     fn test_task_tool_args_requires_description() {
-        let err = TaskToolArgs::parse(r#"{"task_id":"t3"}"#).unwrap_err();
+        let err = TaskToolArgs::parse(r#"{"task_id":"t3","workspace":"/tmp/test"}"#).unwrap_err();
         assert!(err.contains("description"));
+    }
+
+    #[test]
+    fn test_task_tool_args_requires_workspace() {
+        let err =
+            TaskToolArgs::parse(r#"{"task_id":"t4","description":"no workspace"}"#).unwrap_err();
+        assert!(err.contains("workspace"));
     }
 
     #[test]
@@ -2217,20 +2251,22 @@ mod tests {
     #[test]
     fn test_task_tool_args_parse_with_agent() {
         let args = TaskToolArgs::parse(
-            r#"{"task_id":"t1","description":"review the file","agent":"reviewer"}"#,
+            r#"{"task_id":"t1","description":"review the file","workspace":"/tmp/test","agent":"reviewer"}"#,
         )
         .unwrap();
         assert_eq!(args.agent.as_deref(), Some("reviewer"));
         assert_eq!(args.description, "review the file");
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
     }
 
     #[test]
     fn test_task_tool_args_parse_without_agent() {
         let args = TaskToolArgs::parse(
-            r#"{"task_id":"t2","description":"do the thing","mode":"foreground"}"#,
+            r#"{"task_id":"t2","description":"do the thing","workspace":"/tmp/test","mode":"foreground"}"#,
         )
         .unwrap();
         assert_eq!(args.agent, None);
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
     }
 
     #[tokio::test]
@@ -2243,7 +2279,7 @@ mod tests {
             function: crate::llm::types::ToolFunction {
                 name: "task".into(),
                 arguments:
-                    r#"{"task_id":"t1","description":"review the file","agent":"nonexistent"}"#
+                    r#"{"task_id":"t1","description":"review the file","workspace":"/tmp/test","agent":"nonexistent"}"#
                         .into(),
             },
         };
@@ -2259,6 +2295,7 @@ mod tests {
             &LlmProviderRegistry::default(),
             &parent_skill_registry,
             &parent_skill_names,
+            &Path::new("/tmp/test"),
             &tx,
             &None,
             &None,

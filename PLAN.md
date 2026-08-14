@@ -1,436 +1,464 @@
-# Configurable Tools System Implementation Plan
+# Workspace obligatorio para subagentes — Implementation Plan
 
-> **For agentic workers:** Tasks are implemented sequentially. Each task produces independently testable changes.
+## Objetivo
 
-**Goal:** Move built-in tools from hardcoded-in-Rust to per-agent-declared-in-config, with defaults in config.yaml.
+Propagar el `workspace` del agente padre al subagente haciendo que sea un campo requerido en el `task` tool, de modo que el subagente sepa en qué directorio trabajar.
 
-**Architecture:** Add `ToolDefaults` to `Config` (config.yaml), change `spawn_agent()` to only include tools the agent declares, merge defaults from config with overrides from agent frontmatter.
+## Arquitectura
 
-**Tech Stack:** Rust (serde YAML), YAML frontmatter in agent Markdown files.
+Se añade `workspace: PathBuf` como campo requerido en `TaskToolArgs`, `SpawnSubagentConfig`, y como parámetro de `execute_task_tool`. En `spawn_subagent_and_delegate` se usa para renderizar el system prompt del subagente (inyectando `{workspace}` via `render_template`), replicando lo que ya hace `spawn_agent` en `lifecycle.rs`.
 
-## Global Constraints
+## Tareas
 
-- Everything in English (code, comments, docs, config)
-- No backwards compatibility — breaking change
-- If a tool is not in the agent's `tools:` list, the agent doesn't have it
-- No tool is core — even `task`, `question`, `todo` must be declared
-- JSON Schema stays in Rust — only display properties go in YAML
-- `cargo fmt --check && cargo clippy && cargo test` must pass
+### Tarea 1: Añadir `workspace` a `TaskToolArgs` y su parseo
 
----
+**Archivos:**
+- Modificar: `src/agent/tools.rs:1135-1195`
 
-### Task 1: Add `ToolDefaults` to `Config` and `builtin_tool_definitions()` registry
+- [ ] **Paso 1.1:** Añadir `use std::path::PathBuf;` si no existe ya al inicio del archivo.
 
-**Files:**
-- Modify: `src/config/types.rs` — add `ToolDefaults` struct and `tools` field to `Config`
-- Modify: `src/agent/lifecycle.rs` — add `builtin_tool_definitions()` function
-
-**Interfaces:**
-- Produces: `ToolDefaults` struct with `description`, `show`, `display`, `color` fields
-- Produces: `Config.tools: HashMap<String, ToolDefaults>` field
-- Produces: `builtin_tool_definitions() -> HashMap<String, ToolDefinition>` function
-
-- [ ] **Step 1: Add `ToolDefaults` to `src/config/types.rs`**
-
-Add after the `ToolSettings` struct:
+- [ ] **Paso 1.2:** Añadir el campo `workspace: PathBuf` a la struct `TaskToolArgs`:
 
 ```rust
-/// Default values for a built-in tool's display properties, defined in config.yaml.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefaults {
-    /// Description sent to the LLM (overrides the hardcoded one).
-    #[serde(default)]
-    pub description: String,
-    /// Whether executions are shown in the chat (default: true).
-    #[serde(default = "default_tool_show")]
-    pub show: bool,
-    /// Custom display template with `{param}` placeholders (optional).
-    pub display: Option<String>,
-    /// Custom color for the tool execution line in the TUI (optional).
-    pub color: Option<String>,
+struct TaskToolArgs {
+    task_id: String,
+    description: String,
+    mode: TaskMode,
+    model: Option<String>,
+    tools: Vec<String>,
+    /// Optional name of a configured subagent type (e.g. "reviewer") used as
+    /// the template for this subagent. When `None`, a dynamic subagent is
+    /// created from the task description.
+    agent: Option<String>,
+    /// The workspace directory where the subagent will operate.
+    workspace: PathBuf,
 }
 ```
 
-- [ ] **Step 2: Add `tools` field to `Config` struct**
-
-Add to `Config` in `src/config/types.rs`:
+- [ ] **Paso 1.3:** En el método `parse`, añadir el parseo de `workspace` entre el parseo de `tools` y `agent`:
 
 ```rust
-    /// Default tool definitions and display properties.
-    /// Each key is a built-in tool name, value is its default display config.
-    #[serde(default)]
-    pub tools: HashMap<String, ToolDefaults>,
+        let workspace = args
+            .get("workspace")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "task requires 'workspace'".to_string())?
+            .to_string();
 ```
 
-- [ ] **Step 3: Add `builtin_tool_definitions()` to `src/agent/lifecycle.rs`**
-
-Add a function that returns all built-in tool definitions keyed by name:
+Y añadirlo al `Ok(Self { ... })`:
 
 ```rust
-/// Returns all built-in tool definitions keyed by tool name.
-pub fn builtin_tool_definitions() -> HashMap<String, ToolDefinition> {
-    let mut map = HashMap::new();
-    for def in [
-        todo_tool_definition(),
-        question_tool_definition(),
-        apply_patch_tool_definition(),
-        read_tool_definition(),
-        grep_tool_definition(),
-        glob_tool_definition(),
-        webfetch_tool_definition(),
-        websearch_tool_definition(),
-        mcp_list_resources_tool_definition(),
-        mcp_read_resource_tool_definition(),
-        mcp_list_resource_templates_tool_definition(),
-        lsp_query_tool_definition(),
-        task_tool_definition(),
-    ] {
-        map.insert(def.name.clone(), def);
-    }
-    map
+        Ok(Self {
+            task_id,
+            description,
+            mode,
+            model,
+            tools,
+            workspace: PathBuf::from(workspace),
+            agent,
+        })
+```
+
+### Tarea 2: Actualizar `task_tool_definition()` schema
+
+**Archivos:**
+- Modificar: `src/agent/tools.rs:1200-1260`
+
+- [ ] **Paso 2.1:** Añadir la propiedad `"workspace"` al objeto `"properties"` en `input_schema`:
+
+```rust
+                "workspace": {
+                    "type": "string",
+                    "description": "The workspace directory where the subagent will operate."
+                },
+```
+
+- [ ] **Paso 2.2:** Añadir `"workspace"` al array `"required"`:
+
+```rust
+            "required": ["task_id", "description", "workspace"]
+```
+
+### Tarea 3: Añadir `workspace` a `SpawnSubagentConfig`
+
+**Archivos:**
+- Modificar: `src/agent/tools.rs:1517-1550`
+
+- [ ] **Paso 3.1:** Añadir el campo `pub workspace: PathBuf` a la struct `SpawnSubagentConfig`:
+
+```rust
+pub(crate) struct SpawnSubagentConfig {
+    pub(crate) parent_id: AgentId,
+    pub(crate) parent_name: String,
+    pub(crate) task_id: String,
+    pub(crate) description: String,
+    pub(crate) mode: TaskMode,
+    pub(crate) model: Option<String>,
+    pub(crate) tools: Vec<String>,
+    pub(crate) workspace: PathBuf,
+    pub(crate) permissions: Permissions,
+    pub(crate) event_tx: mpsc::Sender<EngineEvent>,
+    pub(crate) usage_tx: Option<mpsc::Sender<UsageEvent>>,
+    pub(crate) db: Option<Database>,
+    pub(crate) session_id: Option<Uuid>,
+    pub(crate) history_limit_percent: f64,
+    pub(crate) retry_config: RetryConfig,
+    pub(crate) debug: Arc<AtomicBool>,
+    pub(crate) depth: u32,
+    pub(crate) subagent_depth: u32,
+    pub(crate) job_registry: Option<Arc<tokio::sync::Mutex<JobRegistry>>>,
+    pub(crate) agent: Option<AgentConfig>,
+    pub(crate) llm_registry: LlmProviderRegistry,
+    pub(crate) skill_registry: crate::skill::registry::SharedSkillRegistry,
+    pub(crate) skill_names: Vec<String>,
 }
 ```
 
-- [ ] **Step 4: Build to verify compilation**
+### Tarea 4: Añadir parámetro `workspace` a `execute_task_tool`
 
-Run: `cargo build 2>&1 | head -30`
-Expected: Compiles successfully (new types are unused but valid).
+**Archivos:**
+- Modificar: `src/agent/tools.rs:1285-1515`
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/config/types.rs src/agent/lifecycle.rs
-git commit -m "feat: add ToolDefaults config and builtin_tool_definitions registry"
-```
-
----
-
-### Task 2: Change `spawn_agent()` to use per-agent tool declarations
-
-**Files:**
-- Modify: `src/agent/lifecycle.rs` — change tool assembly logic in `spawn_agent()`
-
-**Interfaces:**
-- Consumes: `agent.tool_settings: HashMap<String, ToolSettings>` (keys = enabled tools)
-- Consumes: `config.tools: HashMap<String, ToolDefaults>` (defaults from config.yaml)
-- Consumes: `builtin_tool_definitions()` (tool schemas from Rust)
-
-- [ ] **Step 1: Replace hardcoded tool list with filtered + merged logic**
-
-In `spawn_agent()`, replace lines 193-205 (the 13 `tools.push(...)` calls) with:
+- [ ] **Paso 4.1:** Añadir `workspace: &Path` como nuevo parámetro en la firma de `execute_task_tool`:
 
 ```rust
-    // Add built-in tools based on agent's tool declarations.
-    // Only tools listed in the agent's `tools:` frontmatter are included.
-    let builtin_tools = builtin_tool_definitions();
-    for (tool_name, agent_settings) in &agent.tool_settings {
-        if let Some(mut def) = builtin_tools.get(tool_name).cloned() {
-            // Merge defaults from config.yaml
-            if let Some(defaults) = config.tools.get(tool_name) {
-                if !defaults.description.is_empty() {
-                    def.description = defaults.description.clone();
-                }
-            }
-            // Apply agent-level overrides (ToolSettings has enabled/show/display/color)
-            // These are display-only; the schema stays from Rust
-            tools.push(def);
-        }
+pub(crate) async fn execute_task_tool(
+    tool_call: &ToolCall,
+    parent_permissions: &Permissions,
+    llm_registry: &LlmProviderRegistry,
+    parent_skill_registry: &crate::skill::registry::SharedSkillRegistry,
+    parent_skill_names: &[String],
+    event_tx: &mpsc::Sender<EngineEvent>,
+    usage_tx: &Option<mpsc::Sender<UsageEvent>>,
+    db: &Option<Database>,
+    session_id: Option<Uuid>,
+    history_limit_percent: f64,
+    retry_config: &RetryConfig,
+    debug: &Arc<AtomicBool>,
+    depth: u32,
+    subagent_depth: u32,
+    parent_name: &str,
+    parent_id: &AgentId,
+    parent_model: &str,
+    job_registry: &Option<Arc<tokio::sync::Mutex<JobRegistry>>>,
+    subagent_configs: &[AgentConfig],
+    workspace: &Path,
+) -> std::result::Result<String, String> {
+```
+
+### Tarea 5: Pasar `workspace` en ambas ramas de `execute_task_tool`
+
+**Archivos:**
+- Modificar: `src/agent/tools.rs` (dentro de `execute_task_tool`, ~líneas 1310-1400)
+
+- [ ] **Paso 5.1:** En la rama donde se construye `SpawnSubagentConfig` para un agente configurado (`if let Some(agent_name) = &args.agent`), añadir `workspace: workspace.to_path_buf()`:
+
+```rust
+            let sub_cfg = SpawnSubagentConfig {
+                parent_id: parent_id.clone(),
+                parent_name: parent_name.to_string(),
+                task_id: args.task_id.clone(),
+                description: args.description.clone(),
+                mode: args.mode,
+                model: args.model.clone(),
+                tools: args.tools.clone(),
+                workspace: workspace.to_path_buf(),
+                permissions: config.permissions.clone(),
+                event_tx: event_tx.clone(),
+                usage_tx: usage_tx.clone(),
+                db: db.clone(),
+                session_id,
+                history_limit_percent,
+                retry_config: retry_config.clone(),
+                debug: debug.clone(),
+                depth: depth + 1,
+                subagent_depth,
+                job_registry: job_registry.clone(),
+                agent: Some(config),
+                llm_registry: llm_registry.clone(),
+                skill_registry: skill_registry.clone(),
+                skill_names: skill_names.to_vec(),
+            };
+```
+
+- [ ] **Paso 5.2:** En la rama del agente dinámico (`else`), hacer lo mismo:
+
+```rust
+            let sub_cfg = SpawnSubagentConfig {
+                parent_id: parent_id.clone(),
+                parent_name: parent_name.to_string(),
+                task_id: args.task_id.clone(),
+                description: args.description.clone(),
+                mode: args.mode,
+                model: args.model.clone(),
+                tools: args.tools.clone(),
+                workspace: workspace.to_path_buf(),
+                permissions: parent_permissions.clone(),
+                event_tx: event_tx.clone(),
+                usage_tx: usage_tx.clone(),
+                db: db.clone(),
+                session_id,
+                history_limit_percent,
+                retry_config: retry_config.clone(),
+                debug: debug.clone(),
+                depth: depth + 1,
+                subagent_depth,
+                job_registry: job_registry.clone(),
+                agent: None,
+                llm_registry: llm_registry.clone(),
+                skill_registry: skill_registry.clone(),
+                skill_names: parent_skill_names.to_vec(),
+            };
+```
+
+### Tarea 6: Usar `workspace` en `spawn_subagent_and_delegate` para renderizar system prompt
+
+**Archivos:**
+- Modificar: `src/agent/tools.rs:1552-1700`
+
+- [ ] **Paso 6.1:** Añadir los imports necesarios al inicio del archivo si no existen:
+
+```rust
+use std::collections::HashMap;
+use crate::llm::template::render_template;
+```
+
+- [ ] **Paso 6.2:** En `spawn_subagent_and_delegate`, destructure `workspace` del config y renderizar el system prompt:
+
+```rust
+pub(crate) async fn spawn_subagent_and_delegate(
+    cfg: SpawnSubagentConfig,
+) -> Result<SubagentOutcome> {
+    let SpawnSubagentConfig {
+        parent_id,
+        parent_name,
+        task_id,
+        description,
+        mode,
+        model,
+        tools,
+        workspace,
+        permissions,
+        event_tx,
+        usage_tx,
+        db,
+        session_id,
+        history_limit_percent,
+        retry_config,
+        debug,
+        depth,
+        subagent_depth,
+        job_registry,
+        agent,
+        llm_registry,
+        skill_registry,
+        skill_names,
+    } = cfg;
+```
+
+- [ ] **Paso 6.3:** Renderizar el system prompt usando `render_template` donde antes se usaba `agent.description.clone()`. Buscar el lugar donde se asigna el system prompt (aproximadamente línea 1690) y reemplazar:
+
+```rust
+                    // Render the system prompt with workspace variable
+                    let mut vars = HashMap::new();
+                    vars.insert("workspace".to_string(), workspace.to_string_lossy().to_string());
+                    let system_prompt = render_template(&agent.description, &vars);
+```
+
+Luego usar `system_prompt` en el mensaje System del subagente en lugar de `agent.description.clone()`.
+
+Ejemplo del contexto donde se usa (aproximadamente líneas 1680-1700):
+
+```rust
+                    messages.push(SystemMessage {
+                        content: system_prompt,  // antes era: agent.description.clone()
+                        ..Default::default()
+                    });
+```
+
+### Tarea 7: Actualizar el caller en `lifecycle.rs`
+
+**Archivos:**
+- Modificar: `src/agent/lifecycle.rs:814-835`
+
+- [ ] **Paso 7.1:** Localizar la llamada a `execute_task_tool` (~línea 814). El workspace ya está disponible en el `SpawnAgentConfig` que posee la función `spawn_agent`. Añadirlo como último argumento:
+
+```rust
+                                            let task_result = execute_task_tool(
+                                                &tc,
+                                                agent_permissions,
+                                                llm_registry,
+                                                skill_registry,
+                                                skill_names,
+                                                event_tx,
+                                                usage_tx,
+                                                db,
+                                                session_id,
+                                                history_limit_percent,
+                                                retry_config,
+                                                debug_mode,
+                                                depth,
+                                                subagent_depth,
+                                                agent_name,
+                                                agent_id,
+                                                model_name,
+                                                job_registry,
+                                                subagent_configs,
+                                                &workspace,   // <-- nuevo parámetro
+                                            )
+                                            .await;
+```
+
+### Tarea 8: Actualizar tests existentes
+
+**Archivos:**
+- Modificar: `src/agent/tools.rs:2218-2260` (tests)
+
+- [ ] **Paso 8.1:** En `test_task_tool_args_parse_with_agent` (~línea 2218), actualizar el JSON para incluir `"workspace":"/tmp/test"` y añadir assert:
+
+```rust
+    #[test]
+    fn test_task_tool_args_parse_with_agent() {
+        let json = r#"{
+            "task_id": "t1",
+            "description": "do something",
+            "agent": "reviewer",
+            "workspace": "/tmp/test"
+        }"#;
+        let args = TaskToolArgs::parse(json).unwrap();
+        assert_eq!(args.task_id, "t1");
+        assert_eq!(args.description, "do something");
+        assert_eq!(args.agent, Some("reviewer".to_string()));
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
     }
 ```
 
-- [ ] **Step 2: Build to verify compilation**
+- [ ] **Paso 8.2:** En `test_task_tool_args_parse_without_agent` (~línea 2228), actualizar el JSON para incluir `"workspace":"/tmp/test"` y añadir assert:
 
-Run: `cargo build 2>&1 | head -30`
-Expected: Compiles successfully.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/agent/lifecycle.rs
-git commit -m "feat: spawn_agent filters tools by agent declaration"
+```rust
+    #[test]
+    fn test_task_tool_args_parse_without_agent() {
+        let json = r#"{
+            "task_id": "t2",
+            "description": "do something else",
+            "workspace": "/tmp/test"
+        }"#;
+        let args = TaskToolArgs::parse(json).unwrap();
+        assert_eq!(args.task_id, "t2");
+        assert_eq!(args.description, "do something else");
+        assert_eq!(args.agent, None);
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
+    }
 ```
 
----
+- [ ] **Paso 8.3:** En `test_task_tool_args_parse_background_with_model_and_tools` (~línea 1175), actualizar el JSON:
 
-### Task 3: Update `~/.config/anacleto/config.yaml` with tool defaults
-
-**Files:**
-- Modify: `~/.config/anacleto/config.yaml`
-
-- [ ] **Step 1: Add `tools:` section with all built-in tool defaults**
-
-```yaml
-# ---------------------------------------------------------------------------
-# Built-in tool defaults
-# ---------------------------------------------------------------------------
-# Each agent declares which tools it uses in its frontmatter `tools:` field.
-# This section defines default display properties for all built-in tools.
-# Agents can override these in their frontmatter.
-
-tools:
-  read:
-    description: "Read a file from the filesystem. Use for viewing file contents, logs, or any text file."
-    show: true
-    color: cyan
-  grep:
-    description: "Search file contents using regular expressions. Use for finding patterns in code or text files."
-    show: true
-    color: blue
-  glob:
-    description: "Find files by glob pattern. Use for locating files by name pattern."
-    show: true
-    color: blue
-  bash:
-    description: "Execute shell commands in the workspace environment."
-    show: true
-    color: green
-    display: "$ {command}"
-  webfetch:
-    description: "Fetch content from a URL and return it as markdown or text."
-    show: true
-    color: green
-    display: "🌐 {url}"
-  websearch:
-    description: "Search the web using SearXNG meta-search engine."
-    show: true
-    color: green
-    display: "🔍 {query}"
-  todo:
-    description: "Create and maintain a structured task list for the current session."
-    show: true
-    color: magenta
-    display: "📝 {action}"
-  question:
-    description: "Ask the user a question and wait for their response."
-    show: true
-    color: yellow
-  compress:
-    description: "Compress conversation history into a detailed technical summary."
-    show: true
-    color: yellow
-  task:
-    description: "Launch a subagent to handle a complex multi-step task autonomously."
-    show: true
-    color: magenta
-    display: "⚡ {description}"
-  skill:
-    description: "Load and execute a specialized skill for a specific task."
-    show: true
-    color: cyan
-    display: "🎯 {name}"
-  apply_patch:
-    description: "Apply a patch to modify files in the workspace."
-    show: true
-    color: green
-  mcp_list_resources:
-    description: "List available resources from connected MCP servers."
-    show: true
-    color: cyan
-  mcp_read_resource:
-    description: "Read a specific resource from an MCP server."
-    show: true
-    color: cyan
-  mcp_list_resource_templates:
-    description: "List resource templates from connected MCP servers."
-    show: true
-    color: cyan
-  lsp_query:
-    description: "Query the LSP server for code intelligence (completions, diagnostics, etc.)."
-    show: true
-    color: cyan
+```rust
+    #[test]
+    fn test_task_tool_args_parse_background_with_model_and_tools() {
+        let json = r#"{
+            "task_id": "t3",
+            "description": "bg task",
+            "mode": "background",
+            "model": "gpt-4",
+            "tools": ["shell", "read"],
+            "workspace": "/tmp/test"
+        }"#;
+        let args = TaskToolArgs::parse(json).unwrap();
+        assert_eq!(args.mode, TaskMode::Background);
+        assert_eq!(args.model, Some("gpt-4".to_string()));
+        assert_eq!(args.tools, vec!["shell", "read"]);
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
+    }
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Paso 8.4:** En `test_execute_task_tool_agent_not_found` (~línea 2237), actualizar el JSON y la llamada:
 
-```bash
-git add ~/.config/anacleto/config.yaml
-git commit -m "feat: add built-in tool defaults to global config"
+```rust
+    #[tokio::test]
+    async fn test_execute_task_tool_agent_not_found() {
+        let json = r#"{
+            "task_id": "t4",
+            "description": "do x",
+            "agent": "nonexistent",
+            "workspace": "/tmp/test"
+        }"#;
+        let tool_call = ToolCall {
+            id: "call_1".to_string(),
+            function: FunctionCall {
+                name: "task".to_string(),
+                arguments: json.to_string(),
+            },
+        };
+        let result = execute_task_tool(
+            &tool_call,
+            &permissions,
+            &llm_registry,
+            &skill_registry,
+            &skill_names,
+            &event_tx,
+            &None,
+            &None,
+            None,
+            0.5,
+            &retry_config,
+            &Arc::new(AtomicBool::new(false)),
+            0,
+            5,
+            "parent",
+            &AgentId("parent-id".to_string()),
+            "claude-3",
+            &None,
+            &[],
+            &Path::new("/tmp/test"),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
 ```
 
----
-
-### Task 4: Update all agent files with explicit tool lists
-
-**Files:**
-- Modify: All 23 files in `~/.config/anacleto/agents/`
-
-Each agent needs a `tools:` section listing only the tools it should have access to. Below are the tool lists per agent based on their role:
-
-**root.md** — Full engineering agent: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `webfetch`, `todo`, `question`, `compress`, `task`, `skill`
-
-**chat.md** — Conversational agent: `todo`, `question`, `read` (show:false), `grep` (show:false), `glob` (show:false), `webfetch`
-
-**reviewer.md** — Code review: `codegraph_*`, `read`, `grep`, `glob`, `question`, `compress`
-
-**writer.md** — Technical writing: `read`, `webfetch`, `question`, `compress`
-
-**chronicler.md** — Project logger: `read`, `bash`, `question`, `compress`
-
-**rust-dev.md** — Rust development: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `question`, `compress`
-
-**tech-writer.md** — Article writing: `read`, `webfetch`, `question`, `compress`
-
-**python-dev.md** — Python development: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `question`, `compress`
-
-**dev-manager.md** — Development manager: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `webfetch`, `todo`, `question`, `compress`, `task`, `skill`
-
-**agent-manager.md** — Agent/skill manager: `read`, `grep`, `glob`, `bash`, `question`, `task`, `skill`
-
-**planner.md** — Planning specialist: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `question`, `compress`
-
-**podcast-manager.md** — Podcast production: `read`, `bash`, `question`, `compress`, `task`
-
-**executor.md** — Simple executor: `read`, `bash`, `question`, `compress`
-
-**frontend-dev.md** — Frontend development: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `question`, `compress`
-
-**git-controller.md** — Git operations: `read`, `bash`, `question`, `compress`
-
-**researcher.md** — Research: `webfetch`, `question`, `compress`
-
-**script-writer.md** — Script writing: `read`, `webfetch`, `question`, `compress`
-
-**script-verifier.md** — Script verification: `read`, `webfetch`, `question`, `compress`
-
-**tech-researcher.md** — Technical research: `codegraph_*`, `read`, `webfetch`, `question`, `compress`
-
-**article-writer.md** — Article writing: `read`, `webfetch`, `question`, `compress`
-
-**verifier.md** — Article verification: `read`, `webfetch`, `question`, `compress`
-
-**writer-manager.md** — Writing coordination: `read`, `bash`, `question`, `compress`, `task`
-
-- [ ] **Step 1: Update root.md**
-
-Replace the `tools:` section with explicit tool list including all codegraph tools and built-in tools.
-
-- [ ] **Step 2: Update chat.md**
-
-Replace `tools:` with: `todo`, `question`, `read` (show:false), `grep` (show:false), `glob` (show:false), `webfetch`
-
-- [ ] **Step 3: Update reviewer.md**
-
-Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `question`, `compress`
-
-- [ ] **Step 4: Update writer.md**
-
-Replace `tools:` with `read`, `webfetch`, `question`, `compress`
-
-- [ ] **Step 5: Update chronicler.md**
-
-Replace `tools:` with `read`, `bash`, `question`, `compress`
-
-- [ ] **Step 6: Update rust-dev.md**
-
-Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `bash`, `question`, `compress`
-
-- [ ] **Step 7: Update tech-writer.md**
-
-Replace `tools:` with `read`, `webfetch`, `question`, `compress`
-
-- [ ] **Step 8: Update python-dev.md**
-
-Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `bash`, `question`, `compress`
-
-- [ ] **Step 9: Update dev-manager.md**
-
-Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `bash`, `webfetch`, `todo`, `question`, `compress`, `task`, `skill`
-
-- [ ] **Step 10: Update agent-manager.md**
-
-Replace `tools:` with `read`, `grep`, `glob`, `bash`, `question`, `task`, `skill`
-
-- [ ] **Step 11: Update planner.md**
-
-Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `bash`, `question`, `compress`
-
-- [ ] **Step 12: Update podcast-manager.md**
-
-Replace `tools:` with `read`, `bash`, `question`, `compress`, `task`
-
-- [ ] **Step 13: Update executor.md**
-
-Replace `tools:` with `read`, `bash`, `question`, `compress`
-
-- [ ] **Step 14: Update frontend-dev.md**
-
-Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `bash`, `question`, `compress`
-
-- [ ] **Step 15: Update git-controller.md**
-
-Replace `tools:` with `read`, `bash`, `question`, `compress`
-
-- [ ] **Step 16: Update researcher.md**
-
-Replace `tools:` with `webfetch`, `question`, `compress`
-
-- [ ] **Step 17: Update script-writer.md**
-
-Replace `tools:` with `read`, `webfetch`, `question`, `compress`
-
-- [ ] **Step 18: Update script-verifier.md**
-
-Replace `tools:` with `read`, `webfetch`, `question`, `compress`
-
-- [ ] **Step 19: Update tech-researcher.md**
-
-Replace `tools:` with codegraph tools + `read`, `webfetch`, `question`, `compress`
-
-- [ ] **Step 20: Update article-writer.md**
-
-Replace `tools:` with `read`, `webfetch`, `question`, `compress`
-
-- [ ] **Step 21: Update verifier.md**
-
-Replace `tools:` with `read`, `webfetch`, `question`, `compress`
-
-- [ ] **Step 22: Update writer-manager.md**
-
-Replace `tools:` with `read`, `bash`, `question`, `compress`, `task`
-
-- [ ] **Step 23: Commit**
-
-```bash
-git add ~/.config/anacleto/agents/
-git commit -m "feat: add explicit tool declarations to all agents"
+- [ ] **Paso 8.5:** En `test_task_tool_args_parse_defaults` (~línea 1185), actualizar el JSON:
+
+```rust
+    #[test]
+    fn test_task_tool_args_parse_defaults() {
+        let json = r#"{
+            "task_id": "t5",
+            "description": "defaults test",
+            "workspace": "/tmp/test"
+        }"#;
+        let args = TaskToolArgs::parse(json).unwrap();
+        assert_eq!(args.mode, TaskMode::Foreground);
+        assert_eq!(args.model, None);
+        assert!(args.tools.is_empty());
+        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
+    }
 ```
 
----
+### Tarea 9: Añadir test nuevo para `workspace` faltante
 
-### Task 5: Build and verify
+**Archivos:**
+- Modificar: `src/agent/tools.rs` (añadir test nuevo cerca de los demás tests de parseo)
 
-- [ ] **Step 1: Full build**
+- [ ] **Paso 9.1:** Añadir test `test_task_tool_args_parse_missing_workspace`:
 
-Run: `cargo build 2>&1`
-Expected: Compiles with no errors.
+```rust
+    #[test]
+    fn test_task_tool_args_parse_missing_workspace() {
+        let json = r#"{
+            "task_id": "t6",
+            "description": "missing workspace"
+        }"#;
+        let result = TaskToolArgs::parse(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("workspace"));
+    }
+```
 
-- [ ] **Step 2: Run clippy**
+## Resumen de cambios
 
-Run: `cargo clippy 2>&1`
-Expected: No warnings or errors.
-
-- [ ] **Step 3: Run tests**
-
-Run: `cargo test 2>&1`
-Expected: All tests pass.
-
-- [ ] **Step 4: Run fmt check**
-
-Run: `cargo fmt --check 2>&1`
-Expected: No formatting issues.
-
----
-
-### Task 6: Document the new system
-
-**Files:**
-- Modify: `AGENTS.md` or create `docs/tools-configuration.md`
-
-- [ ] **Step 1: Add documentation explaining the new tools system**
-
-Document:
-1. How tools are declared in agent frontmatter
-2. How defaults work in config.yaml
-3. How overrides work
-4. The list of all built-in tools
-5. Migration guide (what changed)
+| Archivo | Cambio |
+|---|---|
+| `src/agent/tools.rs` | Añadir `workspace: PathBuf` a `TaskToolArgs`, parseo, schema, `SpawnSubagentConfig`, parámetro de `execute_task_tool`, renderizado en `spawn_subagent_and_delegate`, tests |
+| `src/agent/lifecycle.rs` | Pasar `&workspace` como argumento adicional a `execute_task_tool` |
