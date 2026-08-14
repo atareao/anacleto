@@ -1685,9 +1685,13 @@ pub(crate) async fn spawn_subagent_and_delegate(
 
         // Tool loop for subagent (skills only, no nested subagents)
         let mut step_count: u32 = 0;
+        // Track the actual outcome description for the SubagentCompleted event.
+        // Assigned on every `break 'tool_loop` path below.
+        let outcome_desc;
         'tool_loop: loop {
             step_count += 1;
             if step_count > max_steps {
+                outcome_desc = "out_of_steps".to_string();
                 let _ = response_tx.send(SubagentOutcome::OutOfSteps {
                     steps: max_steps,
                     partial_result: format!(
@@ -1792,8 +1796,11 @@ pub(crate) async fn spawn_subagent_and_delegate(
                     }
 
                     if let Some(err) = stream_error {
+                        outcome_desc = "error".to_string();
                         let _ = response_tx.send(SubagentOutcome::Error(err));
-                        return;
+                        // Fall through to the SubagentCompleted emission below so
+                        // the TUI removes the subagent's spinner/status.
+                        break 'tool_loop;
                     }
 
                     // Build a synthetic LlmResponse from the collected stream
@@ -1861,6 +1868,7 @@ pub(crate) async fn spawn_subagent_and_delegate(
 
                     if response.tool_calls.is_empty() {
                         // No tool calls — final response
+                        outcome_desc = "completed".to_string();
                         let _ = response_tx.send(SubagentOutcome::Completed(response.content));
                         break 'tool_loop;
                     }
@@ -1898,6 +1906,7 @@ pub(crate) async fn spawn_subagent_and_delegate(
                     // Loop back: LLM now has tool results
                 }
                 Err(e) => {
+                    outcome_desc = "error".to_string();
                     let _ = response_tx
                         .send(SubagentOutcome::Error(format!("Subagent LLM error: {e}")));
                     break 'tool_loop;
@@ -1905,12 +1914,12 @@ pub(crate) async fn spawn_subagent_and_delegate(
             }
         }
 
-        // Emit subagent completed event
+        // Emit subagent completed event with the actual outcome
         let _ = event_tx
             .send(EngineEvent::SubagentCompleted {
                 subagent_id: agent_id,
                 subagent_name: agent_name,
-                result: "completed".into(),
+                result: outcome_desc,
             })
             .await;
     });
