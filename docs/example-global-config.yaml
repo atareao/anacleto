@@ -27,6 +27,92 @@
 #   You are **Anacleto**...
 
 # ---------------------------------------------------------------------------
+# Tool defaults
+# ---------------------------------------------------------------------------
+# Default values for built-in tools. Agents declare which tools they use in
+# their frontmatter `tools:` section. These defaults are merged with any
+# per-agent overrides.
+#
+# Fields:
+#   description: Description sent to the LLM (overrides the hardcoded default)
+#   show:        Whether executions are shown in the TUI chat (default: true)
+#   display:     Display template with {param} placeholders (optional)
+#   color:       Color for the tool execution line in the TUI (optional)
+#
+# If a tool is not listed here, the hardcoded Rust defaults are used.
+
+tools:
+  read:
+    description: "Read files from the filesystem"
+    show: true
+    color: cyan
+  grep:
+    description: "Search file contents using regular expressions"
+    show: true
+    color: blue
+  glob:
+    description: "Find files matching a glob pattern"
+    show: true
+    color: blue
+  bash:
+    description: "Execute shell commands in the workspace"
+    show: true
+    color: green
+    display: "$ {command}"
+  webfetch:
+    description: "Fetch content from a URL"
+    show: true
+    color: green
+    display: "\U0001f310 {url}"
+  websearch:
+    description: "Search the web"
+    show: true
+    color: green
+  todo:
+    description: "Manage task list"
+    show: true
+    color: magenta
+    display: "\U0001f4dd {action}"
+  question:
+    description: "Ask the user a question"
+    show: true
+    color: yellow
+  task:
+    description: "Delegate work to a subagent"
+    show: true
+    color: magenta
+    display: "\u26a1 {description}"
+  compress:
+    description: "Compress conversation context"
+    show: true
+    color: yellow
+  skill:
+    description: "Load and execute a skill"
+    show: true
+    color: cyan
+    display: "\U0001f3af {name}"
+  apply_patch:
+    description: "Apply a code patch"
+    show: true
+    color: green
+  mcp_list_resources:
+    description: "List MCP resources"
+    show: false
+    color: cyan
+  mcp_read_resource:
+    description: "Read an MCP resource"
+    show: false
+    color: cyan
+  mcp_list_resource_templates:
+    description: "List MCP resource templates"
+    show: false
+    color: cyan
+  lsp_query:
+    description: "Query the LSP"
+    show: false
+    color: cyan
+
+# ---------------------------------------------------------------------------
 # Keymap overrides
 # ---------------------------------------------------------------------------
 # Every TUI shortcut is rebindable. Map an action name to a list of key

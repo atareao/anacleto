@@ -17,10 +17,11 @@ pub struct DiscoveredSkill {
 
 /// Scan workspace and global skill directories for SKILL.md files.
 ///
-/// Returns a list of skills found on disk. Scans two locations:
+/// Returns a list of skills found on disk. Scans three locations:
 ///
 /// 1. `<project_root>/.agents/skills/` — workspace/project skills
 /// 2. `$HOME/.agents/skills/` — global (user-wide) skills
+/// 3. `~/.config/anacleto/skills/` — Anacleto-managed skills
 ///
 /// Each subdirectory that contains a `SKILL.md` file is considered a skill.
 /// The directory name is used as the skill name.
@@ -31,9 +32,13 @@ pub fn discover_skills() -> Vec<DiscoveredSkill> {
     let project_dir = crate::config::paths::project_skills_dir(None);
     scan_skills_dir(&project_dir, &mut skills);
 
-    // Scan global skills directory
+    // Scan global skills directory ($HOME/.agents/skills)
     let global_dir = crate::config::paths::global_skills_dir();
     scan_skills_dir(&global_dir, &mut skills);
+
+    // Scan Anacleto-managed skills directory (~/.config/anacleto/skills)
+    let anacleto_dir = crate::config::paths::anacleto_skills_dir();
+    scan_skills_dir(&anacleto_dir, &mut skills);
 
     skills
 }

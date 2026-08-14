@@ -323,19 +323,19 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
             .add_modifier(Modifier::BOLD),
     ));
 
-    // Context window warning indicator
+    // Context window warning indicator (based on local estimate, same metric as compaction)
     if app.context_window > 0 {
-        let pct = app.context_window_pct;
-        if pct >= 90.0 {
+        let local_pct = (app.local_context_tokens as f64 / app.context_window as f64) * 100.0;
+        if local_pct >= 90.0 {
             all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
             all_spans.push(Span::styled(
-                format!(" 🔥 ctx {:.0}% ", pct),
+                format!(" 🔥 ctx {:.0}% ", local_pct),
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ));
-        } else if pct >= 70.0 {
+        } else if local_pct >= 70.0 {
             all_spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
             all_spans.push(Span::styled(
-                format!(" ⚠ ctx {:.0}% ", pct),
+                format!(" ⚠ ctx {:.0}% ", local_pct),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
@@ -570,15 +570,24 @@ fn render_right_panels(f: &mut Frame, area: Rect, app: &App) {
 fn render_status_panel(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(1)].as_ref())
+        .constraints([Constraint::Length(6), Constraint::Min(1)].as_ref())
         .split(area);
 
+    let local_pct = if app.context_window > 0 {
+        (app.local_context_tokens as f64 / app.context_window as f64) * 100.0
+    } else {
+        0.0
+    };
+
     let text = format!(
-        "Tokens (session): {}\nCost: ${:.2}\nContext: {:.1}% ({} / {})",
+        "Tokens (session): {}\nCost: ${:.2}\nContext (API):   {:.1}% ({} / {})\nContext (local): {:.1}% ({} / {})",
         format_tokens(app.total_tokens),
         app.total_cost,
         app.context_window_pct,
         format_tokens(app.context_tokens),
+        format_tokens(app.context_window),
+        local_pct,
+        format_tokens(app.local_context_tokens),
         format_tokens(app.context_window)
     );
 
@@ -593,10 +602,15 @@ fn render_status_panel(f: &mut Frame, area: Rect, app: &App) {
         .wrap(Wrap { trim: false });
     f.render_widget(paragraph, chunks[0]);
 
+    let gauge_pct = if app.context_window > 0 {
+        ((app.local_context_tokens as f64 / app.context_window as f64).min(1.0) * 100.0) as u16
+    } else {
+        0
+    };
     let gauge = Gauge::default()
         .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(20, 40, 60)))
-        .percent((app.context_window_pct.min(100.0)) as u16)
-        .label(format!("Context: {:.1}%", app.context_window_pct));
+        .percent(gauge_pct)
+        .label(format!("Context (local): {:.1}%", local_pct));
     f.render_widget(gauge, chunks[1]);
 }
 

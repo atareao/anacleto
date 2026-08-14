@@ -363,6 +363,20 @@ impl Engine {
                     }
                 }
             }
+
+            // Auto-discover skills from ~/.config/anacleto/skills
+            // Same structure: one subdirectory per skill with a SKILL.md file.
+            let anacleto_skills_dir = crate::config::paths::anacleto_skills_dir();
+            if anacleto_skills_dir.is_dir()
+                && let Ok(entries) = std::fs::read_dir(&anacleto_skills_dir)
+            {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        all_skill_paths.push(path);
+                    }
+                }
+            }
             if !all_skill_paths.is_empty() {
                 let mut reg = self.skill_registry.write().await;
                 if let Err(e) = reg.load_from_paths(&all_skill_paths) {
@@ -505,6 +519,7 @@ impl Engine {
                 concurrency_semaphore: concurrency_semaphore.clone(),
                 hook_registry: self.hook_registry.clone(),
                 cancel_flag: Some(cancel_flag),
+                tool_defaults: self.config.tools.clone(),
             })
             .await;
 
@@ -1001,6 +1016,7 @@ impl Engine {
             concurrency_semaphore: concurrency_semaphore.clone(),
             hook_registry: self.hook_registry.clone(),
             cancel_flag: Some(cancel_flag),
+            tool_defaults: self.config.tools.clone(),
         })
         .await;
 
@@ -1181,6 +1197,7 @@ impl Engine {
                         concurrency_semaphore: concurrency_semaphore.clone(),
                         hook_registry: self.hook_registry.clone(),
                         cancel_flag: Some(cancel_flag),
+                        tool_defaults: self.config.tools.clone(),
                     })
                     .await;
 

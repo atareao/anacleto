@@ -69,6 +69,12 @@ pub struct Config {
     /// ```
     #[serde(default)]
     pub hooks: HashMap<String, Vec<HookActionConfig>>,
+
+    /// Default tool definitions and display properties.
+    /// Each key is a built-in tool name, value is its default display config.
+    /// Agents can override these in their frontmatter `tools:` section.
+    #[serde(default)]
+    pub tools: HashMap<String, ToolDefaults>,
 }
 
 /// LLM provider configurations.
@@ -429,6 +435,36 @@ pub struct AgentConfig {
     /// Keyed by tool name (e.g. "read", "shell", "todo").
     #[serde(default)]
     pub tools: HashMap<String, ToolSettings>,
+}
+
+/// Default values for a built-in tool's display properties, defined in config.yaml.
+/// Agents can override these in their frontmatter `tools:` section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefaults {
+    /// Description sent to the LLM (overrides the hardcoded one).
+    #[serde(default)]
+    pub description: String,
+    /// Whether executions are shown in the chat (default: true).
+    #[serde(default = "default_tool_show")]
+    pub show: bool,
+    /// Custom display template with `{param}` placeholders (optional).
+    /// E.g., "📖 reading: {path}" for the `read` tool.
+    pub display: Option<String>,
+    /// Custom color for the tool execution line in the TUI (optional).
+    /// Supports: red, green, yellow, blue, magenta, cyan, white, gray,
+    /// dark_gray, light_* variants, and hex colors like "#ff8800".
+    pub color: Option<String>,
+}
+
+impl Default for ToolDefaults {
+    fn default() -> Self {
+        Self {
+            description: String::new(),
+            show: true,
+            display: None,
+            color: None,
+        }
+    }
 }
 
 /// Per-tool configuration for an agent.

@@ -228,6 +228,12 @@ pub enum EngineEvent {
         /// List of all discovered skill names.
         skills: Vec<String>,
     },
+    /// Local token estimate emitted after conversation modifications.
+    /// Used by the TUI to show the same metric that compaction uses.
+    LocalTokenEstimate {
+        /// Estimated token count from conversation_tokens().
+        tokens: usize,
+    },
 }
 
 /// Output format for a session export.

@@ -127,6 +127,10 @@ pub struct SpawnAgentConfig {
     pub hook_registry: HookRegistry,
     /// Optional external cancel flag. If provided, used instead of creating one internally.
     pub cancel_flag: Option<Arc<AtomicBool>>,
+
+    /// Default tool display properties from config.yaml.
+    /// Used to populate display settings for tools the agent declares.
+    pub tool_defaults: HashMap<String, crate::config::ToolDefaults>,
 }
 
 /// Spawn a new agent task and return a handle to it.
@@ -163,6 +167,7 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
         concurrency_semaphore,
         hook_registry,
         cancel_flag,
+        tool_defaults,
     } = config;
     let (tx, mut rx) = mpsc::channel::<AgentMessage>(256);
     let handle = AgentHandle::new(tx);
@@ -190,19 +195,25 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
     for sc in &subagent_configs {
         tools.push(subagent_config_to_tool_definition(sc));
     }
-    tools.push(todo_tool_definition());
-    tools.push(question_tool_definition());
-    tools.push(apply_patch_tool_definition());
-    tools.push(read_tool_definition());
-    tools.push(grep_tool_definition());
-    tools.push(glob_tool_definition());
-    tools.push(webfetch_tool_definition());
-    tools.push(websearch_tool_definition());
-    tools.push(mcp_list_resources_tool_definition());
-    tools.push(mcp_read_resource_tool_definition());
-    tools.push(mcp_list_resource_templates_tool_definition());
-    tools.push(lsp_query_tool_definition());
-    tools.push(task_tool_definition());
+
+    // Add built-in tools based on agent's tool declarations.
+    // Only tools listed in the agent's `tools:` frontmatter are included.
+    // Display properties are merged from config.yaml defaults + agent overrides.
+    let builtin_tools = builtin_tool_definitions();
+    for (tool_name, agent_settings) in &tool_settings_clone {
+        if !agent_settings.enabled {
+            continue;
+        }
+        if let Some(mut def) = builtin_tools.get(tool_name).cloned() {
+            // Merge description from config.yaml defaults
+            if let Some(defaults) = tool_defaults.get(tool_name)
+                && !defaults.description.is_empty()
+            {
+                def.description = defaults.description.clone();
+            }
+            tools.push(def);
+        }
+    }
 
     // Add custom tools registered by plugins.
     if let Some(plugins) = &plugins {
@@ -376,11 +387,17 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                     )
                     .await;
                     if compacted {
+                        let tokens = conversation_tokens(&conversation) as u32;
                         let _ = event_tx
                             .send(EngineEvent::ConversationCompacted {
                                 agent_id: agent_id.clone(),
                                 agent_name: agent_name.clone(),
-                                tokens: conversation_tokens(&conversation) as u32,
+                                tokens,
+                            })
+                            .await;
+                        let _ = event_tx
+                            .send(EngineEvent::LocalTokenEstimate {
+                                tokens: tokens as usize,
                             })
                             .await;
                     }
@@ -432,11 +449,17 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                         )
                         .await;
                         if compacted {
+                            let tokens = conversation_tokens(&conversation) as u32;
                             let _ = event_tx
                                 .send(EngineEvent::ConversationCompacted {
                                     agent_id: agent_id.clone(),
                                     agent_name: agent_name.clone(),
-                                    tokens: conversation_tokens(&conversation) as u32,
+                                    tokens,
+                                })
+                                .await;
+                            let _ = event_tx
+                                .send(EngineEvent::LocalTokenEstimate {
+                                    tokens: tokens as usize,
                                 })
                                 .await;
                         }
@@ -1694,6 +1717,11 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             tool_call_id: Some(tool_call_id),
                                         });
                                     }
+                                    let _ = event_tx
+                                        .send(EngineEvent::LocalTokenEstimate {
+                                            tokens: conversation_tokens(&conversation),
+                                        })
+                                        .await;
                                 } else {
                                     // Sequential execution (0 or 1 `task` calls): preserve the
                                     // exact original behavior.
@@ -1714,6 +1742,11 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             tool_call_id: Some(tool_call_id),
                                         });
                                     }
+                                    let _ = event_tx
+                                        .send(EngineEvent::LocalTokenEstimate {
+                                            tokens: conversation_tokens(&conversation),
+                                        })
+                                        .await;
                                 }
 
                                 // If a subagent ran out of steps, stop the tool loop.
@@ -1773,11 +1806,17 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                         Some(&retry_config),
                     )
                     .await;
+                    let tokens = conversation_tokens(&conversation) as u32;
                     let _ = event_tx
                         .send(EngineEvent::ConversationCompacted {
                             agent_id: agent_id.clone(),
                             agent_name: agent_name.clone(),
-                            tokens: conversation_tokens(&conversation) as u32,
+                            tokens,
+                        })
+                        .await;
+                    let _ = event_tx
+                        .send(EngineEvent::LocalTokenEstimate {
+                            tokens: tokens as usize,
                         })
                         .await;
                 }
@@ -1852,6 +1891,30 @@ fn extract_task_preview(tool_name: &str, args: &str) -> String {
             }
         }
     }
+}
+
+/// Returns all built-in tool definitions keyed by tool name.
+/// These are the tools that agents can declare in their `tools:` frontmatter.
+pub fn builtin_tool_definitions() -> HashMap<String, ToolDefinition> {
+    let mut map = HashMap::new();
+    for def in [
+        todo_tool_definition(),
+        question_tool_definition(),
+        apply_patch_tool_definition(),
+        read_tool_definition(),
+        grep_tool_definition(),
+        glob_tool_definition(),
+        webfetch_tool_definition(),
+        websearch_tool_definition(),
+        mcp_list_resources_tool_definition(),
+        mcp_read_resource_tool_definition(),
+        mcp_list_resource_templates_tool_definition(),
+        lsp_query_tool_definition(),
+        task_tool_definition(),
+    ] {
+        map.insert(def.name.clone(), def);
+    }
+    map
 }
 
 /// Check whether tool execution should be shown in the chat based on `show` setting.

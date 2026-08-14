@@ -1,142 +1,436 @@
-# Plan: Subagentes auto-descriptivos (self-describing subagents)
+# Configurable Tools System Implementation Plan
 
-> **Histórico:** Este plan reemplaza al anterior "Mejoras en manejo de capacidades MCP + tool descriptions"
-> (ya implementado y completado: verificación de capacidades MCP en client.rs, tool descriptions
-> mejoradas en tools/mcp.rs, y actualización comportamental de root.md y dev-manager.md).
+> **For agentic workers:** Tasks are implemented sequentially. Each task produces independently testable changes.
 
-## Objetivo
+**Goal:** Move built-in tools from hardcoded-in-Rust to per-agent-declared-in-config, with defaults in config.yaml.
 
-Cuando un usuario declara `subagents: [documenter]` en el frontmatter YAML de un agente, el agente
-padre debe **saber automáticamente** qué hace cada subagente y **cuándo invocarlo**, sin necesidad de
-editar el system prompt (cuerpo Markdown) del agente padre.
+**Architecture:** Add `ToolDefaults` to `Config` (config.yaml), change `spawn_agent()` to only include tools the agent declares, merge defaults from config with overrides from agent frontmatter.
 
-Hoy, `subagent_config_to_tool_definition` (src/agent/tools.rs:1123) genera una descripción genérica
-("Delegate a task to the 'X' subagent for specialized work") que no incluye ni la `description` real
-del subagente ni ninguna directriz de uso. El resultado: el agente padre no sabe cuándo usar sus
-subagentes salvo que se le instruya manualmente en su Markdown.
+**Tech Stack:** Rust (serde YAML), YAML frontmatter in agent Markdown files.
 
-### Decisiones de diseño confirmadas por el usuario
+## Global Constraints
 
-1. `when_to_use` es **texto libre** interpretado por el LLM del padre (no triggers estructurados del motor).
-2. **NO** se inyecta el cuerpo Markdown completo del subagente — solo `description` + `when_to_use`.
-3. `when_to_use` es **opcional** (`#[serde(default)]`), cero ruptura con configs existentes.
+- Everything in English (code, comments, docs, config)
+- No backwards compatibility — breaking change
+- If a tool is not in the agent's `tools:` list, the agent doesn't have it
+- No tool is core — even `task`, `question`, `todo` must be declared
+- JSON Schema stays in Rust — only display properties go in YAML
+- `cargo fmt --check && cargo clippy && cargo test` must pass
 
 ---
 
-## Tarea 1: Añadir campo `when_to_use` a `AgentConfig`
+### Task 1: Add `ToolDefaults` to `Config` and `builtin_tool_definitions()` registry
 
-### Archivo: `src/config/types.rs`
+**Files:**
+- Modify: `src/config/types.rs` — add `ToolDefaults` struct and `tools` field to `Config`
+- Modify: `src/agent/lifecycle.rs` — add `builtin_tool_definitions()` function
 
-Añadir al struct `AgentConfig` (después de `description`):
+**Interfaces:**
+- Produces: `ToolDefaults` struct with `description`, `show`, `display`, `color` fields
+- Produces: `Config.tools: HashMap<String, ToolDefaults>` field
+- Produces: `builtin_tool_definitions() -> HashMap<String, ToolDefinition>` function
 
-```rust
-/// Directrices de cuándo el agente padre debe invocar este subagente
-/// (texto libre, inyectado automáticamente en el system prompt del padre).
-#[serde(default)]
-pub when_to_use: String,
-```
+- [ ] **Step 1: Add `ToolDefaults` to `src/config/types.rs`**
 
-## Tarea 2: Parsear `when_to_use` del frontmatter
-
-### Archivo: `src/agent/loader.rs`
-
-Añadir al struct `Frontmatter` (struct de deserialización local en `parse_agent`):
+Add after the `ToolSettings` struct:
 
 ```rust
-#[serde(default)]
-when_to_use: String,
-```
-
-La construcción de `AgentConfig` ya asigna todos los campos del frontmatter; añadir la asignación.
-
-## Tarea 3: Enriquecer la tool definition del subagente
-
-### Archivo: `src/agent/tools.rs` — función `subagent_config_to_tool_definition`
-
-Cambiar la descripción genérica por una que incluya `description` y, si no está vacío, `when_to_use`:
-
-```rust
-description: {
-    let mut desc = format!(
-        "Delegate a task to the '{}' subagent. What it does: {}",
-        config.name, config.description
-    );
-    if !config.when_to_use.is_empty() {
-        desc.push_str(&format!(" When to use: {}", config.when_to_use));
-    }
-    desc
+/// Default values for a built-in tool's display properties, defined in config.yaml.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefaults {
+    /// Description sent to the LLM (overrides the hardcoded one).
+    #[serde(default)]
+    pub description: String,
+    /// Whether executions are shown in the chat (default: true).
+    #[serde(default = "default_tool_show")]
+    pub show: bool,
+    /// Custom display template with `{param}` placeholders (optional).
+    pub display: Option<String>,
+    /// Custom color for the tool execution line in the TUI (optional).
+    pub color: Option<String>,
 }
 ```
 
-El input_schema (campo `task`) se mantiene igual.
+- [ ] **Step 2: Add `tools` field to `Config` struct**
 
-## Tarea 4: Auto-inyección en el system prompt del padre
-
-### Archivo: `src/agent/lifecycle.rs` — función `spawn_agent`
-
-Después de renderizar el system prompt (`render_template(&agent.description, &vars)`, ~línea 225),
-si `subagent_configs` no está vacío, concatenar un bloque auto-generado:
+Add to `Config` in `src/config/types.rs`:
 
 ```rust
-// Auto-inyectar el bloque de subagentes: el padre descubre qué hacen y
-// cuándo usarlos sin editar su Markdown.
-if !subagent_configs.is_empty() {
-    system_prompt.push_str("\n\n--- Subagents disponibles ---\n");
-    for sc in &subagent_configs {
-        system_prompt.push_str(&format!("• **{}** — {}\n", sc.name, sc.description));
-        if !sc.when_to_use.is_empty() {
-            system_prompt.push_str(&format!("  *Cómo usarlo*: {}\n", sc.when_to_use));
+    /// Default tool definitions and display properties.
+    /// Each key is a built-in tool name, value is its default display config.
+    #[serde(default)]
+    pub tools: HashMap<String, ToolDefaults>,
+```
+
+- [ ] **Step 3: Add `builtin_tool_definitions()` to `src/agent/lifecycle.rs`**
+
+Add a function that returns all built-in tool definitions keyed by name:
+
+```rust
+/// Returns all built-in tool definitions keyed by tool name.
+pub fn builtin_tool_definitions() -> HashMap<String, ToolDefinition> {
+    let mut map = HashMap::new();
+    for def in [
+        todo_tool_definition(),
+        question_tool_definition(),
+        apply_patch_tool_definition(),
+        read_tool_definition(),
+        grep_tool_definition(),
+        glob_tool_definition(),
+        webfetch_tool_definition(),
+        websearch_tool_definition(),
+        mcp_list_resources_tool_definition(),
+        mcp_read_resource_tool_definition(),
+        mcp_list_resource_templates_tool_definition(),
+        lsp_query_tool_definition(),
+        task_tool_definition(),
+    ] {
+        map.insert(def.name.clone(), def);
+    }
+    map
+}
+```
+
+- [ ] **Step 4: Build to verify compilation**
+
+Run: `cargo build 2>&1 | head -30`
+Expected: Compiles successfully (new types are unused but valid).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/config/types.rs src/agent/lifecycle.rs
+git commit -m "feat: add ToolDefaults config and builtin_tool_definitions registry"
+```
+
+---
+
+### Task 2: Change `spawn_agent()` to use per-agent tool declarations
+
+**Files:**
+- Modify: `src/agent/lifecycle.rs` — change tool assembly logic in `spawn_agent()`
+
+**Interfaces:**
+- Consumes: `agent.tool_settings: HashMap<String, ToolSettings>` (keys = enabled tools)
+- Consumes: `config.tools: HashMap<String, ToolDefaults>` (defaults from config.yaml)
+- Consumes: `builtin_tool_definitions()` (tool schemas from Rust)
+
+- [ ] **Step 1: Replace hardcoded tool list with filtered + merged logic**
+
+In `spawn_agent()`, replace lines 193-205 (the 13 `tools.push(...)` calls) with:
+
+```rust
+    // Add built-in tools based on agent's tool declarations.
+    // Only tools listed in the agent's `tools:` frontmatter are included.
+    let builtin_tools = builtin_tool_definitions();
+    for (tool_name, agent_settings) in &agent.tool_settings {
+        if let Some(mut def) = builtin_tools.get(tool_name).cloned() {
+            // Merge defaults from config.yaml
+            if let Some(defaults) = config.tools.get(tool_name) {
+                if !defaults.description.is_empty() {
+                    def.description = defaults.description.clone();
+                }
+            }
+            // Apply agent-level overrides (ToolSettings has enabled/show/display/color)
+            // These are display-only; the schema stays from Rust
+            tools.push(def);
         }
     }
-}
 ```
 
-Además, añadir una variable de template `subagents` al HashMap `vars` (con el mismo bloque, sin
-encabezado) para que un agente pueda posicionarlo explícitamente con `{subagents}` si lo desea.
-NOTA: `render_template` deja las variables desconocidas como literal, así que los agentes que no
-usen `{subagents}` no se ven afectados.
+- [ ] **Step 2: Build to verify compilation**
 
-## Tarea 5: Tests
+Run: `cargo build 2>&1 | head -30`
+Expected: Compiles successfully.
 
-- `src/agent/loader.rs`: test de parseo de `when_to_use` en frontmatter (presente y ausente → vacío).
-- `src/agent/tools.rs`: test de `subagent_config_to_tool_definition` con y sin `when_to_use`.
-- `src/agent/lifecycle.rs` o donde mejor encaje: test del bloque auto-generado de subagentes.
-- Actualizar los constructores literales de `AgentConfig` en tests existentes (loader.rs, etc.) que
-  ahora requerirán el campo `when_to_use` (usar `String::new()` o `when_to_use: "".into()`).
+- [ ] **Step 3: Commit**
 
-## Archivos a modificar (resumen)
+```bash
+git add src/agent/lifecycle.rs
+git commit -m "feat: spawn_agent filters tools by agent declaration"
+```
 
-1. `src/config/types.rs` — campo `when_to_use` en `AgentConfig`
-2. `src/agent/loader.rs` — frontmatter + test
-3. `src/agent/tools.rs` — tool description enriquecida + test
-4. `src/agent/lifecycle.rs` — bloque auto-generado + variable `{subagents}` + test
+---
 
-## Ejemplo de uso
+### Task 3: Update `~/.config/anacleto/config.yaml` with tool defaults
 
-`.agents/agents/documenter.md`:
+**Files:**
+- Modify: `~/.config/anacleto/config.yaml`
+
+- [ ] **Step 1: Add `tools:` section with all built-in tool defaults**
+
 ```yaml
----
-name: documenter
-description: Documenta todas las acciones del agente
-when_to_use: >
-  Tras CADA ejecución de herramienta (tool call), delega al documenter
-  un resumen de la acción realizada, con qué tool, qué resultado obtuvo
-  y por qué la hizo.
----
-Documenta cada acción que realiza el agente principal...
+# ---------------------------------------------------------------------------
+# Built-in tool defaults
+# ---------------------------------------------------------------------------
+# Each agent declares which tools it uses in its frontmatter `tools:` field.
+# This section defines default display properties for all built-in tools.
+# Agents can override these in their frontmatter.
+
+tools:
+  read:
+    description: "Read a file from the filesystem. Use for viewing file contents, logs, or any text file."
+    show: true
+    color: cyan
+  grep:
+    description: "Search file contents using regular expressions. Use for finding patterns in code or text files."
+    show: true
+    color: blue
+  glob:
+    description: "Find files by glob pattern. Use for locating files by name pattern."
+    show: true
+    color: blue
+  bash:
+    description: "Execute shell commands in the workspace environment."
+    show: true
+    color: green
+    display: "$ {command}"
+  webfetch:
+    description: "Fetch content from a URL and return it as markdown or text."
+    show: true
+    color: green
+    display: "🌐 {url}"
+  websearch:
+    description: "Search the web using SearXNG meta-search engine."
+    show: true
+    color: green
+    display: "🔍 {query}"
+  todo:
+    description: "Create and maintain a structured task list for the current session."
+    show: true
+    color: magenta
+    display: "📝 {action}"
+  question:
+    description: "Ask the user a question and wait for their response."
+    show: true
+    color: yellow
+  compress:
+    description: "Compress conversation history into a detailed technical summary."
+    show: true
+    color: yellow
+  task:
+    description: "Launch a subagent to handle a complex multi-step task autonomously."
+    show: true
+    color: magenta
+    display: "⚡ {description}"
+  skill:
+    description: "Load and execute a specialized skill for a specific task."
+    show: true
+    color: cyan
+    display: "🎯 {name}"
+  apply_patch:
+    description: "Apply a patch to modify files in the workspace."
+    show: true
+    color: green
+  mcp_list_resources:
+    description: "List available resources from connected MCP servers."
+    show: true
+    color: cyan
+  mcp_read_resource:
+    description: "Read a specific resource from an MCP server."
+    show: true
+    color: cyan
+  mcp_list_resource_templates:
+    description: "List resource templates from connected MCP servers."
+    show: true
+    color: cyan
+  lsp_query:
+    description: "Query the LSP server for code intelligence (completions, diagnostics, etc.)."
+    show: true
+    color: cyan
 ```
 
-Al declarar `subagents: [documenter]` en el padre, este automáticamente ve el tool `documenter`
-con descripción rica Y recibe la instrucción de delegarle tras cada tool call. Sin tocar su Markdown.
+- [ ] **Step 2: Commit**
 
-## Orden de ejecución
+```bash
+git add ~/.config/anacleto/config.yaml
+git commit -m "feat: add built-in tool defaults to global config"
+```
 
-1. Tarea 1 (types.rs)
-2. Tarea 2 (loader.rs)
-3. Tarea 3 (tools.rs)
-4. Tarea 4 (lifecycle.rs)
-5. Tarea 5 (tests)
+---
 
-## Verificación final
+### Task 4: Update all agent files with explicit tool lists
 
-- `cargo fmt --check && cargo clippy && cargo test`
+**Files:**
+- Modify: All 23 files in `~/.config/anacleto/agents/`
+
+Each agent needs a `tools:` section listing only the tools it should have access to. Below are the tool lists per agent based on their role:
+
+**root.md** — Full engineering agent: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `webfetch`, `todo`, `question`, `compress`, `task`, `skill`
+
+**chat.md** — Conversational agent: `todo`, `question`, `read` (show:false), `grep` (show:false), `glob` (show:false), `webfetch`
+
+**reviewer.md** — Code review: `codegraph_*`, `read`, `grep`, `glob`, `question`, `compress`
+
+**writer.md** — Technical writing: `read`, `webfetch`, `question`, `compress`
+
+**chronicler.md** — Project logger: `read`, `bash`, `question`, `compress`
+
+**rust-dev.md** — Rust development: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `question`, `compress`
+
+**tech-writer.md** — Article writing: `read`, `webfetch`, `question`, `compress`
+
+**python-dev.md** — Python development: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `question`, `compress`
+
+**dev-manager.md** — Development manager: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `webfetch`, `todo`, `question`, `compress`, `task`, `skill`
+
+**agent-manager.md** — Agent/skill manager: `read`, `grep`, `glob`, `bash`, `question`, `task`, `skill`
+
+**planner.md** — Planning specialist: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `question`, `compress`
+
+**podcast-manager.md** — Podcast production: `read`, `bash`, `question`, `compress`, `task`
+
+**executor.md** — Simple executor: `read`, `bash`, `question`, `compress`
+
+**frontend-dev.md** — Frontend development: `codegraph_*`, `read`, `grep`, `glob`, `bash`, `question`, `compress`
+
+**git-controller.md** — Git operations: `read`, `bash`, `question`, `compress`
+
+**researcher.md** — Research: `webfetch`, `question`, `compress`
+
+**script-writer.md** — Script writing: `read`, `webfetch`, `question`, `compress`
+
+**script-verifier.md** — Script verification: `read`, `webfetch`, `question`, `compress`
+
+**tech-researcher.md** — Technical research: `codegraph_*`, `read`, `webfetch`, `question`, `compress`
+
+**article-writer.md** — Article writing: `read`, `webfetch`, `question`, `compress`
+
+**verifier.md** — Article verification: `read`, `webfetch`, `question`, `compress`
+
+**writer-manager.md** — Writing coordination: `read`, `bash`, `question`, `compress`, `task`
+
+- [ ] **Step 1: Update root.md**
+
+Replace the `tools:` section with explicit tool list including all codegraph tools and built-in tools.
+
+- [ ] **Step 2: Update chat.md**
+
+Replace `tools:` with: `todo`, `question`, `read` (show:false), `grep` (show:false), `glob` (show:false), `webfetch`
+
+- [ ] **Step 3: Update reviewer.md**
+
+Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `question`, `compress`
+
+- [ ] **Step 4: Update writer.md**
+
+Replace `tools:` with `read`, `webfetch`, `question`, `compress`
+
+- [ ] **Step 5: Update chronicler.md**
+
+Replace `tools:` with `read`, `bash`, `question`, `compress`
+
+- [ ] **Step 6: Update rust-dev.md**
+
+Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `bash`, `question`, `compress`
+
+- [ ] **Step 7: Update tech-writer.md**
+
+Replace `tools:` with `read`, `webfetch`, `question`, `compress`
+
+- [ ] **Step 8: Update python-dev.md**
+
+Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `bash`, `question`, `compress`
+
+- [ ] **Step 9: Update dev-manager.md**
+
+Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `bash`, `webfetch`, `todo`, `question`, `compress`, `task`, `skill`
+
+- [ ] **Step 10: Update agent-manager.md**
+
+Replace `tools:` with `read`, `grep`, `glob`, `bash`, `question`, `task`, `skill`
+
+- [ ] **Step 11: Update planner.md**
+
+Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `bash`, `question`, `compress`
+
+- [ ] **Step 12: Update podcast-manager.md**
+
+Replace `tools:` with `read`, `bash`, `question`, `compress`, `task`
+
+- [ ] **Step 13: Update executor.md**
+
+Replace `tools:` with `read`, `bash`, `question`, `compress`
+
+- [ ] **Step 14: Update frontend-dev.md**
+
+Replace `tools:` with codegraph tools + `read`, `grep`, `glob`, `bash`, `question`, `compress`
+
+- [ ] **Step 15: Update git-controller.md**
+
+Replace `tools:` with `read`, `bash`, `question`, `compress`
+
+- [ ] **Step 16: Update researcher.md**
+
+Replace `tools:` with `webfetch`, `question`, `compress`
+
+- [ ] **Step 17: Update script-writer.md**
+
+Replace `tools:` with `read`, `webfetch`, `question`, `compress`
+
+- [ ] **Step 18: Update script-verifier.md**
+
+Replace `tools:` with `read`, `webfetch`, `question`, `compress`
+
+- [ ] **Step 19: Update tech-researcher.md**
+
+Replace `tools:` with codegraph tools + `read`, `webfetch`, `question`, `compress`
+
+- [ ] **Step 20: Update article-writer.md**
+
+Replace `tools:` with `read`, `webfetch`, `question`, `compress`
+
+- [ ] **Step 21: Update verifier.md**
+
+Replace `tools:` with `read`, `webfetch`, `question`, `compress`
+
+- [ ] **Step 22: Update writer-manager.md**
+
+Replace `tools:` with `read`, `bash`, `question`, `compress`, `task`
+
+- [ ] **Step 23: Commit**
+
+```bash
+git add ~/.config/anacleto/agents/
+git commit -m "feat: add explicit tool declarations to all agents"
+```
+
+---
+
+### Task 5: Build and verify
+
+- [ ] **Step 1: Full build**
+
+Run: `cargo build 2>&1`
+Expected: Compiles with no errors.
+
+- [ ] **Step 2: Run clippy**
+
+Run: `cargo clippy 2>&1`
+Expected: No warnings or errors.
+
+- [ ] **Step 3: Run tests**
+
+Run: `cargo test 2>&1`
+Expected: All tests pass.
+
+- [ ] **Step 4: Run fmt check**
+
+Run: `cargo fmt --check 2>&1`
+Expected: No formatting issues.
+
+---
+
+### Task 6: Document the new system
+
+**Files:**
+- Modify: `AGENTS.md` or create `docs/tools-configuration.md`
+
+- [ ] **Step 1: Add documentation explaining the new tools system**
+
+Document:
+1. How tools are declared in agent frontmatter
+2. How defaults work in config.yaml
+3. How overrides work
+4. The list of all built-in tools
+5. Migration guide (what changed)

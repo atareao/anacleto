@@ -269,14 +269,20 @@ impl App {
                 // Cost is computed in the engine from per-million-token prices.
                 self.total_cost += cost;
 
-                // Warn once when crossing the 70% threshold
-                if self.context_window_pct >= 70.0 && !self.context_warned {
+                // Warn once when the LOCAL estimate crosses the 70% threshold
+                // (same metric that compaction uses, not the API prompt_tokens)
+                let local_pct = if context_window > 0 {
+                    (self.local_context_tokens as f64 / context_window as f64) * 100.0
+                } else {
+                    0.0
+                };
+                if local_pct >= 70.0 && !self.context_warned {
                     self.context_warned = true;
                     self.toasts.push(
                         "⚠ Contexto alto — usa /compact para compactar",
                         ToastKind::Warning,
                     );
-                } else if self.context_window_pct < 60.0 {
+                } else if local_pct < 60.0 {
                     // Reset the flag so the warning can fire again if it climbs back up
                     self.context_warned = false;
                 }
@@ -493,6 +499,9 @@ impl App {
             EngineEvent::ModelsFrecency(frecency) => {
                 let recent = frecency.into_iter().map(|(m, _)| m).collect();
                 self.model_picker.set_recent(recent);
+            }
+            EngineEvent::LocalTokenEstimate { tokens } => {
+                self.local_context_tokens = tokens as u64;
             }
             // ── FASE 1 y 2: build, jobs y snapshots ─────────────────
             EngineEvent::SubagentFinished { task_id, summary } => {

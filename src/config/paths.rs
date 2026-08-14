@@ -69,6 +69,18 @@ pub fn project_skills_dir(explicit_root: Option<&Path>) -> PathBuf {
     project_root(explicit_root).join(".agents").join("skills")
 }
 
+/// Path to the Anacleto-managed skills directory: `~/.config/anacleto/skills`.
+///
+/// This is a third skill source, alongside `$HOME/.agents/skills` (global)
+/// and `<project_root>/.agents/skills` (project). Skills placed here are
+/// managed by Anacleto itself (e.g. installed via the skill manager).
+pub fn anacleto_skills_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("anacleto")
+        .join("skills")
+}
+
 /// Expand a leading `~` (or `~/`) in `path` to the user's home directory.
 ///
 /// - `~` → home directory

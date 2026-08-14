@@ -102,6 +102,9 @@ pub struct App {
     pub total_tokens: u64,
     /// Current context size (non-cumulative, reflects actual conversation buffer).
     pub context_tokens: u64,
+    /// Token count estimated locally by conversation_tokens(), used by compaction.
+    /// Stored alongside context_tokens (from API) so the TUI can show both.
+    pub local_context_tokens: u64,
     /// Percentage of the context window used.
     pub context_window_pct: f64,
     /// Total cost spent (in dollars).
@@ -379,6 +382,7 @@ impl App {
             pending_question: None,
             total_tokens: 0,
             context_tokens: 0,
+            local_context_tokens: 0,
             context_window_pct: 0.0,
             total_cost: 0.0,
             context_window: 0,
