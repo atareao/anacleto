@@ -168,15 +168,45 @@ impl App {
             EngineEvent::SubagentCompleted {
                 subagent_id,
                 subagent_name,
-                ..
+                result,
             } => {
-                self.messages
-                    .push(format!("Subagent '{}' completed.", subagent_name));
-                self.messages_generation = self.messages_generation.wrapping_add(1);
-                self.chat_scroll = 0;
+                // Commit any pending stream/thinking block first so partial
+                // output from the subagent is not lost (e.g. when it ran out
+                // of steps mid-stream).
+                if self.current_stream.is_some() {
+                    commit_stream_block(self);
+                }
+                commit_thinking_block(self);
+                // Always mark the subagent as Completed so its spinner is
+                // removed, regardless of the outcome.
                 if let Some(agent) = self.agents.iter_mut().find(|a| a.id == subagent_id) {
                     agent.status = AgentStatus::Completed;
                 }
+                match result.as_str() {
+                    "out_of_steps" => {
+                        self.push_msg(format!(
+                            "Subagent '{}' sin pasos (se detuvo sin completar la tarea).",
+                            subagent_name
+                        ));
+                        self.toasts.push(
+                            format!("Subagente '{}' sin pasos", subagent_name),
+                            ToastKind::Warning,
+                        );
+                    }
+                    "error" => {
+                        self.push_msg(format!("Subagent '{}' terminó con error.", subagent_name));
+                        self.toasts.push(
+                            format!("Subagente '{}' con error", subagent_name),
+                            ToastKind::Warning,
+                        );
+                    }
+                    _ => {
+                        self.messages
+                            .push(format!("Subagent '{}' completed.", subagent_name));
+                    }
+                }
+                self.messages_generation = self.messages_generation.wrapping_add(1);
+                self.chat_scroll = 0;
             }
             EngineEvent::SessionList(sessions) => {
                 self.session_list = sessions;
@@ -797,5 +827,108 @@ mod tests {
             app.messages,
             vec!["[normal]\nanswer\n[/normal]".to_string()]
         );
+    }
+
+    #[test]
+    fn subagent_completed_out_of_steps_marks_completed_and_warns() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        let id = AgentId::new();
+        app.agents
+            .push(agent(id.clone(), "sub", AgentStatus::Working));
+
+        app.handle_event(EngineEvent::SubagentCompleted {
+            subagent_id: id,
+            subagent_name: "sub".to_string(),
+            result: "out_of_steps".to_string(),
+        });
+
+        // Spinner must be removed: status is no longer Working.
+        assert_eq!(app.agents[0].status, AgentStatus::Completed);
+        assert!(
+            app.messages
+                .iter()
+                .any(|m| m.contains("sin pasos") && m.contains("sub"))
+        );
+        assert!(
+            !app.toasts.is_empty(),
+            "expected a warning toast for out_of_steps"
+        );
+    }
+
+    #[test]
+    fn subagent_completed_error_marks_completed_and_warns() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        let id = AgentId::new();
+        app.agents
+            .push(agent(id.clone(), "sub", AgentStatus::Working));
+
+        app.handle_event(EngineEvent::SubagentCompleted {
+            subagent_id: id,
+            subagent_name: "sub".to_string(),
+            result: "error".to_string(),
+        });
+
+        assert_eq!(app.agents[0].status, AgentStatus::Completed);
+        assert!(
+            app.messages
+                .iter()
+                .any(|m| m.contains("error") && m.contains("sub"))
+        );
+    }
+
+    #[test]
+    fn subagent_completed_success_marks_completed() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        let id = AgentId::new();
+        app.agents
+            .push(agent(id.clone(), "sub", AgentStatus::Working));
+
+        app.handle_event(EngineEvent::SubagentCompleted {
+            subagent_id: id,
+            subagent_name: "sub".to_string(),
+            result: "completed".to_string(),
+        });
+
+        assert_eq!(app.agents[0].status, AgentStatus::Completed);
+        assert!(
+            app.messages
+                .iter()
+                .any(|m| m.contains("completed") && m.contains("sub"))
+        );
+    }
+
+    #[test]
+    fn subagent_completed_commits_pending_stream() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let (_ev_tx, event_rx) = mpsc::channel(16);
+        let mut app = App::new(cmd_tx, event_rx, false, &Config::default());
+        app.show_thinking = true;
+        let id = AgentId::new();
+        app.agents
+            .push(agent(id.clone(), "sub", AgentStatus::Working));
+
+        // Accumulate partial stream output before the subagent reports
+        // it ran out of steps mid-stream.
+        app.handle_event(EngineEvent::AgentStreamChunk {
+            agent_id: id.clone(),
+            agent_name: "sub".to_string(),
+            content: "partial result".to_string(),
+        });
+        app.handle_event(EngineEvent::SubagentCompleted {
+            subagent_id: id,
+            subagent_name: "sub".to_string(),
+            result: "out_of_steps".to_string(),
+        });
+
+        // Partial output must not be lost.
+        assert!(app.messages.iter().any(|m| m.contains("partial result")));
+        assert!(app.current_stream.is_none());
+        assert_eq!(app.agents[0].status, AgentStatus::Completed);
     }
 }
