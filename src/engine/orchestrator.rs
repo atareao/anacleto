@@ -185,10 +185,7 @@ impl Engine {
             None => {
                 // Create a new session with a timestamp-based name
                 let now = Local::now();
-                let session_name = format!(
-                    "Session {}",
-                    now.format("%Y-%m-%d %H:%M:%S")
-                );
+                let session_name = format!("Session {}", now.format("%Y-%m-%d %H:%M:%S"));
                 let session = db.create_session(&session_name).await?;
                 let session_id = session.id;
                 self.active_session_id = Some(session_id);
@@ -1106,8 +1103,9 @@ impl Engine {
         for (name, flag) in &self.cancel_flags {
             flag.store(true, Ordering::Relaxed);
             if let Some(id) = self.agents.get(name)
-                && let Some(handle) = self.handles.remove(id) {
-                    let _ = handle.sender.try_send(AgentMessage::Shutdown);
+                && let Some(handle) = self.handles.remove(id)
+            {
+                let _ = handle.sender.try_send(AgentMessage::Shutdown);
             }
             let _ = self
                 .event_tx

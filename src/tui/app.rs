@@ -661,7 +661,11 @@ impl App {
     pub(crate) fn append_to_log(&self, text: &str) {
         if let Some(ref path) = self.log_path {
             use std::io::Write;
-            if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(false).open(path) {
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .append(true)
+                .create(false)
+                .open(path)
+            {
                 let _ = write!(file, "{}", text);
             }
         }
@@ -679,17 +683,26 @@ impl App {
             return;
         };
         use std::io::Write;
-        let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(path) else {
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
+        else {
             return;
         };
         let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
         let mut cleaned = msg.to_string();
         for marker in &[
-            "[normal]", "[/normal]",
-            "[thinking]", "[/thinking]",
-            "[tool]", "[/tool]",
-            "[user]", "[/user]",
-            "[command]", "[/command]",
+            "[normal]",
+            "[/normal]",
+            "[thinking]",
+            "[/thinking]",
+            "[tool]",
+            "[/tool]",
+            "[user]",
+            "[/user]",
+            "[command]",
+            "[/command]",
         ] {
             cleaned = cleaned.replace(marker, "");
         }
@@ -973,6 +986,9 @@ pub async fn run_tui<B: ratatui::backend::Backend<Error = std::io::Error>>(
                     Event::Mouse(mouse) => {
                         app.handle_mouse(mouse);
                     }
+                    Event::Paste(text) => {
+                        app.handle_paste(text);
+                    }
                     _ => {}
                 }
             }
@@ -996,6 +1012,9 @@ pub async fn run_tui<B: ratatui::backend::Backend<Error = std::io::Error>>(
                 }
                 Event::Mouse(mouse) => {
                     app.handle_mouse(mouse);
+                }
+                Event::Paste(text) => {
+                    app.handle_paste(text);
                 }
                 _ => {}
             }

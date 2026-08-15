@@ -95,6 +95,24 @@ pub(crate) struct OpenAiUsage {
     pub(crate) prompt_tokens: u32,
     pub(crate) completion_tokens: u32,
     pub(crate) total_tokens: u32,
+    /// OpenRouter-specific: real cost in USD for prompt tokens.
+    /// Can be a number or a string (OpenRouter returns strings).
+    #[serde(default)]
+    pub(crate) prompt_cost: Option<serde_json::Value>,
+    /// OpenRouter-specific: real cost in USD for completion tokens.
+    /// Can be a number or a string (OpenRouter returns strings).
+    #[serde(default)]
+    pub(crate) completion_cost: Option<serde_json::Value>,
+}
+
+/// Extract a cost value from OpenRouter's flexible field (string or number).
+fn extract_cost(v: &Option<serde_json::Value>) -> Option<f64> {
+    v.as_ref().and_then(|v| match v {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.parse::<f64>().ok(),
+        serde_json::Value::Null => None,
+        _ => None,
+    })
 }
 
 #[derive(Deserialize)]
@@ -305,10 +323,16 @@ impl LlmProvider for OpenAIProvider {
                 })
                 .collect(),
             finish_reason: choice.finish_reason,
-            usage: data.usage.map(|u| LlmUsage {
-                prompt_tokens: u.prompt_tokens,
-                completion_tokens: u.completion_tokens,
-                total_tokens: u.total_tokens,
+            usage: data.usage.map(|u| {
+                let prompt_cost = extract_cost(&u.prompt_cost);
+                let completion_cost = extract_cost(&u.completion_cost);
+                let cost = prompt_cost.zip(completion_cost).map(|(p, c)| p + c);
+                LlmUsage {
+                    prompt_tokens: u.prompt_tokens,
+                    completion_tokens: u.completion_tokens,
+                    total_tokens: u.total_tokens,
+                    cost,
+                }
             }),
             thinking: choice.message.reasoning,
         })
@@ -470,11 +494,15 @@ impl LlmProvider for OpenAIProvider {
                                 // usage, but only once.
                                 if let Some(u) = usage.as_ref().filter(|_| !done_sent) {
                                     done_sent = true;
+                                    let prompt_cost = extract_cost(&u.prompt_cost);
+                                    let completion_cost = extract_cost(&u.completion_cost);
+                                    let cost = prompt_cost.zip(completion_cost).map(|(p, c)| p + c);
                                     let _ = tx
                                         .send(Ok(LlmStreamChunk::Done(LlmUsage {
                                             prompt_tokens: u.prompt_tokens,
                                             completion_tokens: u.completion_tokens,
                                             total_tokens: u.total_tokens,
+                                            cost,
                                         })))
                                         .await;
                                 }
@@ -500,6 +528,7 @@ impl LlmProvider for OpenAIProvider {
                         prompt_tokens: 0,
                         completion_tokens: 0,
                         total_tokens: 0,
+                        cost: None,
                     })))
                     .await;
             }

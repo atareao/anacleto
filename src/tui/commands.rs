@@ -116,10 +116,9 @@ impl App {
                         if let Some(ref id) = self.session_id {
                             let id = id.clone();
                             self.push_msg(format!("> /rename {} {}", id, name));
-                            let _ = self.cmd_tx.try_send(EngineCommand::RenameSession(
-                                id,
-                                name.to_string(),
-                            ));
+                            let _ = self
+                                .cmd_tx
+                                .try_send(EngineCommand::RenameSession(id, name.to_string()));
                         } else {
                             self.push_msg("No active session to rename.");
                         }
@@ -151,20 +150,14 @@ impl App {
                         }
                         let log_path = log_dir.join(format!("{}.md", session_id));
                         // Write header
-                        let header = format!(
-                            "# Session log: {}\n\n",
-                            session_id
-                        );
+                        let header = format!("# Session log: {}\n\n", session_id);
                         if let Err(e) = std::fs::write(&log_path, &header) {
                             self.push_msg(format!("Error creating log file: {}", e));
                             return;
                         }
                         self.log_path = Some(log_path.clone());
                         self.log_enabled = true;
-                        self.push_msg(format!(
-                            "Logging enabled -> {}",
-                            log_path.display()
-                        ));
+                        self.push_msg(format!("Logging enabled -> {}", log_path.display()));
                     } else {
                         self.push_msg("No active session to log.");
                     }

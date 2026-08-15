@@ -36,18 +36,6 @@ impl SkillExecutor for DefaultSkillExecutor {
                     };
                 }
             }
-        } else if skill_name_lower == "filesystem" {
-            match execute_filesystem_operation(task).await {
-                Ok(result) => result,
-                Err(e) => {
-                    return SkillResult {
-                        skill_name: skill.name.clone(),
-                        output: e.clone(),
-                        success: false,
-                        error: Some(e),
-                    };
-                }
-            }
         } else {
             format!(
                 r#"📋 Loaded instructions from skill "{}". These are NOT the final result — they tell you HOW to fulfill the request.
@@ -107,16 +95,6 @@ async fn execute_web_fetch(task: &str) -> Result<String, String> {
         .await
         .map_err(|e| format!("Failed to read response: {e}"))?;
     Ok(text)
-}
-
-/// Execute a filesystem operation from a task description.
-async fn execute_filesystem_operation(task: &str) -> Result<String, String> {
-    // Delegate to the filesystem module
-    let request: crate::filesystem::FsRequest =
-        serde_json::from_str(task).map_err(|e| format!("Invalid filesystem request: {e}"))?;
-    crate::filesystem::execute(request)
-        .await
-        .map_err(|e| format!("Filesystem operation failed: {e}"))
 }
 
 #[cfg(test)]

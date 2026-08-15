@@ -94,6 +94,10 @@ pub struct LlmUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Real cost in USD when provided by the provider (e.g., OpenRouter).
+    /// When `None`, cost must be calculated from per-million-token prices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
 }
 
 /// A chunk of a streaming response.

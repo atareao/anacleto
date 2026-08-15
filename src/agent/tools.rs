@@ -182,9 +182,7 @@ fn classify_tool_operation(tool_call: &ToolCall) -> (String, String) {
         n if n == "shell" || n.starts_with("shell_") => {
             ("command.run".into(), format!("shell: {}", task))
         }
-        n if n == "read" || n == "grep" || n == "glob" => {
-            ("fs.read".into(), format!("filesystem: {}", task))
-        }
+        n if n == "fs" || n == "search" => ("fs.read".into(), format!("filesystem: {}", task)),
         n if n == "webfetch" || n == "websearch" => {
             ("net.http".into(), format!("network: {}", task))
         }
@@ -195,15 +193,6 @@ fn classify_tool_operation(tool_call: &ToolCall) -> (String, String) {
         }
         n if n.contains("http") || n.contains("fetch") || n.contains("web") => {
             ("net.http".into(), format!("network: {}", task))
-        }
-        n if n == "filesystem" => {
-            // Inspect the operation to classify read/list (safe) vs write/edit/delete.
-            match crate::filesystem::parse_request(task) {
-                Ok(req) if crate::filesystem::is_write_op(&req.op) => {
-                    ("fs.write".into(), format!("filesystem: {}", task))
-                }
-                _ => ("skill.use".into(), format!("filesystem: {}", task)),
-            }
         }
         _ => ("skill.use".into(), format!("{}: {}", name, task)),
     }
@@ -282,23 +271,8 @@ pub(crate) fn skill_to_tool_definition(skill: &Skill) -> ToolDefinition {
         );
     }
 
-    // For the filesystem skill, append the JSON task format so the agent knows
-    // exactly how to structure its requests.
-    if skill.name.to_lowercase() == "filesystem" {
-        tool.description = format!("{}\n\n{}", skill.description, FILESYSTEM_TASK_DOC);
-    }
-
     tool
 }
-
-/// Documentation of the JSON task format for the `filesystem` skill.
-const FILESYSTEM_TASK_DOC: &str = r#"The `task` argument must be a JSON object string:
-- read:   {"op":"read","path":"..."}
-- write:  {"op":"write","path":"...","content":"..."}
-- edit:   {"op":"edit","path":"...","old":"...","new":"..."}
-- list:   {"op":"list","path":"..."}
-- delete: {"op":"delete","path":"..."}
-Edit replaces ALL `old` with `new`. Always read before edit."#;
 
 /// Built-in `todo` tool definition: lets the model manage a persisted task list.
 pub(crate) fn todo_tool_definition() -> ToolDefinition {
@@ -672,8 +646,6 @@ pub(crate) async fn execute_skill_tool(
         result.map(|r| format!("{prompt}\n\n{r}"))
     } else if skill_name_lower.contains("web") || skill_name_lower.contains("research") {
         execute_web_fetch(task).await
-    } else if skill_name_lower == "filesystem" {
-        execute_filesystem_operation(task, hook_registry, agent_name, event_tx).await
     } else {
         Ok(format!(
             r#"📋 Loaded skill "{}".
@@ -1034,71 +1006,6 @@ async fn execute_web_fetch(task: &str) -> std::result::Result<String, String> {
     Ok(result)
 }
 
-/// Execute a filesystem operation by parsing the JSON task and running it.
-async fn execute_filesystem_operation(
-    task: &str,
-    hook_registry: &HookRegistry,
-    agent_name: &str,
-    event_tx: &mpsc::Sender<EngineEvent>,
-) -> std::result::Result<String, String> {
-    let req = crate::filesystem::parse_request(task)?;
-
-    // Fire BeforeFsWrite hook for write operations (Write, Edit, Delete)
-    let is_write = crate::filesystem::is_write_op(&req.op);
-    if is_write {
-        let ctx = HookContext {
-            tool_name: Some("filesystem".into()),
-            file_path: Some(req.path.to_string_lossy().to_string()),
-            agent_name: Some(agent_name.to_string()),
-            ..Default::default()
-        };
-        let hook_results = hook_registry.run(HookPoint::BeforeFsWrite, &ctx).await;
-        for r in &hook_results {
-            let _ = event_tx
-                .send(EngineEvent::HookExecuted {
-                    point: format!("{:?}", HookPoint::BeforeFsWrite),
-                    command: r.command.clone(),
-                    success: r.exit_code == Some(0),
-                    output: if r.stdout.is_empty() {
-                        r.stderr.clone()
-                    } else {
-                        r.stdout.clone()
-                    },
-                })
-                .await;
-        }
-    }
-
-    let result = crate::filesystem::execute(req).await;
-
-    // Fire AfterFsWrite hook on success for write operations
-    if is_write && result.is_ok() {
-        let ctx = HookContext {
-            tool_name: Some("filesystem".into()),
-            file_path: Some(String::new()),
-            agent_name: Some(agent_name.to_string()),
-            ..Default::default()
-        };
-        let hook_results = hook_registry.run(HookPoint::AfterFsWrite, &ctx).await;
-        for r in &hook_results {
-            let _ = event_tx
-                .send(EngineEvent::HookExecuted {
-                    point: format!("{:?}", HookPoint::AfterFsWrite),
-                    command: r.command.clone(),
-                    success: r.exit_code == Some(0),
-                    output: if r.stdout.is_empty() {
-                        r.stderr.clone()
-                    } else {
-                        r.stdout.clone()
-                    },
-                })
-                .await;
-        }
-    }
-
-    result
-}
-
 /// Convert an `AgentConfig` to a `ToolDefinition` so the LLM can invoke a subagent.
 pub(crate) fn subagent_config_to_tool_definition(config: &AgentConfig) -> ToolDefinition {
     let input_schema = serde_json::json!({
@@ -1261,12 +1168,16 @@ pub(crate) fn plan_mode_blocked(
     }
     let is_write = match tool_name {
         "apply_patch" => true,
-        "filesystem" => {
-            let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
-            let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
-            crate::filesystem::parse_request(task)
-                .map(|r| crate::filesystem::is_write_op(&r.op))
-                .unwrap_or(false)
+        "fs" => {
+            // Check the op field to distinguish read/list from write ops.
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(arguments) {
+                matches!(
+                    v.get("op").and_then(|o| o.as_str()),
+                    Some("write" | "insert" | "replace" | "delete")
+                )
+            } else {
+                false
+            }
         }
         n if n.contains("write")
             || n.contains("create")
@@ -1818,10 +1729,12 @@ pub(crate) async fn spawn_subagent_and_delegate(
 
                     // Emit token usage if available
                     if let Some(ref usage) = response.usage {
-                        let cost = (usage.prompt_tokens as f64
-                            * provider.input_price_per_million()
-                            + usage.completion_tokens as f64 * provider.output_price_per_million())
-                            / 1_000_000.0;
+                        let cost = usage.cost.unwrap_or_else(|| {
+                            (usage.prompt_tokens as f64 * provider.input_price_per_million()
+                                + usage.completion_tokens as f64
+                                    * provider.output_price_per_million())
+                                / 1_000_000.0
+                        });
                         let _ = event_tx
                             .send(EngineEvent::TokenUsage {
                                 agent_id: agent_id.clone(),
@@ -2229,27 +2142,21 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_mode_blocks_filesystem_write() {
+    fn test_plan_mode_blocks_fs_write() {
         let blocked = plan_mode_blocked(
             &AgentMode::Plan,
-            "filesystem",
-            r#"{"task":"{\"op\":\"write\",\"path\":\"a.txt\",\"content\":\"x\"}"}"#,
+            "fs",
+            r#"{"op":"write","path":"a.txt","content":"x"}"#,
         );
         assert!(blocked.is_some());
     }
 
     #[test]
     fn test_plan_mode_allows_reads() {
-        assert!(plan_mode_blocked(&AgentMode::Plan, "read", "{}").is_none());
-        assert!(plan_mode_blocked(&AgentMode::Plan, "grep", "{}").is_none());
         assert!(
-            plan_mode_blocked(
-                &AgentMode::Plan,
-                "filesystem",
-                r#"{"task":"{\"op\":\"read\",\"path\":\"a.txt\"}"}"#,
-            )
-            .is_none()
+            plan_mode_blocked(&AgentMode::Plan, "fs", r#"{"op":"read","path":"a.txt"}"#).is_none()
         );
+        assert!(plan_mode_blocked(&AgentMode::Plan, "search", "{}").is_none());
     }
 
     #[test]

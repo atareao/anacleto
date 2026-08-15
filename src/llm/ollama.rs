@@ -182,6 +182,7 @@ impl LlmProvider for OllamaProvider {
                 prompt_tokens: data.prompt_eval_count.unwrap_or(0),
                 completion_tokens: data.eval_count.unwrap_or(0),
                 total_tokens: data.prompt_eval_count.unwrap_or(0) + data.eval_count.unwrap_or(0),
+                cost: None,
             }),
             thinking: None,
         })
@@ -256,6 +257,7 @@ impl LlmProvider for OllamaProvider {
                                             completion_tokens: data.eval_count.unwrap_or(0),
                                             total_tokens: data.prompt_eval_count.unwrap_or(0)
                                                 + data.eval_count.unwrap_or(0),
+                                            cost: None,
                                         })))
                                         .await;
                                 }

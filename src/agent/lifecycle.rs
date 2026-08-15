@@ -31,20 +31,15 @@ use crate::llm::types::{
 use crate::mcp::client::McpRegistry;
 use crate::plugin::PluginRegistry;
 use crate::skill::registry::SharedSkillRegistry;
-use crate::tools::edit::{
-    delete_lines_tool_definition, execute_delete_lines_tool, execute_insert_lines_tool,
-    execute_replace_lines_tool, insert_lines_tool_definition, replace_lines_tool_definition,
-};
 use crate::tools::format::{execute_format_document_tool, format_document_tool_definition};
-use crate::tools::glob::{execute_glob_tool, glob_tool_definition};
-use crate::tools::grep::{execute_grep_tool, grep_tool_definition};
+use crate::tools::fs::{execute_fs_tool, fs_tool_definition};
 use crate::tools::lsp::{execute_lsp_query_tool, lsp_query_tool_definition};
 use crate::tools::mcp::{
     execute_mcp_list_resource_templates_tool, execute_mcp_list_resources_tool,
     execute_mcp_read_resource_tool, mcp_list_resource_templates_tool_definition,
     mcp_list_resources_tool_definition, mcp_read_resource_tool_definition,
 };
-use crate::tools::read::{execute_read_tool, read_tool_definition};
+use crate::tools::search::{execute_search_tool, search_tool_definition};
 use crate::tools::search_symbol::{execute_search_symbol_tool, search_symbol_tool_definition};
 use crate::tools::web::{
     execute_webfetch_tool, execute_websearch_tool, webfetch_tool_definition,
@@ -539,11 +534,13 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                             tool_calls.push(tc);
                                         }
                                         Ok(LlmStreamChunk::Done(usage)) => {
-                                            let cost = (usage.prompt_tokens as f64
-                                                * provider.input_price_per_million()
-                                                + usage.completion_tokens as f64
-                                                    * provider.output_price_per_million())
-                                                / 1_000_000.0;
+                                            let cost = usage.cost.unwrap_or_else(|| {
+                                                (usage.prompt_tokens as f64
+                                                    * provider.input_price_per_million()
+                                                    + usage.completion_tokens as f64
+                                                        * provider.output_price_per_million())
+                                                    / 1_000_000.0
+                                            });
                                             let _ = event_tx
                                                 .send(EngineEvent::TokenUsage {
                                                     agent_id: agent_id.clone(),
@@ -1011,11 +1008,11 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                                     .await;
                                             }
                                             apply_result
-                                        } else if tc.function.name == "read" {
-                                            let show = should_emit_tool(ts.as_ref(), "read");
+                                        } else if tc.function.name == "fs" {
+                                            let show = should_emit_tool(ts.as_ref(), "fs");
                                             let task_preview = resolve_tool_preview(
                                                 ts.as_ref(),
-                                                "read",
+                                                "fs",
                                                 &tc.function.arguments,
                                             );
                                             if show {
@@ -1023,23 +1020,20 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                                     .send(EngineEvent::ToolExecution {
                                                         agent_id: agent_id.clone(),
                                                         agent_name: agent_name.clone(),
-                                                        tool_name: "read".to_string(),
+                                                        tool_name: "fs".to_string(),
                                                         task: task_preview,
                                                     })
                                                     .await;
                                             }
-                                            let result = execute_read_tool(
-                                                workspace,
-                                                agent_permissions,
-                                                &tc,
-                                            )
-                                            .await;
+                                            let result =
+                                                execute_fs_tool(workspace, agent_permissions, &tc)
+                                                    .await;
                                             if show {
                                                 let _ = event_tx
                                                     .send(EngineEvent::ToolResult {
                                                         agent_id: agent_id.clone(),
                                                         agent_name: agent_name.clone(),
-                                                        tool_name: "read".to_string(),
+                                                        tool_name: "fs".to_string(),
                                                         success: result.is_ok(),
                                                         summary: match &result {
                                                             Ok(s) => truncate_output(s, 5000),
@@ -1049,73 +1043,35 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                                     .await;
                                             }
                                             result.unwrap_or_else(|e| e)
-                                        } else if tc.function.name == "grep" {
-                                            let show_grep = should_emit_tool(ts.as_ref(), "grep");
+                                        } else if tc.function.name == "search" {
+                                            let show = should_emit_tool(ts.as_ref(), "search");
                                             let task_preview = resolve_tool_preview(
                                                 ts.as_ref(),
-                                                "grep",
+                                                "search",
                                                 &tc.function.arguments,
                                             );
-                                            if show_grep {
+                                            if show {
                                                 let _ = event_tx
                                                     .send(EngineEvent::ToolExecution {
                                                         agent_id: agent_id.clone(),
                                                         agent_name: agent_name.clone(),
-                                                        tool_name: "grep".to_string(),
+                                                        tool_name: "search".to_string(),
                                                         task: task_preview,
                                                     })
                                                     .await;
                                             }
-                                            let result = execute_grep_tool(
+                                            let result = execute_search_tool(
                                                 workspace,
                                                 agent_permissions,
                                                 &tc,
                                             )
                                             .await;
-                                            if show_grep {
+                                            if show {
                                                 let _ = event_tx
                                                     .send(EngineEvent::ToolResult {
                                                         agent_id: agent_id.clone(),
                                                         agent_name: agent_name.clone(),
-                                                        tool_name: "grep".to_string(),
-                                                        success: result.is_ok(),
-                                                        summary: match &result {
-                                                            Ok(s) => truncate_output(s, 5000),
-                                                            Err(e) => e.clone(),
-                                                        },
-                                                    })
-                                                    .await;
-                                            }
-                                            result.unwrap_or_else(|e| e)
-                                        } else if tc.function.name == "glob" {
-                                            let show_glob = should_emit_tool(ts.as_ref(), "glob");
-                                            let task_preview = resolve_tool_preview(
-                                                ts.as_ref(),
-                                                "glob",
-                                                &tc.function.arguments,
-                                            );
-                                            if show_glob {
-                                                let _ = event_tx
-                                                    .send(EngineEvent::ToolExecution {
-                                                        agent_id: agent_id.clone(),
-                                                        agent_name: agent_name.clone(),
-                                                        tool_name: "glob".to_string(),
-                                                        task: task_preview,
-                                                    })
-                                                    .await;
-                                            }
-                                            let result = execute_glob_tool(
-                                                workspace,
-                                                agent_permissions,
-                                                &tc,
-                                            )
-                                            .await;
-                                            if show_glob {
-                                                let _ = event_tx
-                                                    .send(EngineEvent::ToolResult {
-                                                        agent_id: agent_id.clone(),
-                                                        agent_name: agent_name.clone(),
-                                                        tool_name: "glob".to_string(),
+                                                        tool_name: "search".to_string(),
                                                         success: result.is_ok(),
                                                         summary: match &result {
                                                             Ok(s) => truncate_output(s, 5000),
@@ -1470,123 +1426,6 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
                                                         agent_id: agent_id.clone(),
                                                         agent_name: agent_name.clone(),
                                                         tool_name: "lsp_query".to_string(),
-                                                        success: result.is_ok(),
-                                                        summary: match &result {
-                                                            Ok(s) => truncate_output(s, 5000),
-                                                            Err(e) => e.clone(),
-                                                        },
-                                                    })
-                                                    .await;
-                                            }
-                                            result.unwrap_or_else(|e| e)
-                                        } else if tc.function.name == "insert_lines" {
-                                            let show =
-                                                should_emit_tool(ts.as_ref(), "insert_lines");
-                                            let task_preview = resolve_tool_preview(
-                                                ts.as_ref(),
-                                                "insert_lines",
-                                                &tc.function.arguments,
-                                            );
-                                            if show {
-                                                let _ = event_tx
-                                                    .send(EngineEvent::ToolExecution {
-                                                        agent_id: agent_id.clone(),
-                                                        agent_name: agent_name.clone(),
-                                                        tool_name: "insert_lines".to_string(),
-                                                        task: task_preview,
-                                                    })
-                                                    .await;
-                                            }
-                                            let result = execute_insert_lines_tool(
-                                                workspace,
-                                                agent_permissions,
-                                                &tc,
-                                            )
-                                            .await;
-                                            if show {
-                                                let _ = event_tx
-                                                    .send(EngineEvent::ToolResult {
-                                                        agent_id: agent_id.clone(),
-                                                        agent_name: agent_name.clone(),
-                                                        tool_name: "insert_lines".to_string(),
-                                                        success: result.is_ok(),
-                                                        summary: match &result {
-                                                            Ok(s) => truncate_output(s, 5000),
-                                                            Err(e) => e.clone(),
-                                                        },
-                                                    })
-                                                    .await;
-                                            }
-                                            result.unwrap_or_else(|e| e)
-                                        } else if tc.function.name == "replace_lines" {
-                                            let show =
-                                                should_emit_tool(ts.as_ref(), "replace_lines");
-                                            let task_preview = resolve_tool_preview(
-                                                ts.as_ref(),
-                                                "replace_lines",
-                                                &tc.function.arguments,
-                                            );
-                                            if show {
-                                                let _ = event_tx
-                                                    .send(EngineEvent::ToolExecution {
-                                                        agent_id: agent_id.clone(),
-                                                        agent_name: agent_name.clone(),
-                                                        tool_name: "replace_lines".to_string(),
-                                                        task: task_preview,
-                                                    })
-                                                    .await;
-                                            }
-                                            let result = execute_replace_lines_tool(
-                                                workspace,
-                                                agent_permissions,
-                                                &tc,
-                                            )
-                                            .await;
-                                            if show {
-                                                let _ = event_tx
-                                                    .send(EngineEvent::ToolResult {
-                                                        agent_id: agent_id.clone(),
-                                                        agent_name: agent_name.clone(),
-                                                        tool_name: "replace_lines".to_string(),
-                                                        success: result.is_ok(),
-                                                        summary: match &result {
-                                                            Ok(s) => truncate_output(s, 5000),
-                                                            Err(e) => e.clone(),
-                                                        },
-                                                    })
-                                                    .await;
-                                            }
-                                            result.unwrap_or_else(|e| e)
-                                        } else if tc.function.name == "delete_lines" {
-                                            let show =
-                                                should_emit_tool(ts.as_ref(), "delete_lines");
-                                            let task_preview = resolve_tool_preview(
-                                                ts.as_ref(),
-                                                "delete_lines",
-                                                &tc.function.arguments,
-                                            );
-                                            if show {
-                                                let _ = event_tx
-                                                    .send(EngineEvent::ToolExecution {
-                                                        agent_id: agent_id.clone(),
-                                                        agent_name: agent_name.clone(),
-                                                        tool_name: "delete_lines".to_string(),
-                                                        task: task_preview,
-                                                    })
-                                                    .await;
-                                            }
-                                            let result = execute_delete_lines_tool(
-                                                workspace,
-                                                agent_permissions,
-                                                &tc,
-                                            )
-                                            .await;
-                                            if show {
-                                                let _ = event_tx
-                                                    .send(EngineEvent::ToolResult {
-                                                        agent_id: agent_id.clone(),
-                                                        agent_name: agent_name.clone(),
-                                                        tool_name: "delete_lines".to_string(),
                                                         success: result.is_ok(),
                                                         summary: match &result {
                                                             Ok(s) => truncate_output(s, 5000),
@@ -2042,18 +1881,14 @@ pub async fn spawn_agent(config: SpawnAgentConfig) -> AgentHandle {
 fn extract_task_preview(tool_name: &str, args: &str) -> String {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
     let preview: Option<String> = match tool_name {
-        "read" => v
-            .get("filePath")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        "grep" => v
-            .get("pattern")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        "glob" => v
-            .get("pattern")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
+        "fs" => v.get("op").and_then(|v| v.as_str()).map(|op| {
+            let path = v.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            format!("{op} {path}")
+        }),
+        "search" => v.get("mode").and_then(|v| v.as_str()).map(|mode| {
+            let pattern = v.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            format!("{mode}: {pattern}")
+        }),
         "webfetch" => v.get("url").and_then(|v| v.as_str()).map(|s| s.to_string()),
         "websearch" => v
             .get("query")
@@ -2085,20 +1920,6 @@ fn extract_task_preview(tool_name: &str, args: &str) -> String {
             .or_else(|| v.get("description"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        "insert_lines" => v.get("path").and_then(|v| v.as_str()).map(|path| {
-            let after = v.get("after_line").and_then(|v| v.as_u64()).unwrap_or(0);
-            format!("insert after line {after} in {path}")
-        }),
-        "replace_lines" => v.get("path").and_then(|v| v.as_str()).map(|path| {
-            let start = v.get("start_line").and_then(|v| v.as_u64()).unwrap_or(0);
-            let end = v.get("end_line").and_then(|v| v.as_u64()).unwrap_or(0);
-            format!("replace lines {start}-{end} in {path}")
-        }),
-        "delete_lines" => v.get("path").and_then(|v| v.as_str()).map(|path| {
-            let start = v.get("start_line").and_then(|v| v.as_u64()).unwrap_or(0);
-            let end = v.get("end_line").and_then(|v| v.as_u64()).unwrap_or(0);
-            format!("delete lines {start}-{end} in {path}")
-        }),
         "format_document" => v
             .get("path")
             .and_then(|v| v.as_str())
@@ -2130,18 +1951,14 @@ pub fn builtin_tool_definitions() -> HashMap<String, ToolDefinition> {
         todo_tool_definition(),
         question_tool_definition(),
         apply_patch_tool_definition(),
-        read_tool_definition(),
-        grep_tool_definition(),
-        glob_tool_definition(),
+        fs_tool_definition(),
+        search_tool_definition(),
         webfetch_tool_definition(),
         websearch_tool_definition(),
         mcp_list_resources_tool_definition(),
         mcp_read_resource_tool_definition(),
         mcp_list_resource_templates_tool_definition(),
         lsp_query_tool_definition(),
-        insert_lines_tool_definition(),
-        replace_lines_tool_definition(),
-        delete_lines_tool_definition(),
         format_document_tool_definition(),
         search_symbol_tool_definition(),
         task_tool_definition(),
@@ -2187,14 +2004,13 @@ mod tests {
     use super::*;
     use crate::agent::types::AgentRole;
     use crate::skill::types::Skill;
-    use crate::tools::glob::glob_tool_definition;
-    use crate::tools::grep::grep_tool_definition;
+    use crate::tools::fs::fs_tool_definition;
     use crate::tools::lsp::lsp_query_tool_definition;
     use crate::tools::mcp::{
         mcp_list_resource_templates_tool_definition, mcp_list_resources_tool_definition,
         mcp_read_resource_tool_definition,
     };
-    use crate::tools::read::read_tool_definition;
+    use crate::tools::search::search_tool_definition;
     use crate::tools::web::{webfetch_tool_definition, websearch_tool_definition};
 
     #[test]
@@ -2230,9 +2046,8 @@ mod tests {
             todo_tool_definition(),
             question_tool_definition(),
             apply_patch_tool_definition(),
-            read_tool_definition(),
-            grep_tool_definition(),
-            glob_tool_definition(),
+            fs_tool_definition(),
+            search_tool_definition(),
             webfetch_tool_definition(),
             websearch_tool_definition(),
             mcp_list_resources_tool_definition(),

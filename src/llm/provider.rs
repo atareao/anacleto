@@ -372,6 +372,7 @@ impl LlmProvider for OpenRouterProvider {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
+                cost: None,
             }),
             thinking: choice.message.reasoning,
         })
@@ -538,6 +539,7 @@ impl LlmProvider for OpenRouterProvider {
                                             prompt_tokens: u.prompt_tokens,
                                             completion_tokens: u.completion_tokens,
                                             total_tokens: u.total_tokens,
+                                            cost: None,
                                         })))
                                         .await;
                                 }
@@ -563,6 +565,7 @@ impl LlmProvider for OpenRouterProvider {
                         prompt_tokens: 0,
                         completion_tokens: 0,
                         total_tokens: 0,
+                        cost: None,
                     })))
                     .await;
             }

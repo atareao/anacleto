@@ -9,6 +9,7 @@ use ratatui_textarea::CursorMove;
 
 use super::app::App;
 use super::render::shift_char;
+use super::types::Focus;
 use crate::engine::orchestrator::EngineCommand;
 use crate::tui::keymap::Action;
 
@@ -395,5 +396,18 @@ impl App {
     pub(crate) fn reset_tab_state(&mut self) {
         self.tab_matches.clear();
         self.tab_index = 0;
+    }
+
+    /// Handle a paste event from bracketed paste mode.
+    ///
+    /// Inserts the pasted text at the cursor position in the textarea.
+    /// Only processes the paste when the Input window has focus.
+    pub(crate) fn handle_paste(&mut self, text: String) {
+        if self.focus != Focus::Input {
+            return;
+        }
+        self.reset_tab_state();
+        self.textarea.insert_str(&text);
+        self.update_command_palette();
     }
 }
