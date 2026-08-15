@@ -530,6 +530,9 @@ impl App {
                 .push(crate::tui::render::trim_block_blank_lines(&msg));
         }
         self.enforce_message_limit();
+        if let Some(last) = self.messages.last() {
+            self.log_msg(last);
+        }
     }
 
     /// Cap the in-memory message buffer at `MAX_MESSAGES` entries, dropping
@@ -566,6 +569,9 @@ impl App {
         self.message_timestamps.push(Utc::now());
         self.messages.push(block);
         self.enforce_message_limit();
+        if let Some(last) = self.messages.last() {
+            self.log_msg(last);
+        }
     }
 
     /// Commit any in-progress streaming response to the message log so that a
@@ -659,6 +665,35 @@ impl App {
                 let _ = write!(file, "{}", text);
             }
         }
+    }
+
+    /// Log a message to the session log file with a timestamp heading.
+    /// Strips section markers like [normal], [/normal], [thinking], etc.
+    /// Does nothing if logging is not enabled or no log path is set.
+    /// Errors are silently ignored (logging should never crash the app).
+    pub(crate) fn log_msg(&self, msg: &str) {
+        if !self.log_enabled {
+            return;
+        }
+        let Some(ref path) = self.log_path else {
+            return;
+        };
+        use std::io::Write;
+        let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(path) else {
+            return;
+        };
+        let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+        let mut cleaned = msg.to_string();
+        for marker in &[
+            "[normal]", "[/normal]",
+            "[thinking]", "[/thinking]",
+            "[tool]", "[/tool]",
+            "[user]", "[/user]",
+            "[command]", "[/command]",
+        ] {
+            cleaned = cleaned.replace(marker, "");
+        }
+        let _ = writeln!(file, "## {timestamp}\n\n{cleaned}\n");
     }
 
     /// Update the list of matching message indices from the current search query.

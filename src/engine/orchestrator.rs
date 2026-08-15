@@ -791,21 +791,27 @@ impl Engine {
                                     .ok();
                             }
                             EngineCommand::StopAgent => {
-                                // Set the cancel flag directly (bypasses mpsc channel, immediate effect)
-                                if let Some(flag) = self.cancel_flags.get(&self.active_agent) {
+                                // Cancel ALL agents (not just the active one), so subagents
+                                // stop working and their spinners disappear from the TUI.
+                                for (name, flag) in &self.cancel_flags {
                                     flag.store(true, Ordering::Relaxed);
+                                    // Also send Cancel through the channel for agents that
+                                    // are in the message loop waiting for the next message.
+                                    if let Some(id) = self.agents.get(name)
+                                        && let Some(handle) = self.handles.get(id) {
+                                            let _ = handle.sender
+                                                .try_send(AgentMessage::Cancel);
+                                    }
+                                    // Emit Idle status so TUI knows immediately
+                                    let _ = self
+                                        .event_tx
+                                        .send(EngineEvent::AgentStatusChanged {
+                                            agent_id: AgentId::new(),
+                                            agent_name: name.clone(),
+                                            status: AgentStatus::Idle,
+                                        })
+                                        .await;
                                 }
-                                // Also send through channel for when agent IS in the message loop
-                                let _ = self.send_to_active(AgentMessage::Cancel).await;
-                                // Emit Idle status so TUI knows immediately
-                                let _ = self
-                                    .event_tx
-                                    .send(EngineEvent::AgentStatusChanged {
-                                        agent_id: AgentId::new(),
-                                        agent_name: self.active_agent.clone(),
-                                        status: AgentStatus::Idle,
-                                    })
-                                    .await;
                             }
                             EngineCommand::Shutdown => unreachable!(),
                             EngineCommand::UpdateAgentConfig {
@@ -859,6 +865,8 @@ impl Engine {
                 }
             }
         }
+        // Run shutdown to cancel all agent tasks, disconnect MCPs, and close DB.
+        self.shutdown().await?;
         Ok(())
     }
 
@@ -1093,6 +1101,27 @@ impl Engine {
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
+        // Cancel ALL running agent tasks first, so they stop processing
+        // immediately instead of continuing in the background after shutdown.
+        for (name, flag) in &self.cancel_flags {
+            flag.store(true, Ordering::Relaxed);
+            if let Some(id) = self.agents.get(name)
+                && let Some(handle) = self.handles.remove(id) {
+                    let _ = handle.sender.try_send(AgentMessage::Shutdown);
+            }
+            let _ = self
+                .event_tx
+                .send(EngineEvent::AgentStatusChanged {
+                    agent_id: AgentId::new(),
+                    agent_name: name.clone(),
+                    status: AgentStatus::Completed,
+                })
+                .await;
+        }
+        self.agents.clear();
+        self.handles.clear();
+        self.cancel_flags.clear();
+
         // Fire OnShutdown hooks and emit events
         let hook_results = self
             .hook_registry

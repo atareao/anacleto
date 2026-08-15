@@ -3,6 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
+use crate::agent::types::AgentStatus;
 use crate::engine::orchestrator::EngineCommand;
 use crate::tui::app::App;
 use crate::tui::keymap::Action;
@@ -610,6 +611,11 @@ impl App {
             if self.keymap.matches(key_event, Action::EmergencyStop) {
                 // Send stop command to engine
                 let _ = self.cmd_tx.try_send(EngineCommand::StopAgent);
+                // Mark ALL agents as Idle immediately so spinners stop right away,
+                // even before the engine processes the StopAgent command.
+                for agent in self.agents.iter_mut() {
+                    agent.status = AgentStatus::Idle;
+                }
                 // Push a visual confirmation message
                 self.push_msg("⏹ Stopped");
                 // Clear any in-progress streaming response
