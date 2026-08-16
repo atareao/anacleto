@@ -4,15 +4,12 @@
 //! replace, or delete a range of lines), and writes the result back. Lines are
 //! 1-based, consistent with the `read` tool.
 //!
-//! Paths are resolved relative to the workspace. Writing to a path that escapes
-//! the workspace (absolute path or `..` traversal) additionally requires the
-//! `fs.external` permission.
+//! Paths are resolved relative to the workspace. Writing outside the
+//! workspace (absolute path or `..` traversal) is not allowed by default.
 
 use std::path::{Path, PathBuf};
 
 use crate::llm::types::{ToolCall, ToolDefinition};
-use crate::permissions::checker::{check_fs_external, check_fs_write};
-use crate::permissions::types::Permissions;
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -109,8 +106,7 @@ pub fn delete_lines_tool_definition() -> ToolDefinition {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve an edit path, enforcing workspace containment unless the caller has
-/// the `fs.external` permission.
+/// Resolve an edit path, enforcing workspace containment.
 fn resolve_edit_path(
     workspace: &Path,
     path: &str,
@@ -156,7 +152,6 @@ fn write_lines(full: &Path, lines: &[String]) -> Result<(), String> {
 /// Execute an `insert_lines` tool call.
 pub async fn execute_insert_lines_tool(
     workspace: &Path,
-    permissions: &Permissions,
     tool_call: &ToolCall,
 ) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
@@ -177,11 +172,7 @@ pub async fn execute_insert_lines_tool(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "insert_lines requires 'content'".to_string())?;
 
-    // Base permission: writing files requires fs.write.
-    check_fs_write(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
-    // If the path is outside the workspace, additionally require fs.external.
-    let external_granted = check_fs_external(permissions).is_ok();
+    let external_granted = false;
     let full = resolve_edit_path(workspace, path, external_granted)?;
 
     let mut lines = read_lines(&full)?;
@@ -216,7 +207,6 @@ pub async fn execute_insert_lines_tool(
 /// Execute a `replace_lines` tool call.
 pub async fn execute_replace_lines_tool(
     workspace: &Path,
-    permissions: &Permissions,
     tool_call: &ToolCall,
 ) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
@@ -248,11 +238,7 @@ pub async fn execute_replace_lines_tool(
         ));
     }
 
-    // Base permission: writing files requires fs.write.
-    check_fs_write(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
-    // If the path is outside the workspace, additionally require fs.external.
-    let external_granted = check_fs_external(permissions).is_ok();
+    let external_granted = false;
     let full = resolve_edit_path(workspace, path, external_granted)?;
 
     let mut lines = read_lines(&full)?;
@@ -312,7 +298,6 @@ pub async fn execute_replace_lines_tool(
 /// Execute a `delete_lines` tool call.
 pub async fn execute_delete_lines_tool(
     workspace: &Path,
-    permissions: &Permissions,
     tool_call: &ToolCall,
 ) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
@@ -330,8 +315,8 @@ pub async fn execute_delete_lines_tool(
 
     let end_line = args
         .get("end_line")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| "delete_lines requires 'end_line'".to_string())? as usize;
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| "delete_lines requires 'end_line'".to_string())? as usize;
 
     if start_line > end_line {
         return Err(format!(
@@ -339,11 +324,7 @@ pub async fn execute_delete_lines_tool(
         ));
     }
 
-    // Base permission: writing files requires fs.write.
-    check_fs_write(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
-    // If the path is outside the workspace, additionally require fs.external.
-    let external_granted = check_fs_external(permissions).is_ok();
+    let external_granted = false;
     let full = resolve_edit_path(workspace, path, external_granted)?;
 
     let mut lines = read_lines(&full)?;
@@ -389,9 +370,7 @@ pub async fn execute_delete_lines_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionConfig;
     use crate::llm::types::ToolFunction;
-    use crate::permissions::types::Permissions;
 
     fn temp_workspace() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("anacleto_edit_test_{}", uuid::Uuid::new_v4()));
@@ -432,13 +411,6 @@ mod tests {
         }
     }
 
-    fn allow_all() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec![],
-        })
-    }
-
     // -----------------------------------------------------------------------
     // insert_lines tests
     // -----------------------------------------------------------------------
@@ -450,7 +422,6 @@ mod tests {
 
         let result = execute_insert_lines_tool(
             &ws,
-            &allow_all(),
             &insert_tool_call(r#"{"path":"a.txt","after_line":2,"content":"three"}"#),
         )
         .await
@@ -469,7 +440,6 @@ mod tests {
 
         let result = execute_insert_lines_tool(
             &ws,
-            &allow_all(),
             &insert_tool_call(r#"{"path":"b.txt","after_line":0,"content":"one"}"#),
         )
         .await
@@ -488,7 +458,6 @@ mod tests {
 
         let result = execute_insert_lines_tool(
             &ws,
-            &allow_all(),
             &insert_tool_call(r#"{"path":"c.txt","after_line":999,"content":"three"}"#),
         )
         .await
@@ -507,7 +476,6 @@ mod tests {
 
         let result = execute_insert_lines_tool(
             &ws,
-            &allow_all(),
             &insert_tool_call(r#"{"path":"d.txt","after_line":1,"content":""}"#),
         )
         .await
@@ -527,7 +495,6 @@ mod tests {
 
         let result = execute_insert_lines_tool(
             &ws,
-            &allow_all(),
             &insert_tool_call(r#"{"path":"e.txt","after_line":1,"content":"two\nthree"}"#),
         )
         .await
@@ -550,7 +517,6 @@ mod tests {
 
         let result = execute_replace_lines_tool(
             &ws,
-            &allow_all(),
             &replace_tool_call(
                 r#"{"path":"f.txt","start_line":2,"end_line":3,"content":"hello\nworld"}"#,
             ),
@@ -571,7 +537,6 @@ mod tests {
 
         let result = execute_replace_lines_tool(
             &ws,
-            &allow_all(),
             &replace_tool_call(r#"{"path":"g.txt","start_line":2,"end_line":2,"content":"dos"}"#),
         )
         .await
@@ -590,7 +555,6 @@ mod tests {
 
         let result = execute_replace_lines_tool(
             &ws,
-            &allow_all(),
             &replace_tool_call(r#"{"path":"h.txt","start_line":2,"end_line":2,"content":""}"#),
         )
         .await
@@ -609,7 +573,6 @@ mod tests {
 
         let result = execute_replace_lines_tool(
             &ws,
-            &allow_all(),
             &replace_tool_call(r#"{"path":"i.txt","start_line":3,"end_line":2,"content":"x"}"#),
         )
         .await;
@@ -626,7 +589,6 @@ mod tests {
 
         let result = execute_replace_lines_tool(
             &ws,
-            &allow_all(),
             &replace_tool_call(r#"{"path":"j.txt","start_line":10,"end_line":10,"content":"x"}"#),
         )
         .await;
@@ -647,7 +609,6 @@ mod tests {
 
         let result = execute_delete_lines_tool(
             &ws,
-            &allow_all(),
             &delete_tool_call(r#"{"path":"k.txt","start_line":2,"end_line":3}"#),
         )
         .await
@@ -666,7 +627,6 @@ mod tests {
 
         let result = execute_delete_lines_tool(
             &ws,
-            &allow_all(),
             &delete_tool_call(r#"{"path":"l.txt","start_line":2,"end_line":2}"#),
         )
         .await
@@ -685,7 +645,6 @@ mod tests {
 
         let result = execute_delete_lines_tool(
             &ws,
-            &allow_all(),
             &delete_tool_call(r#"{"path":"m.txt","start_line":1,"end_line":3}"#),
         )
         .await
@@ -708,7 +667,6 @@ mod tests {
         // insert_lines
         let result = execute_insert_lines_tool(
             &ws,
-            &allow_all(),
             &insert_tool_call(r#"{"path":"../secret.txt","after_line":0,"content":"x"}"#),
         )
         .await;
@@ -719,7 +677,6 @@ mod tests {
         // replace_lines
         let result = execute_replace_lines_tool(
             &ws,
-            &allow_all(),
             &replace_tool_call(
                 r#"{"path":"../secret.txt","start_line":1,"end_line":1,"content":"x"}"#,
             ),
@@ -730,7 +687,6 @@ mod tests {
         // delete_lines
         let result = execute_delete_lines_tool(
             &ws,
-            &allow_all(),
             &delete_tool_call(r#"{"path":"../secret.txt","start_line":1,"end_line":1}"#),
         )
         .await;
@@ -746,7 +702,6 @@ mod tests {
         // insert_lines
         let result = execute_insert_lines_tool(
             &ws,
-            &allow_all(),
             &insert_tool_call(r#"{"path":"nope.txt","after_line":0,"content":"x"}"#),
         )
         .await;
@@ -755,7 +710,6 @@ mod tests {
         // replace_lines
         let result = execute_replace_lines_tool(
             &ws,
-            &allow_all(),
             &replace_tool_call(r#"{"path":"nope.txt","start_line":1,"end_line":1,"content":"x"}"#),
         )
         .await;
@@ -764,7 +718,6 @@ mod tests {
         // delete_lines
         let result = execute_delete_lines_tool(
             &ws,
-            &allow_all(),
             &delete_tool_call(r#"{"path":"nope.txt","start_line":1,"end_line":1}"#),
         )
         .await;
@@ -780,10 +733,9 @@ mod tests {
             std::env::temp_dir().join(format!("anacleto_edit_outside_{}", uuid::Uuid::new_v4()));
         std::fs::write(&outside, "external data").unwrap();
 
-        // Without fs.external, an absolute external path is denied.
+        // An absolute external path is denied.
         let result = execute_insert_lines_tool(
             &ws,
-            &allow_all(),
             &insert_tool_call(&format!(
                 r#"{{"path":"{}","after_line":0,"content":"x"}}"#,
                 outside.display()
@@ -792,25 +744,6 @@ mod tests {
         .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("fs.external"));
-
-        // With fs.external granted, it is allowed.
-        let perms = Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec!["fs.write".into(), "fs.external".into()],
-        });
-        let result = execute_insert_lines_tool(
-            &ws,
-            &perms,
-            &insert_tool_call(&format!(
-                r#"{{"path":"{}","after_line":0,"content":"hello"}}"#,
-                outside.display()
-            )),
-        )
-        .await;
-        assert!(result.is_ok());
-
-        let content = std::fs::read_to_string(&outside).unwrap();
-        assert_eq!(content, "hello\nexternal data");
 
         std::fs::remove_dir_all(&ws).unwrap();
         std::fs::remove_file(&outside).unwrap();
@@ -823,7 +756,6 @@ mod tests {
 
         let result = execute_delete_lines_tool(
             &ws,
-            &allow_all(),
             &delete_tool_call(r#"{"path":"n.txt","start_line":2,"end_line":1}"#),
         )
         .await;
@@ -840,7 +772,6 @@ mod tests {
 
         let result = execute_replace_lines_tool(
             &ws,
-            &allow_all(),
             &replace_tool_call(
                 r#"{"path":"o.txt","start_line":1,"end_line":2,"content":"new line 1\nnew line 2\nnew line 3"}"#,
             ),

@@ -3,8 +3,6 @@
 //! Both require the `net.http` permission.
 
 use crate::llm::types::{ToolCall, ToolDefinition};
-use crate::permissions::checker::check_net_http;
-use crate::permissions::types::Permissions;
 
 /// Maximum number of bytes of body text returned by `webfetch`.
 const MAX_BODY_BYTES: usize = 10_000;
@@ -51,12 +49,7 @@ pub fn websearch_tool_definition() -> ToolDefinition {
 }
 
 /// Execute a `webfetch` tool call.
-pub async fn execute_webfetch_tool(
-    permissions: &Permissions,
-    tool_call: &ToolCall,
-) -> Result<String, String> {
-    check_net_http(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
+pub async fn execute_webfetch_tool(tool_call: &ToolCall) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse webfetch arguments: {e}"))?;
     let url = args
@@ -102,12 +95,7 @@ pub async fn execute_webfetch_tool(
 /// Returns the abstract/summary and top related topics for the query. No API
 /// key is required. If no instant answer is available, returns a helpful
 /// message suggesting `webfetch` with a specific URL.
-pub async fn execute_websearch_tool(
-    permissions: &Permissions,
-    tool_call: &ToolCall,
-) -> Result<String, String> {
-    check_net_http(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
+pub async fn execute_websearch_tool(tool_call: &ToolCall) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse websearch arguments: {e}"))?;
     let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
@@ -205,9 +193,7 @@ pub async fn web_search(query: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionConfig;
     use crate::llm::types::ToolFunction;
-    use crate::permissions::types::Permissions;
 
     fn tool_call(name: &str, args: &str) -> ToolCall {
         ToolCall {
@@ -220,33 +206,9 @@ mod tests {
         }
     }
 
-    fn allow_all() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec![],
-        })
-    }
-
-    fn deny_http() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec!["net.http".into()],
-            allow: vec![],
-        })
-    }
-
-    #[tokio::test]
-    async fn websearch_denied_without_net_http() {
-        let result =
-            execute_websearch_tool(&deny_http(), &tool_call("websearch", r#"{"query":"rust"}"#))
-                .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Permission denied"));
-    }
-
     #[tokio::test]
     async fn websearch_rejects_empty_query() {
-        let result =
-            execute_websearch_tool(&allow_all(), &tool_call("websearch", r#"{"query":""}"#)).await;
+        let result = execute_websearch_tool(&tool_call("websearch", r#"{"query":""}"#)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("non-empty"));
     }
@@ -254,30 +216,13 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn websearch_returns_results() {
-        let result =
-            execute_websearch_tool(&allow_all(), &tool_call("websearch", r#"{"query":"rust"}"#))
-                .await;
+        let result = execute_websearch_tool(&tool_call("websearch", r#"{"query":"rust"}"#)).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn webfetch_denied_without_net_http() {
-        let result = execute_webfetch_tool(
-            &deny_http(),
-            &tool_call("webfetch", r#"{"url":"https://example.com"}"#),
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Permission denied"));
-    }
-
-    #[tokio::test]
     async fn webfetch_rejects_invalid_url() {
-        let result = execute_webfetch_tool(
-            &allow_all(),
-            &tool_call("webfetch", r#"{"url":"not-a-url"}"#),
-        )
-        .await;
+        let result = execute_webfetch_tool(&tool_call("webfetch", r#"{"url":"not-a-url"}"#)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must start with http"));
     }

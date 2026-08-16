@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::types::{AgentRole, AgentStatus};
 use crate::config::Config;
-use crate::config::types::{CustomCommand, ToolSettings};
+use crate::config::types::CustomCommand;
 use crate::db::models::SessionSummary;
 use crate::engine::orchestrator::{
     EngineCommand, EngineEvent, McpStatus, SkillInfo, StatusInfo, TimelineEntry,
@@ -24,8 +24,8 @@ use crate::tui::render::render;
 use crate::tui::theme::Theme;
 use crate::tui::toast::ToastQueue;
 use crate::tui::types::{
-    AgentInfo, ApprovalRequest, BUILTIN_COMMANDS, CollapsedSection, EditDialogState, Focus,
-    InitFlow, MAX_MESSAGE_LENGTH, MAX_MESSAGES, QuestionState, SearchState,
+    AgentInfo, BUILTIN_COMMANDS, CollapsedSection, EditDialogState, Focus, InitFlow,
+    MAX_MESSAGE_LENGTH, MAX_MESSAGES, QuestionState, SearchState,
 };
 use crate::tui::which_key::WhichKeyPopup;
 
@@ -89,10 +89,6 @@ pub struct App {
     /// can add any existing agent as a subagent, even if no root agent
     /// currently references it.
     pub(crate) all_agent_names: Vec<String>,
-
-    // ── Human-in-the-loop approval ────────────────────────────────────
-    /// Pending approval request (None if no pending request).
-    pub(crate) pending_approval: Option<ApprovalRequest>,
 
     // ── Inline question dialog (`/question` tool) ─────────────────────
     /// Pending question from the agent (None if no pending question).
@@ -258,8 +254,6 @@ pub struct App {
     /// The full rendered chat lines from the last frame, used by mouse-click
     /// handling to map a click row back to an absolute rendered line.
     pub(crate) rendered_chat_lines: Vec<ratatui::text::Line<'static>>,
-    /// Tool display settings (colors, templates) for the active agent.
-    pub(crate) tool_settings: HashMap<String, ToolSettings>,
     /// Set of collapsed section IDs (ephemeral, per-session).
     pub(crate) collapsed_sections: HashSet<String>,
     /// Per-frame mapping: line index in rendered_chat_lines → section_id.
@@ -384,7 +378,6 @@ impl App {
             active_agent: String::new(),
             configured_subagents,
             all_agent_names,
-            pending_approval: None,
             pending_question: None,
             log_enabled: false,
             log_path: None,
@@ -469,7 +462,6 @@ impl App {
             code_block_positions: Vec::new(),
             pending_tool_lines: Vec::new(),
             rendered_chat_lines: Vec::new(),
-            tool_settings: HashMap::new(),
             collapsed_sections: HashSet::new(),
             section_line_map: Vec::new(),
             section_info: Vec::new(),
@@ -1218,7 +1210,6 @@ mod tests {
             parent_id: None,
             subagent_count: 0,
             agent_type: None,
-            mode: None,
         }
     }
 

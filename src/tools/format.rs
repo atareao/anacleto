@@ -6,8 +6,6 @@
 
 use crate::llm::types::{ToolCall, ToolDefinition};
 use crate::lsp::{LspClient, default_server_for_extension, path_to_uri};
-use crate::permissions::checker::check_command_run;
-use crate::permissions::types::Permissions;
 
 /// Supported extensions for `format_document`.
 const SUPPORTED_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "py", "go"];
@@ -35,12 +33,7 @@ pub fn format_document_tool_definition() -> ToolDefinition {
 }
 
 /// Execute a `format_document` tool call.
-pub async fn execute_format_document_tool(
-    permissions: &Permissions,
-    tool_call: &ToolCall,
-) -> Result<String, String> {
-    check_command_run(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
+pub async fn execute_format_document_tool(tool_call: &ToolCall) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse format_document arguments: {e}"))?;
 
@@ -110,9 +103,7 @@ pub async fn execute_format_document_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionConfig;
     use crate::llm::types::ToolFunction;
-    use crate::permissions::types::Permissions;
 
     fn tool_call(args: &str) -> ToolCall {
         ToolCall {
@@ -123,20 +114,6 @@ mod tests {
                 arguments: args.into(),
             },
         }
-    }
-
-    fn deny_command() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec!["command.run".into()],
-            allow: vec![],
-        })
-    }
-
-    fn allow_all() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec![],
-        })
     }
 
     #[test]
@@ -157,9 +134,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_format_document_unknown_extension() {
-        let result =
-            execute_format_document_tool(&allow_all(), &tool_call(r#"{"path":"/tmp/a.xyz"}"#))
-                .await;
+        let result = execute_format_document_tool(&tool_call(r#"{"path":"/tmp/a.xyz"}"#)).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -175,28 +150,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_format_document_denied_without_command_run() {
-        let result =
-            execute_format_document_tool(&deny_command(), &tool_call(r#"{"path":"/tmp/a.rs"}"#))
-                .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Permission denied"));
-    }
-
-    #[tokio::test]
     async fn test_format_document_missing_path_errors() {
-        let result = execute_format_document_tool(&allow_all(), &tool_call(r#"{}"#)).await;
+        let result = execute_format_document_tool(&tool_call(r#"{}"#)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("requires 'path'"));
     }
 
     #[tokio::test]
     async fn test_format_document_file_not_found_errors() {
-        let result = execute_format_document_tool(
-            &allow_all(),
-            &tool_call(r#"{"path":"/tmp/does_not_exist_12345.rs"}"#),
-        )
-        .await;
+        let result =
+            execute_format_document_tool(&tool_call(r#"{"path":"/tmp/does_not_exist_12345.rs"}"#))
+                .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("File does not exist"));
     }

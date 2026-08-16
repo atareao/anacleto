@@ -66,56 +66,6 @@ impl App {
             return;
         }
 
-        // If approval dialog is active, Y/N are handled specially
-        if self.pending_approval.is_some() {
-            match key {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if let Some(ref approval) = self.pending_approval.take() {
-                        let id = approval.id.clone();
-                        let _ = self
-                            .cmd_tx
-                            .try_send(EngineCommand::ApprovalResponse { id, approved: true });
-                        self.push_msg(format!("[Aprobación] ✓ Aprobado: {}", approval.operation));
-                        self.toasts.push("Aprobado", ToastKind::Success);
-                    }
-                }
-                KeyCode::Char('n') | KeyCode::Char('N') => {
-                    if let Some(ref approval) = self.pending_approval.take() {
-                        let id = approval.id.clone();
-                        let _ = self.cmd_tx.try_send(EngineCommand::ApprovalResponse {
-                            id,
-                            approved: false,
-                        });
-                        self.push_msg(format!("[Aprobación] ✗ Denegado: {}", approval.operation));
-                        self.toasts.push("Denegado", ToastKind::Info);
-                    }
-                }
-                _ if self.keymap.matches(key_event, Action::Approve) => {
-                    if let Some(ref approval) = self.pending_approval.take() {
-                        let id = approval.id.clone();
-                        let _ = self
-                            .cmd_tx
-                            .try_send(EngineCommand::ApprovalResponse { id, approved: true });
-                        self.push_msg(format!("[Aprobación] ✓ Aprobado: {}", approval.operation));
-                        self.toasts.push("Aprobado", ToastKind::Success);
-                    }
-                }
-                _ if self.keymap.matches(key_event, Action::Deny) => {
-                    if let Some(ref approval) = self.pending_approval.take() {
-                        let id = approval.id.clone();
-                        let _ = self.cmd_tx.try_send(EngineCommand::ApprovalResponse {
-                            id,
-                            approved: false,
-                        });
-                        self.push_msg(format!("[Aprobación] ✗ Denegado: {}", approval.operation));
-                        self.toasts.push("Denegado", ToastKind::Info);
-                    }
-                }
-                _ => {}
-            }
-            return;
-        }
-
         // Inline question dialog (`/question` tool): capture answer.
         if self.pending_question.is_some() {
             match key {
@@ -968,7 +918,6 @@ mod tests {
             parent_id: None,
             subagent_count: 0,
             agent_type: None,
-            mode: None,
         });
         app.agent_panel_index = 0;
 
@@ -1002,7 +951,6 @@ mod tests {
             parent_id: None,
             subagent_count: 0,
             agent_type: Some("reviewer".to_string()),
-            mode: None,
         });
 
         app.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL);

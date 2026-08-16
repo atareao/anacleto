@@ -36,42 +36,6 @@ async fn test_agent_id_concurrent_generation() {
 // Permission checker concurrency: 50 tasks call check_* functions
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn test_permissions_concurrent_access() {
-    use anacleto::config::PermissionConfig;
-    use anacleto::permissions::{checker, types::Permissions};
-
-    let config = PermissionConfig {
-        deny: vec!["command.run".into(), "net.http".into()],
-        allow: vec![],
-    };
-    let perms = Arc::new(Permissions::from_config(&config));
-
-    let mut handles = Vec::with_capacity(50);
-    for i in 0..50 {
-        let perms = Arc::clone(&perms);
-        handles.push(tokio::spawn(async move {
-            match i % 5 {
-                0 => checker::check_fs_read(&perms),
-                1 => checker::check_fs_write(&perms),
-                2 => checker::check_command_run(&perms),
-                3 => checker::check_net_http(&perms),
-                _ => checker::check_env_read(&perms),
-            }
-        }));
-    }
-
-    let results = join_all(handles).await;
-    for (i, result) in results.iter().enumerate() {
-        let r = result.as_ref().unwrap();
-        match i % 5 {
-            2 => assert!(r.is_err(), "command.run should be denied"),
-            3 => assert!(r.is_err(), "net.http should be denied"),
-            _ => assert!(r.is_ok(), "permission should be allowed"),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Database concurrency: 10 tasks with Semaphore limiting to 5
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ use crate::agent::types::{AgentRole, AgentStatus};
 use crate::engine::orchestrator::EngineEvent;
 use crate::tui::app::App;
 use crate::tui::toast::ToastKind;
-use crate::tui::types::{AgentInfo, ApprovalRequest, QuestionState};
+use crate::tui::types::{AgentInfo, QuestionState};
 
 impl App {
     /// Process a single event from the engine.
@@ -62,7 +62,6 @@ impl App {
                         parent_id: None,
                         subagent_count: 0,
                         agent_type: None,
-                        mode: None,
                     });
                 }
             }
@@ -142,7 +141,6 @@ impl App {
                 skills,
                 mcps,
                 agent_type,
-                mode,
             } => {
                 self.messages
                     .push(format!("Subagent '{}' created.", subagent_name));
@@ -166,7 +164,6 @@ impl App {
                         parent_id: Some(parent_id),
                         subagent_count: 0,
                         agent_type,
-                        mode: Some(mode),
                     });
                 }
             }
@@ -256,15 +253,6 @@ impl App {
                 self.push_msg("Anacleto shutting down.");
                 self.chat_scroll = 0;
             }
-            EngineEvent::ApprovalRequired { id, operation } => {
-                self.pending_approval = Some(ApprovalRequest {
-                    id,
-                    operation: operation.clone(),
-                });
-                self.push_msg(format!("[Solicitud de aprobación] {}", operation));
-                self.toasts
-                    .push("Aprobación requerida (Y/N)", ToastKind::Info);
-            }
             EngineEvent::Question {
                 id,
                 question,
@@ -322,25 +310,12 @@ impl App {
                     self.context_warned = false;
                 }
             }
-            EngineEvent::ToolSettingsUpdated(settings) => {
-                self.tool_settings = settings;
-            }
             EngineEvent::ToolExecution {
                 tool_name, task, ..
             } => {
                 // Commit any pending thinking first
                 commit_thinking_block(self);
                 commit_stream_block(self);
-
-                // Push color marker if configured
-                if let Some(color) = self
-                    .tool_settings
-                    .get(&tool_name)
-                    .and_then(|s| s.color.as_ref())
-                {
-                    self.pending_tool_lines
-                        .push(format!("[tool-color:{}]", color));
-                }
 
                 let (icon, _) = tool_icon_and_label(&tool_name);
                 let msg = format!("{} {}: {}", icon, tool_name, one_line(&task, 500));
@@ -538,14 +513,7 @@ impl App {
             EngineEvent::LocalTokenEstimate { tokens } => {
                 self.local_context_tokens = tokens as u64;
             }
-            // ── FASE 1 y 2: build, jobs y snapshots ─────────────────
-            EngineEvent::SubagentFinished { task_id, summary } => {
-                self.push_msg(format!(
-                    "\u{1f4c4} Tarea '{}' finalizada: {}",
-                    task_id, summary
-                ));
-                self.chat_scroll = 0;
-            }
+            // ── FASE 1 y 2: build y snapshots ─────────────────
             EngineEvent::BuildDone => {
                 self.push_msg("\u{1f3d7} Build completado.");
                 self.chat_scroll = 0;
@@ -564,17 +532,6 @@ impl App {
                             "  \u{251c} {} — {} mensajes{}",
                             s.name, s.message_count, parent
                         ));
-                    }
-                }
-                self.chat_scroll = 0;
-            }
-            EngineEvent::JobsListed(jobs) => {
-                if jobs.is_empty() {
-                    self.push_msg("\u{1f4cb} Sin jobs activos.");
-                } else {
-                    self.push_msg(format!("\u{1f4cb} {} job(s) activo(s):", jobs.len()));
-                    for job in &jobs {
-                        self.push_msg(format!("  \u{2022} {}", job));
                     }
                 }
                 self.chat_scroll = 0;
@@ -707,7 +664,6 @@ mod tests {
             parent_id: None,
             subagent_count: 0,
             agent_type: None,
-            mode: None,
         }
     }
 

@@ -5,6 +5,7 @@
 //! function and an executor `execute_xxx_tool(...)` that returns
 //! `Result<String, String>`.
 
+pub mod execute;
 pub mod format;
 pub mod fs;
 pub mod lsp;
@@ -14,6 +15,7 @@ pub mod search;
 pub mod search_symbol;
 pub mod web;
 
+pub use execute::{execute_execute_tool, execute_tool_definition};
 pub use format::{execute_format_document_tool, format_document_tool_definition};
 pub use fs::{execute_fs_tool, fs_tool_definition};
 pub use lsp::{execute_lsp_query_tool, lsp_query_tool_definition};

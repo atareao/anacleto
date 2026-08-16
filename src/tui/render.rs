@@ -25,7 +25,7 @@ use super::palette::{
 };
 use super::theme::Theme;
 use super::types::{AgentInfo, CollapsedSection, Focus};
-use crate::agent::types::{AgentRole, AgentStatus, TaskMode};
+use crate::agent::types::{AgentRole, AgentStatus};
 use std::collections::{HashMap, HashSet};
 
 /// Render the TUI.
@@ -72,11 +72,6 @@ pub(crate) fn render(f: &mut Frame, app: &mut App) {
     // Render the skill-selection combo above the input if open.
     if app.show_skill_palette && !app.skill_matches.is_empty() {
         render_skill_palette(f, chunks[2], app);
-    }
-
-    // Render approval dialog on top if pending
-    if app.pending_approval.is_some() {
-        render_approval_dialog(f, f.area(), app);
     }
 
     // Render inline question dialog on top if pending
@@ -753,11 +748,8 @@ fn render_subagent_panel(f: &mut Frame, area: Rect, app: &App) {
 
                 // Mode emoji
                 if let Some(info) = agent_info {
-                    if let Some(mode) = &info.mode {
-                        let (emoji, color) = match mode {
-                            TaskMode::Foreground => ("⬆️", Color::Cyan),
-                            TaskMode::Background => ("⬇️", Color::Yellow),
-                        };
+                    if let Some(_agent_type) = &info.agent_type {
+                        let (emoji, color) = ("⚙️", Color::Cyan);
                         spans.push(Span::styled(
                             format!("{} ", emoji),
                             sel(Style::default().fg(color).add_modifier(Modifier::BOLD)),
@@ -907,14 +899,8 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                     AgentRole::Root => "🧠",
                     AgentRole::SubAgent => "🔧",
                 };
-                let mode_emoji = a.mode.as_ref().map(|m| match m {
-                    TaskMode::Foreground => "⬆️",
-                    TaskMode::Background => "⬇️",
-                });
-                let mode_color = a.mode.as_ref().map(|m| match m {
-                    TaskMode::Foreground => Color::Cyan,
-                    TaskMode::Background => Color::Yellow,
-                });
+                let mode_emoji = "⚙️";
+                let mode_color = Color::Cyan;
 
                 let mut spans = Vec::new();
                 let mut prefix_width: usize = 0;
@@ -938,15 +924,12 @@ fn render_agent_panel(f: &mut Frame, area: Rect, app: &App) {
                 ));
 
                 // 3. Mode emoji (only for subagents)
-                if let Some(emoji) = mode_emoji {
-                    let color = mode_color.unwrap_or(Color::DarkGray);
-                    let mode_str = format!("{} ", emoji);
-                    prefix_width += mode_str.width();
-                    spans.push(Span::styled(
-                        mode_str,
-                        sel(Style::default().fg(color).add_modifier(Modifier::BOLD)),
-                    ));
-                }
+                let mode_str = format!("{} ", mode_emoji);
+                prefix_width += mode_str.width();
+                spans.push(Span::styled(
+                    mode_str,
+                    sel(Style::default().fg(mode_color).add_modifier(Modifier::BOLD)),
+                ));
 
                 // 4. Status emoji
                 let status_str = format!("{} ", dot);
@@ -1788,14 +1771,12 @@ fn render_sectioned_block(
         if let Some(cname) = marker
             .strip_prefix("[tool-color:")
             .and_then(|m| m.strip_suffix(']'))
-        {
-            if section == "tool" {
+            && section == "tool" {
                 if let Some(color) = parse_color_name(cname) {
                     tool_style = Style::default().fg(color);
                 }
                 continue;
             }
-        }
 
         // ── [normal] / [/normal] markers ──
         if marker == "[normal]" {
@@ -3281,11 +3262,8 @@ fn build_agent_list_item(agent: &AgentInfo, active: bool) -> ListItem<'static> {
     }
 
     // Mode (only for subagents that carry one).
-    if let Some(mode) = &agent.mode {
-        let label = match mode {
-            TaskMode::Foreground => "fg",
-            TaskMode::Background => "bg",
-        };
+    if let Some(_agent_type) = &agent.agent_type {
+        let label = "fg";
         spans.push(Span::raw(" (".to_string()));
         spans.push(Span::styled(label, Style::default().fg(Color::DarkGray)));
         spans.push(Span::raw(")".to_string()));
@@ -3431,11 +3409,8 @@ fn render_subagent_tree(f: &mut Frame, area: Rect, app: &App) {
                             format!(" [{}]", child.agent_type.as_deref().unwrap_or("generic")),
                             Style::default().fg(Color::Cyan),
                         ),
-                        if let Some(mode) = &child.mode {
-                            let label = match mode {
-                                TaskMode::Foreground => "fg",
-                                TaskMode::Background => "bg",
-                            };
+                        if let Some(_agent_type) = &child.agent_type {
+                            let label = "fg";
                             Span::styled(
                                 format!(" ({label})"),
                                 Style::default().fg(Color::DarkGray),
@@ -3512,67 +3487,6 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render the human-in-the-loop approval dialog as a centered overlay.
-fn render_approval_dialog(f: &mut Frame, area: Rect, app: &App) {
-    let Some(ref approval) = app.pending_approval else {
-        return;
-    };
-
-    // Dialog dimensions
-    let dialog_width = area.width.min(60);
-    let content_width = (dialog_width as usize).saturating_sub(4);
-
-    // Calculate wrapped lines for the operation text
-    let op_lines = if content_width > 0 {
-        let op_width = approval.operation.width();
-        std::cmp::max(1, op_width.div_ceil(content_width))
-    } else {
-        1
-    };
-
-    // Height: title(1) + blank(1) + operation(op_lines) + blank(1) + footer(1) + border(2)
-    let dialog_height = (6u16 + op_lines as u16).min(area.height.saturating_sub(4));
-    let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
-    let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
-    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
-
-    // Clear area behind dialog with a semi-transparent effect
-    let overlay = ratatui::widgets::Clear;
-    f.render_widget(overlay, dialog_area);
-
-    // Build dialog content
-    let lines = vec![
-        Line::from(Span::styled(
-            " ⚠  Approval Required ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::raw("")),
-        Line::from(Span::styled(
-            &approval.operation,
-            Style::default().fg(Color::White),
-        )),
-        Line::from(Span::raw("")),
-        Line::from(Span::styled(
-            " Press Y to approve  |  Press N to deny ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-        )),
-    ];
-
-    let dialog = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Yellow))
-                .style(Style::default().bg(Color::Rgb(40, 30, 0))),
-        )
-        .wrap(Wrap { trim: false })
-        .alignment(ratatui::layout::Alignment::Center);
-
-    f.render_widget(dialog, dialog_area);
-}
-
 /// Render the inline question dialog (`/question` tool).
 fn render_question_dialog(f: &mut Frame, area: Rect, app: &App) {
     let Some(ref q) = app.pending_question else {

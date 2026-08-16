@@ -13,7 +13,6 @@ use crate::config::Config;
 use crate::config::types::{CacheMode, OllamaConfig, ProviderConfig, RetryConfig};
 use crate::db::models::{Snapshot, StoredMessage};
 use crate::db::session::Database;
-use crate::engine::jobs::JobRegistry;
 use crate::error::{Error, Result};
 use crate::hook::{HookAction, HookActionConfig, HookContext, HookPoint, HookRegistry};
 use crate::llm::provider::{LlmProvider, LlmProviderRegistry, create_provider};
@@ -80,8 +79,6 @@ pub struct Engine {
     pub(crate) total_tokens: u32,
     /// Total cost in dollars (tracked for `/status`).
     pub(crate) total_cost: f64,
-    /// Registry of running background jobs (dynamic `task` tool delegations).
-    pub(crate) job_registry: Arc<tokio::sync::Mutex<JobRegistry>>,
     /// A staged snapshot (via `/stage`) awaiting commit (via `/commit`).
     pub(crate) staged_snapshot: Option<Snapshot>,
     /// Loaded plugins and their custom tools.
@@ -133,7 +130,6 @@ impl Engine {
             mcp_enabled: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             total_tokens: 0,
             total_cost: 0.0,
-            job_registry: Arc::new(tokio::sync::Mutex::new(JobRegistry::new())),
             staged_snapshot: None,
             plugins: Arc::new(PluginRegistry::new()),
             skill_registry: Arc::new(tokio::sync::RwLock::new(SkillRegistry::new())),
@@ -352,7 +348,7 @@ impl Engine {
         }
 
         // Create concurrency semaphore for subagent spawning
-        let concurrency_semaphore = if self.config.session.max_concurrency > 0 {
+        let _concurrency_semaphore = if self.config.session.max_concurrency > 0 {
             Some(Arc::new(tokio::sync::Semaphore::new(
                 self.config.session.max_concurrency as usize,
             )))
@@ -541,7 +537,6 @@ impl Engine {
                 retry_config: retry_cfg,
                 db: self.database.clone(),
                 session_id: self.active_session_id,
-                pending_approvals: Some(self.pending_approvals.clone()),
                 pending_questions: Some(self.pending_questions.clone()),
                 history_limit_percent: history_limit,
                 debug: self.debug.clone(),
@@ -549,12 +544,9 @@ impl Engine {
                 task_id: None,
                 depth: 0,
                 mode: AgentMode::Build,
-                job_registry: Some(self.job_registry.clone()),
                 plugins: Some(self.plugins.clone()),
-                concurrency_semaphore: concurrency_semaphore.clone(),
                 hook_registry: self.hook_registry.clone(),
                 cancel_flag: Some(cancel_flag),
-                tool_defaults: self.config.tools.clone(),
             })
             .await;
 
@@ -739,9 +731,6 @@ impl Engine {
                             }
                             EngineCommand::SetSessionPinned { id, pinned } => {
                                 self.handle_set_session_pinned(&id, pinned).await?;
-                            }
-                            EngineCommand::ListJobs => {
-                                self.handle_list_jobs().await?;
                             }
                             EngineCommand::Build => {
                                 self.handle_build().await?;
@@ -1030,7 +1019,7 @@ impl Engine {
         // Spawn new agent
         let history_limit = self.config.session.history_limit_percent;
         let retry_cfg = self.config.session.retry.clone();
-        let concurrency_semaphore = if self.config.session.max_concurrency > 0 {
+        let _concurrency_semaphore = if self.config.session.max_concurrency > 0 {
             Some(Arc::new(tokio::sync::Semaphore::new(
                 self.config.session.max_concurrency as usize,
             )))
@@ -1051,7 +1040,6 @@ impl Engine {
             retry_config: retry_cfg,
             db: self.database.clone(),
             session_id: self.active_session_id,
-            pending_approvals: Some(self.pending_approvals.clone()),
             pending_questions: Some(self.pending_questions.clone()),
             history_limit_percent: history_limit,
             debug: self.debug.clone(),
@@ -1059,12 +1047,9 @@ impl Engine {
             task_id: None,
             depth: 0,
             mode: AgentMode::Build,
-            job_registry: Some(self.job_registry.clone()),
             plugins: Some(self.plugins.clone()),
-            concurrency_semaphore: concurrency_semaphore.clone(),
             hook_registry: self.hook_registry.clone(),
             cancel_flag: Some(cancel_flag),
-            tool_defaults: self.config.tools.clone(),
         })
         .await;
 
@@ -1232,7 +1217,7 @@ impl Engine {
 
                     let history_limit = self.config.session.history_limit_percent;
                     let retry_cfg = self.config.session.retry.clone();
-                    let concurrency_semaphore = if self.config.session.max_concurrency > 0 {
+                    let _concurrency_semaphore = if self.config.session.max_concurrency > 0 {
                         Some(Arc::new(tokio::sync::Semaphore::new(
                             self.config.session.max_concurrency as usize,
                         )))
@@ -1254,7 +1239,6 @@ impl Engine {
                         retry_config: retry_cfg,
                         db: self.database.clone(),
                         session_id: self.active_session_id,
-                        pending_approvals: Some(self.pending_approvals.clone()),
                         pending_questions: Some(self.pending_questions.clone()),
                         history_limit_percent: history_limit,
                         debug: self.debug.clone(),
@@ -1262,12 +1246,9 @@ impl Engine {
                         task_id: None,
                         depth: 0,
                         mode: AgentMode::Build,
-                        job_registry: Some(self.job_registry.clone()),
                         plugins: Some(self.plugins.clone()),
-                        concurrency_semaphore: concurrency_semaphore.clone(),
                         hook_registry: self.hook_registry.clone(),
                         cancel_flag: Some(cancel_flag),
-                        tool_defaults: self.config.tools.clone(),
                     })
                     .await;
 
@@ -1464,12 +1445,11 @@ mod tests {
                 model: "claude-sonnet-4".into(),
                 skills: vec![],
                 mcps: vec![],
-                permissions: crate::config::types::PermissionConfig::default(),
                 subagents: vec!["tech-writer".into()],
                 system_prompt: String::new(),
                 max_steps: 90,
-                subagent_depth: 3,
-                tools: HashMap::new(),
+                tools: vec![],
+                writable_paths: vec![],
             },
             AgentConfig {
                 name: "tech-writer".into(),
@@ -1479,12 +1459,11 @@ mod tests {
                 model: "claude-sonnet-4".into(),
                 skills: vec![],
                 mcps: vec![],
-                permissions: crate::config::types::PermissionConfig::default(),
                 subagents: vec![],
                 system_prompt: String::new(),
                 max_steps: 90,
-                subagent_depth: 3,
-                tools: HashMap::new(),
+                tools: vec![],
+                writable_paths: vec![],
             },
         ];
 
@@ -1574,10 +1553,10 @@ mod tests {
             "llama3.2".into(),
             vec![],
             vec![],
-            crate::permissions::Permissions::default(),
             60,
             AgentId::new(),
-            std::collections::HashMap::new(),
+            vec![],
+            vec![],
         );
         let result = engine.resolve_agent_provider(&agent);
         assert!(result.is_ok());
@@ -1768,12 +1747,11 @@ mod tests {
                 model: "claude-sonnet-4".into(),
                 skills: vec![],
                 mcps: vec![],
-                permissions: crate::config::types::PermissionConfig::default(),
                 subagents: vec![],
                 system_prompt: String::new(),
                 max_steps: 90,
-                subagent_depth: 3,
-                tools: HashMap::new(),
+                tools: vec![],
+                writable_paths: vec![],
             },
             AgentConfig {
                 name: "writer".into(),
@@ -1783,12 +1761,11 @@ mod tests {
                 model: "claude-opus-4".into(),
                 skills: vec![],
                 mcps: vec![],
-                permissions: crate::config::types::PermissionConfig::default(),
                 subagents: vec![],
                 system_prompt: String::new(),
                 max_steps: 90,
-                subagent_depth: 3,
-                tools: HashMap::new(),
+                tools: vec![],
+                writable_paths: vec![],
             },
             AgentConfig {
                 name: "helper".into(),
@@ -1798,12 +1775,11 @@ mod tests {
                 model: "claude-sonnet-4".into(),
                 skills: vec![],
                 mcps: vec![],
-                permissions: crate::config::types::PermissionConfig::default(),
                 subagents: vec![],
                 system_prompt: String::new(),
                 max_steps: 90,
-                subagent_depth: 3,
-                tools: HashMap::new(),
+                tools: vec![],
+                writable_paths: vec![],
             },
         ];
         let mut engine = Engine::new(config, event_tx, cmd_rx);
@@ -1864,12 +1840,11 @@ mod tests {
             model: "claude-sonnet-4".into(),
             skills: vec![],
             mcps: vec![],
-            permissions: crate::config::types::PermissionConfig::default(),
             subagents: vec![],
             system_prompt: String::new(),
             max_steps: 90,
-            subagent_depth: 3,
-            tools: HashMap::new(),
+            tools: vec![],
+            writable_paths: vec![],
         });
         // `orphan` is NOT in `self.agents` (not spawned).
         let err = engine.handle_switch_agent("orphan").await.unwrap_err();
@@ -1906,12 +1881,11 @@ mod tests {
             model: "gpt-4o".into(),
             skills: vec![],
             mcps: vec![],
-            permissions: crate::config::types::PermissionConfig::default(),
             subagents: vec![],
             system_prompt: String::new(),
             max_steps: 90,
-            subagent_depth: 3,
-            tools: HashMap::new(),
+            tools: vec![],
+            writable_paths: vec![],
         }];
 
         engine.reload_config(new_config);

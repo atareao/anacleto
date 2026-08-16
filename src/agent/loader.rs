@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::agent::types::AgentRole;
-use crate::config::types::{AgentConfig, PermissionConfig, ToolSettings, default_subagent_depth};
+use crate::config::types::AgentConfig;
 use crate::error::{Error, Result};
 
 /// Parse an agent from a Markdown string with YAML frontmatter.
@@ -63,15 +62,13 @@ pub fn parse_agent(content: &str, default_max_steps: u32) -> Result<AgentConfig>
         #[serde(default)]
         mcps: Vec<String>,
         #[serde(default)]
-        permissions: PermissionConfig,
-        #[serde(default)]
         subagents: Vec<String>,
         #[serde(default)]
         max_steps: Option<u32>,
         #[serde(default)]
-        subagent_depth: Option<u32>,
+        tools: Vec<String>,
         #[serde(default)]
-        tools: HashMap<String, ToolSettings>,
+        writable_paths: Vec<PathBuf>,
     }
 
     let frontmatter: Frontmatter = serde_yaml::from_str(frontmatter_str)
@@ -85,14 +82,11 @@ pub fn parse_agent(content: &str, default_max_steps: u32) -> Result<AgentConfig>
         model: frontmatter.model,
         skills: frontmatter.skills,
         mcps: frontmatter.mcps,
-        permissions: frontmatter.permissions,
         subagents: frontmatter.subagents,
         system_prompt,
         max_steps: frontmatter.max_steps.unwrap_or(default_max_steps),
-        subagent_depth: frontmatter
-            .subagent_depth
-            .unwrap_or(default_subagent_depth()),
         tools: frontmatter.tools,
+        writable_paths: frontmatter.writable_paths,
     })
 }
 
@@ -237,9 +231,6 @@ skills:
   - .agents/skills/shell/
 mcps:
   - filesystem
-permissions:
-  deny:
-    - command.run.sudo
 subagents:
   - reviewer
 ---
@@ -257,7 +248,6 @@ You are **Anacleto**, a senior engineering agent.
         assert_eq!(agent.model, "deepseek/deepseek-v4-flash");
         assert_eq!(agent.skills, vec![PathBuf::from(".agents/skills/shell/")]);
         assert_eq!(agent.mcps, vec!["filesystem".to_string()]);
-        assert_eq!(agent.permissions.deny, vec!["command.run.sudo".to_string()]);
         assert_eq!(agent.subagents, vec!["reviewer".to_string()]);
         assert!(agent.system_prompt.contains("senior engineering agent"));
     }
@@ -362,12 +352,11 @@ role: root
             model: "llama2".into(),
             skills: vec![],
             mcps: vec![],
-            permissions: PermissionConfig::default(),
             subagents: vec![],
             system_prompt: "global prompt".into(),
             max_steps: 60,
-            subagent_depth: 3,
-            tools: HashMap::new(),
+            tools: vec![],
+            writable_paths: vec![],
         }];
         let project = vec![AgentConfig {
             name: "root".into(),
@@ -377,12 +366,11 @@ role: root
             model: "llama3.2".into(),
             skills: vec![],
             mcps: vec![],
-            permissions: PermissionConfig::default(),
             subagents: vec!["reviewer".into()],
             system_prompt: "project prompt".into(),
             max_steps: 60,
-            subagent_depth: 3,
-            tools: HashMap::new(),
+            tools: vec![],
+            writable_paths: vec![],
         }];
 
         let merged = merge_agents(global, project).unwrap();
@@ -402,12 +390,11 @@ role: root
             model: "m".into(),
             skills: vec![],
             mcps: vec![],
-            permissions: PermissionConfig::default(),
             subagents: vec![],
             system_prompt: "root prompt".into(),
             max_steps: 60,
-            subagent_depth: 3,
-            tools: HashMap::new(),
+            tools: vec![],
+            writable_paths: vec![],
         }];
         let project = vec![AgentConfig {
             name: "reviewer".into(),
@@ -417,12 +404,11 @@ role: root
             model: "m".into(),
             skills: vec![],
             mcps: vec![],
-            permissions: PermissionConfig::default(),
             subagents: vec![],
             system_prompt: "reviewer prompt".into(),
             max_steps: 60,
-            subagent_depth: 3,
-            tools: HashMap::new(),
+            tools: vec![],
+            writable_paths: vec![],
         }];
 
         let merged = merge_agents(global, project).unwrap();
@@ -440,12 +426,11 @@ role: root
             model: "m".into(),
             skills: vec![],
             mcps: vec![],
-            permissions: PermissionConfig::default(),
             subagents: vec![],
             system_prompt: "p".into(),
             max_steps: 60,
-            subagent_depth: 3,
-            tools: HashMap::new(),
+            tools: vec![],
+            writable_paths: vec![],
         }];
         assert!(merge_agents(no_root, vec![]).is_err());
 
@@ -459,12 +444,11 @@ role: root
                 model: "m".into(),
                 skills: vec![],
                 mcps: vec![],
-                permissions: PermissionConfig::default(),
                 subagents: vec![],
                 system_prompt: "p".into(),
                 max_steps: 60,
-                subagent_depth: 3,
-                tools: HashMap::new(),
+                tools: vec![],
+                writable_paths: vec![],
             },
             AgentConfig {
                 name: "b".into(),
@@ -474,12 +458,11 @@ role: root
                 model: "m".into(),
                 skills: vec![],
                 mcps: vec![],
-                permissions: PermissionConfig::default(),
                 subagents: vec![],
                 system_prompt: "p".into(),
                 max_steps: 60,
-                subagent_depth: 3,
-                tools: HashMap::new(),
+                tools: vec![],
+                writable_paths: vec![],
             },
         ];
         assert!(merge_agents(two_roots, vec![]).is_ok());
@@ -493,12 +476,11 @@ role: root
             model: "m".into(),
             skills: vec![],
             mcps: vec![],
-            permissions: PermissionConfig::default(),
             subagents: vec![],
             system_prompt: "p".into(),
             max_steps: 60,
-            subagent_depth: 3,
-            tools: HashMap::new(),
+            tools: vec![],
+            writable_paths: vec![],
         }];
         assert!(merge_agents(one_root, vec![]).is_ok());
     }

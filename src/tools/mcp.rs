@@ -10,8 +10,6 @@ use tokio::sync::Mutex;
 
 use crate::llm::types::{ToolCall, ToolDefinition};
 use crate::mcp::client::McpRegistry;
-use crate::permissions::checker::check_mcp_use;
-use crate::permissions::types::Permissions;
 
 /// Tool definition for `mcp_list_resources`: list the resources of an MCP server.
 pub fn mcp_list_resources_tool_definition() -> ToolDefinition {
@@ -70,11 +68,8 @@ pub fn mcp_list_resource_templates_tool_definition() -> ToolDefinition {
 /// Execute a `mcp_list_resources` tool call.
 pub async fn execute_mcp_list_resources_tool(
     mcp_registry: &Arc<Mutex<McpRegistry>>,
-    permissions: &Permissions,
     tool_call: &ToolCall,
 ) -> Result<String, String> {
-    check_mcp_use(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse mcp_list_resources arguments: {e}"))?;
     let server = args
@@ -104,11 +99,8 @@ pub async fn execute_mcp_list_resources_tool(
 /// Execute a `mcp_read_resource` tool call.
 pub async fn execute_mcp_read_resource_tool(
     mcp_registry: &Arc<Mutex<McpRegistry>>,
-    permissions: &Permissions,
     tool_call: &ToolCall,
 ) -> Result<String, String> {
-    check_mcp_use(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse mcp_read_resource arguments: {e}"))?;
     let server = args
@@ -132,11 +124,8 @@ pub async fn execute_mcp_read_resource_tool(
 /// Execute a `mcp_list_resource_templates` tool call.
 pub async fn execute_mcp_list_resource_templates_tool(
     mcp_registry: &Arc<Mutex<McpRegistry>>,
-    permissions: &Permissions,
     tool_call: &ToolCall,
 ) -> Result<String, String> {
-    check_mcp_use(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse mcp_list_resource_templates arguments: {e}"))?;
     let server = args
@@ -171,9 +160,7 @@ pub async fn execute_mcp_list_resource_templates_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionConfig;
     use crate::llm::types::ToolFunction;
-    use crate::permissions::types::Permissions;
 
     fn tool_call(name: &str, args: &str) -> ToolCall {
         ToolCall {
@@ -186,68 +173,11 @@ mod tests {
         }
     }
 
-    fn deny_mcp() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec!["mcp.use".into()],
-            allow: vec![],
-        })
-    }
-
-    fn allow_all() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec![],
-        })
-    }
-
-    #[tokio::test]
-    async fn mcp_list_resources_denied_without_mcp_use() {
-        let registry = Arc::new(Mutex::new(McpRegistry::new()));
-        let result = execute_mcp_list_resources_tool(
-            &registry,
-            &deny_mcp(),
-            &tool_call("mcp_list_resources", r#"{"server":"filesystem"}"#),
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Permission denied"));
-    }
-
-    #[tokio::test]
-    async fn mcp_read_resource_denied_without_mcp_use() {
-        let registry = Arc::new(Mutex::new(McpRegistry::new()));
-        let result = execute_mcp_read_resource_tool(
-            &registry,
-            &deny_mcp(),
-            &tool_call(
-                "mcp_read_resource",
-                r#"{"server":"filesystem","uri":"file:///tmp/a.txt"}"#,
-            ),
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Permission denied"));
-    }
-
-    #[tokio::test]
-    async fn mcp_list_resource_templates_denied_without_mcp_use() {
-        let registry = Arc::new(Mutex::new(McpRegistry::new()));
-        let result = execute_mcp_list_resource_templates_tool(
-            &registry,
-            &deny_mcp(),
-            &tool_call("mcp_list_resource_templates", r#"{"server":"filesystem"}"#),
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Permission denied"));
-    }
-
     #[tokio::test]
     async fn mcp_list_resources_unknown_server_errors() {
         let registry = Arc::new(Mutex::new(McpRegistry::new()));
         let result = execute_mcp_list_resources_tool(
             &registry,
-            &allow_all(),
             &tool_call("mcp_list_resources", r#"{"server":"nope"}"#),
         )
         .await;
@@ -260,7 +190,6 @@ mod tests {
         let registry = Arc::new(Mutex::new(McpRegistry::new()));
         let result = execute_mcp_read_resource_tool(
             &registry,
-            &allow_all(),
             &tool_call("mcp_read_resource", r#"{"server":"filesystem"}"#),
         )
         .await;

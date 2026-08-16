@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::llm::types::{ToolCall, ToolDefinition};
-use crate::permissions::checker::check_fs_read;
-use crate::permissions::types::Permissions;
 
 /// Maximum number of matches returned per `grep` call.
 const MAX_MATCHES: usize = 500;
@@ -54,7 +52,6 @@ fn rg_available() -> bool {
 /// Execute a `grep` tool call.
 pub async fn execute_grep_tool(
     workspace: &Path,
-    permissions: &Permissions,
     tool_call: &ToolCall,
 ) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
@@ -65,8 +62,6 @@ pub async fn execute_grep_tool(
         .ok_or_else(|| "grep requires 'pattern'".to_string())?;
     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
     let include = args.get("include").and_then(|v| v.as_str());
-
-    check_fs_read(permissions).map_err(|e| format!("Permission denied: {e}"))?;
 
     // Resolve the search target within the workspace.
     let target = if path.is_empty() {
@@ -208,9 +203,7 @@ fn truncate_matches(output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionConfig;
     use crate::llm::types::ToolFunction;
-    use crate::permissions::types::Permissions;
 
     fn temp_workspace() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("anacleto_grep_test_{}", uuid::Uuid::new_v4()));
@@ -229,19 +222,12 @@ mod tests {
         }
     }
 
-    fn allow_all() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec![],
-        })
-    }
-
     #[tokio::test]
     async fn grep_finds_matches() {
         let ws = temp_workspace();
         std::fs::write(ws.join("a.rs"), "fn main() {}\nlet x = 1;\n").unwrap();
         std::fs::write(ws.join("b.txt"), "no match here\n").unwrap();
-        let result = execute_grep_tool(&ws, &allow_all(), &tool_call(r#"{"pattern":"fn main"}"#))
+        let result = execute_grep_tool(&ws, &tool_call(r#"{"pattern":"fn main"}"#))
             .await
             .unwrap();
         assert!(result.contains("a.rs:1:fn main() {}"));
@@ -255,7 +241,6 @@ mod tests {
         std::fs::write(ws.join("a.txt"), "hello\n").unwrap();
         let result = execute_grep_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"pattern":"zzz_nonexistent"}"#),
         )
         .await
@@ -271,7 +256,6 @@ mod tests {
         std::fs::write(ws.join("b.txt"), "needle\n").unwrap();
         let result = execute_grep_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"pattern":"needle","include":"*.rs"}"#),
         )
         .await
@@ -286,7 +270,6 @@ mod tests {
         let ws = temp_workspace();
         let result = execute_grep_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"pattern":"x","path":"../etc"}"#),
         )
         .await;

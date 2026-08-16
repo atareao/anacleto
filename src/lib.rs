@@ -12,7 +12,6 @@ pub mod hook;
 pub mod llm;
 pub mod lsp;
 pub mod mcp;
-pub mod permissions;
 pub mod plugin;
 pub mod shell;
 pub mod skill;

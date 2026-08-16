@@ -17,13 +17,11 @@
 //! | `list` | path | — | List directory entries |
 //!
 //! Paths are resolved relative to the workspace. Writing outside the workspace
-//! requires the `fs.external` permission.
+//! is not allowed by default.
 
 use std::path::{Path, PathBuf};
 
 use crate::llm::types::{ToolCall, ToolDefinition};
-use crate::permissions::checker::{check_fs_external, check_fs_read, check_fs_write};
-use crate::permissions::types::Permissions;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -108,8 +106,7 @@ pub fn fs_tool_definition() -> ToolDefinition {
 // Path resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve a path, enforcing workspace containment unless the caller has
-/// the `fs.external` permission.
+/// Resolve a path, enforcing workspace containment.
 fn resolve_fs_path(
     workspace: &Path,
     path: &str,
@@ -379,11 +376,7 @@ fn execute_list_op(full: &Path) -> Result<String, String> {
 // ---------------------------------------------------------------------------
 
 /// Execute an `fs` tool call.
-pub async fn execute_fs_tool(
-    workspace: &Path,
-    permissions: &Permissions,
-    tool_call: &ToolCall,
-) -> Result<String, String> {
+pub async fn execute_fs_tool(workspace: &Path, tool_call: &ToolCall) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse fs arguments: {e}"))?;
 
@@ -397,16 +390,7 @@ pub async fn execute_fs_tool(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "fs requires 'path'".to_string())?;
 
-    // Determine if this is a write operation for permission checking
-    let is_write = matches!(op, "write" | "insert" | "replace" | "delete");
-
-    if is_write {
-        check_fs_write(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-    } else {
-        check_fs_read(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-    }
-
-    let external_granted = check_fs_external(permissions).is_ok();
+    let external_granted = false;
     let full = resolve_fs_path(workspace, path, external_granted)?;
 
     match op {
@@ -472,7 +456,6 @@ pub async fn execute_fs_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionConfig;
     use crate::llm::types::ToolFunction;
 
     fn temp_workspace() -> PathBuf {
@@ -492,13 +475,6 @@ mod tests {
         }
     }
 
-    fn allow_all() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec![],
-        })
-    }
-
     // -----------------------------------------------------------------------
     // read tests
     // -----------------------------------------------------------------------
@@ -507,13 +483,9 @@ mod tests {
     async fn test_read_basic() {
         let ws = temp_workspace();
         std::fs::write(ws.join("a.txt"), "one\ntwo\nthree\n").unwrap();
-        let result = execute_fs_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"op":"read","path":"a.txt"}"#),
-        )
-        .await
-        .unwrap();
+        let result = execute_fs_tool(&ws, &tool_call(r#"{"op":"read","path":"a.txt"}"#))
+            .await
+            .unwrap();
         assert!(result.contains("1 | one"));
         assert!(result.contains("2 | two"));
         assert!(result.contains("3 | three"));
@@ -527,7 +499,6 @@ mod tests {
         std::fs::write(ws.join("b.txt"), content).unwrap();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"op":"read","path":"b.txt","offset":3,"limit":2}"#),
         )
         .await
@@ -542,12 +513,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_missing_file_errors() {
         let ws = temp_workspace();
-        let result = execute_fs_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"op":"read","path":"nope.txt"}"#),
-        )
-        .await;
+        let result = execute_fs_tool(&ws, &tool_call(r#"{"op":"read","path":"nope.txt"}"#)).await;
         assert!(result.is_err());
         std::fs::remove_dir_all(&ws).unwrap();
     }
@@ -561,7 +527,6 @@ mod tests {
         let ws = temp_workspace();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"op":"write","path":"nested/deep/file.txt","content":"hello"}"#),
         )
         .await
@@ -577,12 +542,7 @@ mod tests {
     #[tokio::test]
     async fn test_write_missing_content() {
         let ws = temp_workspace();
-        let result = execute_fs_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"op":"write","path":"x.txt"}"#),
-        )
-        .await;
+        let result = execute_fs_tool(&ws, &tool_call(r#"{"op":"write","path":"x.txt"}"#)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("content"));
         std::fs::remove_dir_all(&ws).unwrap();
@@ -598,7 +558,6 @@ mod tests {
         std::fs::write(ws.join("i.txt"), "one\ntwo\nfour\n").unwrap();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"op":"insert","path":"i.txt","after_line":2,"content":"three"}"#),
         )
         .await
@@ -615,7 +574,6 @@ mod tests {
         std::fs::write(ws.join("j.txt"), "two\nthree\n").unwrap();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"op":"insert","path":"j.txt","after_line":0,"content":"one"}"#),
         )
         .await
@@ -632,7 +590,6 @@ mod tests {
         std::fs::write(ws.join("k.txt"), "one\nfour\n").unwrap();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"op":"insert","path":"k.txt","after_line":1,"content":"two\nthree"}"#),
         )
         .await
@@ -653,7 +610,6 @@ mod tests {
         std::fs::write(ws.join("r.txt"), "foo foo bar foo").unwrap();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"op":"replace","path":"r.txt","old":"foo","new":"baz"}"#),
         )
         .await
@@ -672,7 +628,6 @@ mod tests {
         std::fs::write(ws.join("s.txt"), "hello").unwrap();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"op":"replace","path":"s.txt","old":"zzz","new":"yyy"}"#),
         )
         .await;
@@ -691,7 +646,6 @@ mod tests {
         std::fs::write(ws.join("t.txt"), "one\ntwo\nthree\nfour\n").unwrap();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(
                 r#"{"op":"replace","path":"t.txt","start_line":2,"end_line":3,"content":"hello\nworld"}"#,
             ),
@@ -710,7 +664,6 @@ mod tests {
         std::fs::write(ws.join("u.txt"), "one\ntwo\nthree\n").unwrap();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(
                 r#"{"op":"replace","path":"u.txt","start_line":2,"end_line":2,"content":"dos"}"#,
             ),
@@ -729,7 +682,6 @@ mod tests {
         std::fs::write(ws.join("v.txt"), "one\ntwo\nthree\n").unwrap();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(
                 r#"{"op":"replace","path":"v.txt","start_line":2,"end_line":2,"content":""}"#,
             ),
@@ -748,7 +700,6 @@ mod tests {
         std::fs::write(ws.join("w.txt"), "one\ntwo\nthree\n").unwrap();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(
                 r#"{"op":"replace","path":"w.txt","start_line":3,"end_line":2,"content":"x"}"#,
             ),
@@ -765,7 +716,6 @@ mod tests {
         std::fs::write(ws.join("x.txt"), "one\ntwo\n").unwrap();
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(
                 r#"{"op":"replace","path":"x.txt","start_line":10,"end_line":10,"content":"x"}"#,
             ),
@@ -785,13 +735,9 @@ mod tests {
         let ws = temp_workspace();
         let file = ws.join("del.txt");
         std::fs::write(&file, "x").unwrap();
-        let result = execute_fs_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"op":"delete","path":"del.txt"}"#),
-        )
-        .await
-        .unwrap();
+        let result = execute_fs_tool(&ws, &tool_call(r#"{"op":"delete","path":"del.txt"}"#))
+            .await
+            .unwrap();
         assert!(result.contains("Deleted"));
         assert!(!file.exists());
         std::fs::remove_dir_all(&ws).unwrap();
@@ -803,13 +749,9 @@ mod tests {
         let dir = ws.join("subdir");
         std::fs::create_dir(&dir).unwrap();
         std::fs::write(dir.join("f.txt"), "x").unwrap();
-        let result = execute_fs_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"op":"delete","path":"subdir"}"#),
-        )
-        .await
-        .unwrap();
+        let result = execute_fs_tool(&ws, &tool_call(r#"{"op":"delete","path":"subdir"}"#))
+            .await
+            .unwrap();
         assert!(result.contains("Deleted directory"));
         assert!(!dir.exists());
         std::fs::remove_dir_all(&ws).unwrap();
@@ -818,12 +760,8 @@ mod tests {
     #[tokio::test]
     async fn test_delete_not_found() {
         let ws = temp_workspace();
-        let result = execute_fs_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"op":"delete","path":"missing.txt"}"#),
-        )
-        .await;
+        let result =
+            execute_fs_tool(&ws, &tool_call(r#"{"op":"delete","path":"missing.txt"}"#)).await;
         assert!(result.is_err());
         std::fs::remove_dir_all(&ws).unwrap();
     }
@@ -838,7 +776,7 @@ mod tests {
         std::fs::create_dir(ws.join("subdir")).unwrap();
         std::fs::write(ws.join("b.txt"), "").unwrap();
         std::fs::write(ws.join("a.txt"), "").unwrap();
-        let result = execute_fs_tool(&ws, &allow_all(), &tool_call(r#"{"op":"list","path":"."}"#))
+        let result = execute_fs_tool(&ws, &tool_call(r#"{"op":"list","path":"."}"#))
             .await
             .unwrap();
         let lines: Vec<&str> = result.lines().collect();
@@ -851,7 +789,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_empty_directory() {
         let ws = temp_workspace();
-        let result = execute_fs_tool(&ws, &allow_all(), &tool_call(r#"{"op":"list","path":"."}"#))
+        let result = execute_fs_tool(&ws, &tool_call(r#"{"op":"list","path":"."}"#))
             .await
             .unwrap();
         assert!(result.contains("empty"));
@@ -865,12 +803,8 @@ mod tests {
     #[tokio::test]
     async fn test_rejects_path_traversal() {
         let ws = temp_workspace();
-        let result = execute_fs_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"op":"read","path":"../secret.txt"}"#),
-        )
-        .await;
+        let result =
+            execute_fs_tool(&ws, &tool_call(r#"{"op":"read","path":"../secret.txt"}"#)).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("escapes workspace") || err.contains("fs.external"));
@@ -884,10 +818,9 @@ mod tests {
             std::env::temp_dir().join(format!("anacleto_fs_outside_{}", uuid::Uuid::new_v4()));
         std::fs::write(&outside, "external data").unwrap();
 
-        // Without fs.external, an absolute external path is denied.
+        // An absolute external path is denied.
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(&format!(
                 r#"{{"op":"read","path":"{}"}}"#,
                 outside.display()
@@ -897,23 +830,6 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("fs.external"));
 
-        // With fs.external granted, it is allowed.
-        let perms = Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec!["fs.read".into(), "fs.external".into()],
-        });
-        let result = execute_fs_tool(
-            &ws,
-            &perms,
-            &tool_call(&format!(
-                r#"{{"op":"read","path":"{}"}}"#,
-                outside.display()
-            )),
-        )
-        .await;
-        assert!(result.is_ok());
-        assert!(result.unwrap().contains("external data"));
-
         std::fs::remove_dir_all(&ws).unwrap();
         std::fs::remove_file(&outside).unwrap();
     }
@@ -921,12 +837,7 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_op() {
         let ws = temp_workspace();
-        let result = execute_fs_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"op":"unknown","path":"x.txt"}"#),
-        )
-        .await;
+        let result = execute_fs_tool(&ws, &tool_call(r#"{"op":"unknown","path":"x.txt"}"#)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Unknown fs operation"));
         std::fs::remove_dir_all(&ws).unwrap();
@@ -940,10 +851,9 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
 
-        // Without fs.external, denied.
+        // An absolute external path is denied for writes.
         let result = execute_fs_tool(
             &ws,
-            &allow_all(),
             &tool_call(&format!(
                 r#"{{"op":"write","path":"{}","content":"hello"}}"#,
                 outside.display()
@@ -953,24 +863,6 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("fs.external"));
 
-        // With fs.write + fs.external, allowed.
-        let perms = Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec!["fs.write".into(), "fs.external".into()],
-        });
-        let result = execute_fs_tool(
-            &ws,
-            &perms,
-            &tool_call(&format!(
-                r#"{{"op":"write","path":"{}","content":"hello world"}}"#,
-                outside.display()
-            )),
-        )
-        .await;
-        assert!(result.is_ok());
-        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "hello world");
-
         std::fs::remove_dir_all(&ws).unwrap();
-        let _ = std::fs::remove_file(&outside);
     }
 }

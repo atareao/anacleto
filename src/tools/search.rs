@@ -18,8 +18,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::llm::types::{ToolCall, ToolDefinition};
-use crate::permissions::checker::check_fs_read;
-use crate::permissions::types::Permissions;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -286,11 +284,7 @@ fn search_files(workspace: &Path, pattern: &str, max_results: usize) -> Result<S
 // ---------------------------------------------------------------------------
 
 /// Execute a `search` tool call.
-pub async fn execute_search_tool(
-    workspace: &Path,
-    permissions: &Permissions,
-    tool_call: &ToolCall,
-) -> Result<String, String> {
+pub async fn execute_search_tool(workspace: &Path, tool_call: &ToolCall) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse search arguments: {e}"))?;
 
@@ -303,8 +297,6 @@ pub async fn execute_search_tool(
         .get("pattern")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "search requires 'pattern'".to_string())?;
-
-    check_fs_read(permissions).map_err(|e| format!("Permission denied: {e}"))?;
 
     let max_results = args
         .get("max_results")
@@ -366,9 +358,7 @@ pub async fn execute_search_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionConfig;
     use crate::llm::types::ToolFunction;
-    use crate::permissions::types::Permissions;
 
     fn temp_workspace() -> PathBuf {
         let dir =
@@ -388,13 +378,6 @@ mod tests {
         }
     }
 
-    fn allow_all() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec![],
-        })
-    }
-
     // -----------------------------------------------------------------------
     // Content search tests
     // -----------------------------------------------------------------------
@@ -404,13 +387,10 @@ mod tests {
         let ws = temp_workspace();
         std::fs::write(ws.join("a.rs"), "fn main() {}\nlet x = 1;\n").unwrap();
         std::fs::write(ws.join("b.txt"), "no match here\n").unwrap();
-        let result = execute_search_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"mode":"content","pattern":"fn main"}"#),
-        )
-        .await
-        .unwrap();
+        let result =
+            execute_search_tool(&ws, &tool_call(r#"{"mode":"content","pattern":"fn main"}"#))
+                .await
+                .unwrap();
         assert!(result.contains("a.rs:1:fn main() {}"));
         assert!(!result.contains("b.txt"));
         std::fs::remove_dir_all(&ws).unwrap();
@@ -422,7 +402,6 @@ mod tests {
         std::fs::write(ws.join("a.txt"), "hello\n").unwrap();
         let result = execute_search_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"mode":"content","pattern":"zzz_nonexistent"}"#),
         )
         .await
@@ -438,7 +417,6 @@ mod tests {
         std::fs::write(ws.join("b.txt"), "needle\n").unwrap();
         let result = execute_search_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"mode":"content","pattern":"needle","include":"*.rs"}"#),
         )
         .await
@@ -453,7 +431,6 @@ mod tests {
         let ws = temp_workspace();
         let result = execute_search_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"mode":"content","pattern":"x","path":"../etc"}"#),
         )
         .await;
@@ -473,13 +450,10 @@ mod tests {
         std::fs::write(ws.join("src/sub/lib.rs"), "").unwrap();
         std::fs::write(ws.join("README.md"), "").unwrap();
 
-        let result = execute_search_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"mode":"files","pattern":"**/*.rs"}"#),
-        )
-        .await
-        .unwrap();
+        let result =
+            execute_search_tool(&ws, &tool_call(r#"{"mode":"files","pattern":"**/*.rs"}"#))
+                .await
+                .unwrap();
         assert!(result.contains("src/main.rs"));
         assert!(result.contains("src/sub/lib.rs"));
         assert!(!result.contains("README.md"));
@@ -491,13 +465,9 @@ mod tests {
     async fn test_search_files_no_matches() {
         let ws = temp_workspace();
         std::fs::write(ws.join("a.txt"), "").unwrap();
-        let result = execute_search_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"mode":"files","pattern":"*.py"}"#),
-        )
-        .await
-        .unwrap();
+        let result = execute_search_tool(&ws, &tool_call(r#"{"mode":"files","pattern":"*.py"}"#))
+            .await
+            .unwrap();
         assert!(result.contains("No files match"));
         std::fs::remove_dir_all(&ws).unwrap();
     }
@@ -505,12 +475,8 @@ mod tests {
     #[tokio::test]
     async fn test_search_unknown_mode() {
         let ws = temp_workspace();
-        let result = execute_search_tool(
-            &ws,
-            &allow_all(),
-            &tool_call(r#"{"mode":"unknown","pattern":"x"}"#),
-        )
-        .await;
+        let result =
+            execute_search_tool(&ws, &tool_call(r#"{"mode":"unknown","pattern":"x"}"#)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Unknown search mode"));
         std::fs::remove_dir_all(&ws).unwrap();

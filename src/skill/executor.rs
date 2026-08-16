@@ -9,22 +9,7 @@ impl SkillExecutor for DefaultSkillExecutor {
     async fn execute(&self, skill: &Skill, task: &str) -> SkillResult {
         let skill_name_lower = skill.name.to_lowercase();
 
-        let output = if skill_name_lower == "shell" {
-            match execute_shell_command(task).await {
-                Ok(result) => {
-                    let prompt = crate::shell::inventory().to_prompt();
-                    format!("{prompt}\n\n{result}")
-                }
-                Err(e) => {
-                    return SkillResult {
-                        skill_name: skill.name.clone(),
-                        output: e.clone(),
-                        success: false,
-                        error: Some(e),
-                    };
-                }
-            }
-        } else if skill_name_lower.contains("web") || skill_name_lower.contains("research") {
+        let output = if skill_name_lower.contains("web") || skill_name_lower.contains("research") {
             match execute_web_fetch(task).await {
                 Ok(result) => result,
                 Err(e) => {
@@ -57,29 +42,6 @@ The original task was: {}"#,
             success: true,
             error: None,
         }
-    }
-}
-
-/// Execute a shell command from a natural-language task description.
-async fn execute_shell_command(task: &str) -> Result<String, String> {
-    // Extract command from natural language or use as-is
-    let cmd = if task.starts_with('`') && task.ends_with('`') {
-        task.trim_matches('`').to_string()
-    } else {
-        task.to_string()
-    };
-
-    let output = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&cmd)
-        .output()
-        .await
-        .map_err(|e| format!("Shell execution failed: {e}"))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
 }
 

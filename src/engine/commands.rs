@@ -347,13 +347,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Handle `/jobs`: list the running background jobs.
-    pub(crate) async fn handle_list_jobs(&self) -> Result<()> {
-        let ids = self.job_registry.lock().await.running_ids();
-        self.event_tx.send(EngineEvent::JobsListed(ids)).await.ok();
-        Ok(())
-    }
-
     /// Handle `/snapshot`: create a snapshot of the active session's conversation.
     ///
     /// The snapshot captures the serialized message list so it can be restored

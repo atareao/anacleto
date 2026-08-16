@@ -523,10 +523,6 @@ impl App {
                 self.push_msg("> /build");
                 let _ = self.cmd_tx.try_send(EngineCommand::Build);
             }
-            "/jobs" => {
-                self.push_msg("> /jobs");
-                let _ = self.cmd_tx.try_send(EngineCommand::ListJobs);
-            }
             "/parent" => {
                 self.push_msg("> /parent");
                 let _ = self.cmd_tx.try_send(EngineCommand::Parent);
