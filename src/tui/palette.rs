@@ -207,7 +207,7 @@ impl App {
 
         let query = input_text.trim_start_matches("/skills").trim_start();
 
-        let source: Vec<String> = self.all_discovered_skills.iter().cloned().collect();
+        let source: Vec<String> = self.all_discovered_skills.to_vec();
 
         let mut scored: Vec<(u32, String)> = source
             .into_iter()

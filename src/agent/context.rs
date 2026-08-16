@@ -797,6 +797,7 @@ mod tests {
                     prompt_tokens: 0,
                     completion_tokens: 0,
                     total_tokens: 0,
+                    cost: None,
                 })))
                 .await;
             Ok(rx)

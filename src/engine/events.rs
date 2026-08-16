@@ -8,11 +8,9 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::agent::types::{AgentId, AgentRole, AgentStatus, TaskMode};
-use crate::config::types::ToolSettings;
+use crate::agent::types::{AgentId, AgentRole, AgentStatus};
 use crate::db::models::{SessionSummary, Snapshot};
 
 /// Events emitted by the engine for the TUI to display.
@@ -69,8 +67,6 @@ pub enum EngineEvent {
         /// Name of the configured subagent type (e.g. "reviewer"), or `None`
         /// for a dynamic/generic subagent.
         agent_type: Option<String>,
-        /// Execution mode of the subagent (Foreground/Background).
-        mode: TaskMode,
     },
     /// Subagent completed.
     SubagentCompleted {
@@ -135,8 +131,6 @@ pub enum EngineEvent {
         model: String,
         payload: String,
     },
-    /// Tool settings for the current agent (fired once on agent start).
-    ToolSettingsUpdated(HashMap<String, ToolSettings>),
     /// The model for the root agent changed.
     ModelChanged { model: String },
     /// The active root agent changed (via `/agent`).
@@ -202,8 +196,6 @@ pub enum EngineEvent {
     /// The session hierarchy (children of the active session) was produced
     /// (via `/children`).
     SessionTree(Vec<SessionSummary>),
-    /// The list of running background jobs was produced (via `/jobs`).
-    JobsListed(Vec<String>),
     /// A snapshot of the active session was created (via `/snapshot`).
     SnapshotCreated { snapshot: Snapshot },
     /// The active session was reverted to a snapshot (via `/revert`).
@@ -393,8 +385,6 @@ pub enum EngineCommand {
     QuestionAnswer { id: String, answer: String },
     /// Pin or unpin a session (shown at the top of the sidebar).
     SetSessionPinned { id: String, pinned: bool },
-    /// List the running background jobs (via `/jobs`).
-    ListJobs,
     /// Hand off the active session's plan to build mode (via `/build`).
     Build,
     /// Navigate to the parent session of the active session (via `/parent`).

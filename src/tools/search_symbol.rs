@@ -10,8 +10,6 @@ use tokio::sync::Mutex;
 
 use crate::llm::types::{ToolCall, ToolDefinition};
 use crate::mcp::client::McpRegistry;
-use crate::permissions::checker::check_mcp_use;
-use crate::permissions::types::Permissions;
 
 /// Valid kinds for the `kind` filter parameter.
 const VALID_KINDS: &[&str] = &[
@@ -71,11 +69,8 @@ pub fn search_symbol_tool_definition() -> ToolDefinition {
 /// Execute a `search_symbol` tool call.
 pub async fn execute_search_symbol_tool(
     mcp_registry: &Arc<Mutex<McpRegistry>>,
-    permissions: &Permissions,
     tool_call: &ToolCall,
 ) -> Result<String, String> {
-    check_mcp_use(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
     // Parse arguments -------------------------------------------------------
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse search_symbol arguments: {e}"))?;
@@ -209,7 +204,6 @@ use serde_json::Value;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionConfig;
     use crate::llm::types::ToolFunction;
 
     // -- helpers ------------------------------------------------------------
@@ -223,20 +217,6 @@ mod tests {
                 arguments: args.into(),
             },
         }
-    }
-
-    fn deny_mcp() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec!["mcp.use".into()],
-            allow: vec![],
-        })
-    }
-
-    fn allow_all() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec![],
-        })
     }
 
     // -- definition tests ---------------------------------------------------
@@ -260,32 +240,13 @@ mod tests {
         assert!(required.iter().any(|v| v == "query"));
     }
 
-    // -- permission tests ---------------------------------------------------
-
-    #[tokio::test]
-    async fn test_search_symbol_denied_without_mcp_use() {
-        let registry = Arc::new(Mutex::new(McpRegistry::new()));
-        let result = execute_search_symbol_tool(
-            &registry,
-            &deny_mcp(),
-            &tool_call("search_symbol", r#"{"query":"foo"}"#),
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Permission denied"));
-    }
-
     // -- argument validation tests ------------------------------------------
 
     #[tokio::test]
     async fn test_search_symbol_missing_query() {
         let registry = Arc::new(Mutex::new(McpRegistry::new()));
-        let result = execute_search_symbol_tool(
-            &registry,
-            &allow_all(),
-            &tool_call("search_symbol", r#"{}"#),
-        )
-        .await;
+        let result =
+            execute_search_symbol_tool(&registry, &tool_call("search_symbol", r#"{}"#)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("non-empty 'query'"));
     }
@@ -293,12 +254,9 @@ mod tests {
     #[tokio::test]
     async fn test_search_symbol_empty_query() {
         let registry = Arc::new(Mutex::new(McpRegistry::new()));
-        let result = execute_search_symbol_tool(
-            &registry,
-            &allow_all(),
-            &tool_call("search_symbol", r#"{"query":""}"#),
-        )
-        .await;
+        let result =
+            execute_search_symbol_tool(&registry, &tool_call("search_symbol", r#"{"query":""}"#))
+                .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("non-empty 'query'"));
     }
@@ -308,7 +266,6 @@ mod tests {
         let registry = Arc::new(Mutex::new(McpRegistry::new()));
         let result = execute_search_symbol_tool(
             &registry,
-            &allow_all(),
             &tool_call("search_symbol", r#"{"query":"foo","kind":"invalid_kind"}"#),
         )
         .await;
@@ -324,7 +281,6 @@ mod tests {
         let registry = Arc::new(Mutex::new(McpRegistry::new()));
         let result = execute_search_symbol_tool(
             &registry,
-            &allow_all(),
             &tool_call("search_symbol", r#"{"query":"foo"}"#),
         )
         .await;

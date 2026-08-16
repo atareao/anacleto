@@ -1,12 +1,10 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{AgentConfig, ToolSettings};
+use crate::config::AgentConfig;
 use crate::llm::types::LlmMessage;
-use crate::permissions::Permissions;
 
 /// Unique identifier for an agent or subagent.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -65,9 +63,6 @@ pub struct Agent {
     /// MCP names (references global MCP definitions).
     pub mcps: Vec<String>,
 
-    /// Permissions for this agent.
-    pub permissions: Permissions,
-
     /// Subagent names (only for Root agents).
     pub subagent_names: Vec<String>,
 
@@ -78,11 +73,11 @@ pub struct Agent {
     /// is forced to stop and mark the task as incomplete.
     pub max_steps: u32,
 
-    /// Maximum depth of dynamic subagent delegation via the `task` tool.
-    pub subagent_depth: u32,
+    /// List of built-in tool names this agent can use.
+    pub tools: Vec<String>,
 
-    /// Per-tool configuration overrides.
-    pub tool_settings: HashMap<String, ToolSettings>,
+    /// Additional paths where this agent can write (workspace is always writable).
+    pub writable_paths: Vec<PathBuf>,
 }
 
 impl Agent {
@@ -96,12 +91,11 @@ impl Agent {
             model: config.model.clone(),
             skills: config.skills.clone(),
             mcps: config.mcps.clone(),
-            permissions: Permissions::from_config(&config.permissions),
             subagent_names: config.subagents.clone(),
             parent_id: None,
             max_steps: config.max_steps,
-            subagent_depth: config.subagent_depth,
-            tool_settings: config.tools.clone(),
+            tools: config.tools.clone(),
+            writable_paths: config.writable_paths.clone(),
         }
     }
 
@@ -113,10 +107,10 @@ impl Agent {
         model: String,
         skills: Vec<PathBuf>,
         mcps: Vec<String>,
-        permissions: Permissions,
         max_steps: u32,
         parent_id: AgentId,
-        tool_settings: HashMap<String, ToolSettings>,
+        tools: Vec<String>,
+        writable_paths: Vec<PathBuf>,
     ) -> Self {
         Self {
             id: AgentId::new(),
@@ -126,12 +120,11 @@ impl Agent {
             model,
             skills,
             mcps,
-            permissions,
             subagent_names: Vec::new(),
             parent_id: Some(parent_id),
             max_steps,
-            subagent_depth: 3,
-            tool_settings,
+            tools,
+            writable_paths,
         }
     }
 
@@ -176,27 +169,10 @@ pub enum AgentMessage {
     ClearHistory,
     /// Force compaction of the conversation context (summarize old messages).
     Compact,
-    /// A dynamic task delegation request (via the `task` tool).
-    Task {
-        task_id: String,
-        description: String,
-        mode: TaskMode,
-        model: Option<String>,
-        tools: Vec<String>,
-    },
     /// Emergency stop signal — cancel current operation and return to idle.
     Cancel,
     /// Shutdown signal.
     Shutdown,
-}
-
-/// Execution mode for a dynamically delegated task.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TaskMode {
-    /// Run the subagent synchronously and wait for its result.
-    Foreground,
-    /// Launch the subagent in the background and return immediately.
-    Background,
 }
 
 /// The operational mode of an agent, controlling which tools are available.

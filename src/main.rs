@@ -8,8 +8,8 @@ use anacleto::tui::app::{App, run_tui};
 
 use clap::Parser;
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
@@ -190,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
         let mut terminal = Terminal::new(backend)?;
         crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
         crossterm::execute!(io::stdout(), EnableMouseCapture)?;
+        crossterm::execute!(io::stdout(), EnableBracketedPaste)?;
         // Push the protocol flags AFTER the alternate screen is entered, so the
         // escape sequence is not consumed during terminal initialization.
         if kb_supported {
@@ -214,6 +215,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Cleanup
         crossterm::execute!(io::stdout(), DisableMouseCapture)?;
+        crossterm::execute!(io::stdout(), DisableBracketedPaste)?;
         crossterm::execute!(io::stdout(), PopKeyboardEnhancementFlags)?;
         crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
         crossterm::terminal::disable_raw_mode()?;

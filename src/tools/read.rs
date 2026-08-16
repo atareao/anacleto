@@ -1,14 +1,11 @@
 //! The `read` tool: read a file with optional line offset/limit and pagination.
 //!
-//! Paths are resolved relative to the workspace. Reading a path that escapes
-//! the workspace (absolute path or `..` traversal) additionally requires the
-//! `fs.external` permission.
+//! Paths are resolved relative to the workspace. Reading outside the
+//! workspace (absolute path or `..` traversal) is not allowed by default.
 
 use std::path::{Path, PathBuf};
 
 use crate::llm::types::{ToolCall, ToolDefinition};
-use crate::permissions::checker::{check_fs_external, check_fs_read};
-use crate::permissions::types::Permissions;
 
 /// Maximum number of lines returned per `read` call.
 pub const MAX_LINES: usize = 2000;
@@ -43,8 +40,7 @@ pub fn read_tool_definition() -> ToolDefinition {
     }
 }
 
-/// Resolve a read path, enforcing workspace containment unless the caller has
-/// the `fs.external` permission.
+/// Resolve a read path, enforcing workspace containment.
 fn resolve_read_path(
     workspace: &Path,
     path: &str,
@@ -69,7 +65,6 @@ fn resolve_read_path(
 /// Execute a `read` tool call.
 pub async fn execute_read_tool(
     workspace: &Path,
-    permissions: &Permissions,
     tool_call: &ToolCall,
 ) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
@@ -90,11 +85,8 @@ pub async fn execute_read_tool(
         .unwrap_or(MAX_LINES)
         .clamp(1, MAX_LINES);
 
-    // Base permission: reading files requires fs.read.
-    check_fs_read(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
-    // If the path is outside the workspace, additionally require fs.external.
-    let external_granted = check_fs_external(permissions).is_ok();
+    // If the path is outside the workspace, it is denied.
+    let external_granted = false;
     let full = resolve_read_path(workspace, path, external_granted)?;
 
     let bytes =
@@ -136,9 +128,7 @@ pub async fn execute_read_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionConfig;
     use crate::llm::types::ToolFunction;
-    use crate::permissions::types::Permissions;
 
     fn temp_workspace() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("anacleto_read_test_{}", uuid::Uuid::new_v4()));
@@ -157,18 +147,11 @@ mod tests {
         }
     }
 
-    fn allow_all() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec![],
-        })
-    }
-
     #[tokio::test]
     async fn read_basic_with_line_numbers() {
         let ws = temp_workspace();
         std::fs::write(ws.join("a.txt"), "one\ntwo\nthree\n").unwrap();
-        let result = execute_read_tool(&ws, &allow_all(), &tool_call(r#"{"path":"a.txt"}"#))
+        let result = execute_read_tool(&ws, &tool_call(r#"{"path":"a.txt"}"#))
             .await
             .unwrap();
         assert!(result.contains("1 | one"));
@@ -184,7 +167,6 @@ mod tests {
         std::fs::write(ws.join("b.txt"), content).unwrap();
         let result = execute_read_tool(
             &ws,
-            &allow_all(),
             &tool_call(r#"{"path":"b.txt","offset":3,"limit":2}"#),
         )
         .await
@@ -200,7 +182,7 @@ mod tests {
     async fn read_rejects_path_traversal() {
         let ws = temp_workspace();
         let result =
-            execute_read_tool(&ws, &allow_all(), &tool_call(r#"{"path":"../secret.txt"}"#)).await;
+            execute_read_tool(&ws, &tool_call(r#"{"path":"../secret.txt"}"#)).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("escapes workspace") || err.contains("fs.external"));
@@ -214,29 +196,14 @@ mod tests {
             std::env::temp_dir().join(format!("anacleto_outside_{}", uuid::Uuid::new_v4()));
         std::fs::write(&outside, "external data").unwrap();
 
-        // Without fs.external, an absolute external path is denied.
+        // An absolute external path is denied.
         let result = execute_read_tool(
             &ws,
-            &allow_all(),
             &tool_call(&format!(r#"{{"path":"{}"}}"#, outside.display())),
         )
         .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("fs.external"));
-
-        // With fs.external granted, it is allowed.
-        let perms = Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec!["fs.read".into(), "fs.external".into()],
-        });
-        let result = execute_read_tool(
-            &ws,
-            &perms,
-            &tool_call(&format!(r#"{{"path":"{}"}}"#, outside.display())),
-        )
-        .await;
-        assert!(result.is_ok());
-        assert!(result.unwrap().contains("external data"));
 
         std::fs::remove_dir_all(&ws).unwrap();
         std::fs::remove_file(&outside).unwrap();
@@ -246,7 +213,7 @@ mod tests {
     async fn read_missing_file_errors() {
         let ws = temp_workspace();
         let result =
-            execute_read_tool(&ws, &allow_all(), &tool_call(r#"{"path":"nope.txt"}"#)).await;
+            execute_read_tool(&ws, &tool_call(r#"{"path":"nope.txt"}"#)).await;
         assert!(result.is_err());
         std::fs::remove_dir_all(&ws).unwrap();
     }

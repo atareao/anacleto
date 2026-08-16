@@ -3,8 +3,6 @@
 use std::path::{Path, PathBuf};
 
 use crate::llm::types::{ToolCall, ToolDefinition};
-use crate::permissions::checker::check_fs_read;
-use crate::permissions::types::Permissions;
 
 /// Maximum number of paths returned per `glob` call.
 const MAX_PATHS: usize = 1000;
@@ -43,7 +41,6 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Execute a `glob` tool call.
 pub async fn execute_glob_tool(
     workspace: &Path,
-    permissions: &Permissions,
     tool_call: &ToolCall,
 ) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
@@ -52,8 +49,6 @@ pub async fn execute_glob_tool(
         .get("pattern")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "glob requires 'pattern'".to_string())?;
-
-    check_fs_read(permissions).map_err(|e| format!("Permission denied: {e}"))?;
 
     let workspace_canon = workspace
         .canonicalize()
@@ -96,9 +91,7 @@ pub async fn execute_glob_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionConfig;
     use crate::llm::types::ToolFunction;
-    use crate::permissions::types::Permissions;
 
     fn temp_workspace() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("anacleto_glob_test_{}", uuid::Uuid::new_v4()));
@@ -117,13 +110,6 @@ mod tests {
         }
     }
 
-    fn allow_all() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec![],
-        })
-    }
-
     #[tokio::test]
     async fn glob_lists_matching_files() {
         let ws = temp_workspace();
@@ -132,7 +118,7 @@ mod tests {
         std::fs::write(ws.join("src/sub/lib.rs"), "").unwrap();
         std::fs::write(ws.join("README.md"), "").unwrap();
 
-        let result = execute_glob_tool(&ws, &allow_all(), &tool_call(r#"{"pattern":"**/*.rs"}"#))
+        let result = execute_glob_tool(&ws, &tool_call(r#"{"pattern":"**/*.rs"}"#))
             .await
             .unwrap();
         assert!(result.contains("src/main.rs"));
@@ -146,7 +132,7 @@ mod tests {
     async fn glob_no_matches() {
         let ws = temp_workspace();
         std::fs::write(ws.join("a.txt"), "").unwrap();
-        let result = execute_glob_tool(&ws, &allow_all(), &tool_call(r#"{"pattern":"*.py"}"#))
+        let result = execute_glob_tool(&ws, &tool_call(r#"{"pattern":"*.py"}"#))
             .await
             .unwrap();
         assert!(result.contains("No files match"));

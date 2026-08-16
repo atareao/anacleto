@@ -1,7 +1,7 @@
 //! Shared types for the TUI: focus windows, agent info, approval/question
 //! dialogs, the `/init` flow, and the built-in slash command list.
 
-use crate::agent::types::{AgentId, AgentRole, AgentStatus, TaskMode};
+use crate::agent::types::{AgentId, AgentRole, AgentStatus};
 
 /// Maximum number of chat messages kept in RAM for rendering. Older messages
 /// are persisted in the SQLite database by the engine, so dropping them from
@@ -99,15 +99,6 @@ pub(crate) struct AgentInfo {
     /// Name of the configured subagent type (e.g. "reviewer"), or `None` for a
     /// dynamic/generic subagent. Root agents have no type.
     pub(crate) agent_type: Option<String>,
-    /// Execution mode (Foreground/Background). Root agents have no mode.
-    pub(crate) mode: Option<TaskMode>,
-}
-
-/// A pending human approval request.
-#[derive(Debug, Clone)]
-pub(crate) struct ApprovalRequest {
-    pub(crate) id: String,
-    pub(crate) operation: String,
 }
 
 /// State for an inline question dialog (`/question` tool).

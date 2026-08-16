@@ -1,464 +1,634 @@
-# Workspace obligatorio para subagentes — Implementation Plan
+# Simplificación del modelo de agentes: tools como array + writable_paths
 
-## Objetivo
+> **Para workers automáticos:** Implementar tarea por tarea en orden. Cada tarea produce código compilable y testeable.
 
-Propagar el `workspace` del agente padre al subagente haciendo que sea un campo requerido en el `task` tool, de modo que el subagente sepa en qué directorio trabajar.
+**Objetivo:** Reemplazar el sistema actual de permisos (PermissionConfig/Permissions), ToolSettings con overrides, y task tool dinámico por un modelo simple donde los agentes declaran solo un array de tools y writable_paths.
 
-## Arquitectura
+**Arquitectura:**
+- `tools: [string]` — strict allow list. Si no está en la lista, el agente no tiene ese tool.
+- `writable_paths: [string]` — rutas adicionales donde se permite escritura (workspace siempre permitido).
+- Sin herencia de writable_paths entre padre e hijo. Cada agente declara los suyos.
+- Sin sistema de permisos (PermissionConfig, Permissions, Permission enum).
+- Sin `task` tool. Los padres solo llaman a subagentes declarados en `subagents:`, que aparecen como tools.
+- Sin `ToolSettings` (show/color/display/enabled por agente). Solo `ToolDefaults` global en config.yaml.
+- Sin `JobRegistry`, `TaskMode`, `PendingApprovals`, `subagent_depth`.
 
-Se añade `workspace: PathBuf` como campo requerido en `TaskToolArgs`, `SpawnSubagentConfig`, y como parámetro de `execute_task_tool`. En `spawn_subagent_and_delegate` se usa para renderizar el system prompt del subagente (inyectando `{workspace}` via `render_template`), replicando lo que ya hace `spawn_agent` en `lifecycle.rs`.
+**Tech Stack:** Rust, serde, serde_yaml
 
-## Tareas
+---
 
-### Tarea 1: Añadir `workspace` a `TaskToolArgs` y su parseo
+## Archivos a modificar/eliminar/crear
 
-**Archivos:**
-- Modificar: `src/agent/tools.rs:1135-1195`
-
-- [ ] **Paso 1.1:** Añadir `use std::path::PathBuf;` si no existe ya al inicio del archivo.
-
-- [ ] **Paso 1.2:** Añadir el campo `workspace: PathBuf` a la struct `TaskToolArgs`:
-
-```rust
-struct TaskToolArgs {
-    task_id: String,
-    description: String,
-    mode: TaskMode,
-    model: Option<String>,
-    tools: Vec<String>,
-    /// Optional name of a configured subagent type (e.g. "reviewer") used as
-    /// the template for this subagent. When `None`, a dynamic subagent is
-    /// created from the task description.
-    agent: Option<String>,
-    /// The workspace directory where the subagent will operate.
-    workspace: PathBuf,
-}
-```
-
-- [ ] **Paso 1.3:** En el método `parse`, añadir el parseo de `workspace` entre el parseo de `tools` y `agent`:
-
-```rust
-        let workspace = args
-            .get("workspace")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "task requires 'workspace'".to_string())?
-            .to_string();
-```
-
-Y añadirlo al `Ok(Self { ... })`:
-
-```rust
-        Ok(Self {
-            task_id,
-            description,
-            mode,
-            model,
-            tools,
-            workspace: PathBuf::from(workspace),
-            agent,
-        })
-```
-
-### Tarea 2: Actualizar `task_tool_definition()` schema
-
-**Archivos:**
-- Modificar: `src/agent/tools.rs:1200-1260`
-
-- [ ] **Paso 2.1:** Añadir la propiedad `"workspace"` al objeto `"properties"` en `input_schema`:
-
-```rust
-                "workspace": {
-                    "type": "string",
-                    "description": "The workspace directory where the subagent will operate."
-                },
-```
-
-- [ ] **Paso 2.2:** Añadir `"workspace"` al array `"required"`:
-
-```rust
-            "required": ["task_id", "description", "workspace"]
-```
-
-### Tarea 3: Añadir `workspace` a `SpawnSubagentConfig`
-
-**Archivos:**
-- Modificar: `src/agent/tools.rs:1517-1550`
-
-- [ ] **Paso 3.1:** Añadir el campo `pub workspace: PathBuf` a la struct `SpawnSubagentConfig`:
-
-```rust
-pub(crate) struct SpawnSubagentConfig {
-    pub(crate) parent_id: AgentId,
-    pub(crate) parent_name: String,
-    pub(crate) task_id: String,
-    pub(crate) description: String,
-    pub(crate) mode: TaskMode,
-    pub(crate) model: Option<String>,
-    pub(crate) tools: Vec<String>,
-    pub(crate) workspace: PathBuf,
-    pub(crate) permissions: Permissions,
-    pub(crate) event_tx: mpsc::Sender<EngineEvent>,
-    pub(crate) usage_tx: Option<mpsc::Sender<UsageEvent>>,
-    pub(crate) db: Option<Database>,
-    pub(crate) session_id: Option<Uuid>,
-    pub(crate) history_limit_percent: f64,
-    pub(crate) retry_config: RetryConfig,
-    pub(crate) debug: Arc<AtomicBool>,
-    pub(crate) depth: u32,
-    pub(crate) subagent_depth: u32,
-    pub(crate) job_registry: Option<Arc<tokio::sync::Mutex<JobRegistry>>>,
-    pub(crate) agent: Option<AgentConfig>,
-    pub(crate) llm_registry: LlmProviderRegistry,
-    pub(crate) skill_registry: crate::skill::registry::SharedSkillRegistry,
-    pub(crate) skill_names: Vec<String>,
-}
-```
-
-### Tarea 4: Añadir parámetro `workspace` a `execute_task_tool`
-
-**Archivos:**
-- Modificar: `src/agent/tools.rs:1285-1515`
-
-- [ ] **Paso 4.1:** Añadir `workspace: &Path` como nuevo parámetro en la firma de `execute_task_tool`:
-
-```rust
-pub(crate) async fn execute_task_tool(
-    tool_call: &ToolCall,
-    parent_permissions: &Permissions,
-    llm_registry: &LlmProviderRegistry,
-    parent_skill_registry: &crate::skill::registry::SharedSkillRegistry,
-    parent_skill_names: &[String],
-    event_tx: &mpsc::Sender<EngineEvent>,
-    usage_tx: &Option<mpsc::Sender<UsageEvent>>,
-    db: &Option<Database>,
-    session_id: Option<Uuid>,
-    history_limit_percent: f64,
-    retry_config: &RetryConfig,
-    debug: &Arc<AtomicBool>,
-    depth: u32,
-    subagent_depth: u32,
-    parent_name: &str,
-    parent_id: &AgentId,
-    parent_model: &str,
-    job_registry: &Option<Arc<tokio::sync::Mutex<JobRegistry>>>,
-    subagent_configs: &[AgentConfig],
-    workspace: &Path,
-) -> std::result::Result<String, String> {
-```
-
-### Tarea 5: Pasar `workspace` en ambas ramas de `execute_task_tool`
-
-**Archivos:**
-- Modificar: `src/agent/tools.rs` (dentro de `execute_task_tool`, ~líneas 1310-1400)
-
-- [ ] **Paso 5.1:** En la rama donde se construye `SpawnSubagentConfig` para un agente configurado (`if let Some(agent_name) = &args.agent`), añadir `workspace: workspace.to_path_buf()`:
-
-```rust
-            let sub_cfg = SpawnSubagentConfig {
-                parent_id: parent_id.clone(),
-                parent_name: parent_name.to_string(),
-                task_id: args.task_id.clone(),
-                description: args.description.clone(),
-                mode: args.mode,
-                model: args.model.clone(),
-                tools: args.tools.clone(),
-                workspace: workspace.to_path_buf(),
-                permissions: config.permissions.clone(),
-                event_tx: event_tx.clone(),
-                usage_tx: usage_tx.clone(),
-                db: db.clone(),
-                session_id,
-                history_limit_percent,
-                retry_config: retry_config.clone(),
-                debug: debug.clone(),
-                depth: depth + 1,
-                subagent_depth,
-                job_registry: job_registry.clone(),
-                agent: Some(config),
-                llm_registry: llm_registry.clone(),
-                skill_registry: skill_registry.clone(),
-                skill_names: skill_names.to_vec(),
-            };
-```
-
-- [ ] **Paso 5.2:** En la rama del agente dinámico (`else`), hacer lo mismo:
-
-```rust
-            let sub_cfg = SpawnSubagentConfig {
-                parent_id: parent_id.clone(),
-                parent_name: parent_name.to_string(),
-                task_id: args.task_id.clone(),
-                description: args.description.clone(),
-                mode: args.mode,
-                model: args.model.clone(),
-                tools: args.tools.clone(),
-                workspace: workspace.to_path_buf(),
-                permissions: parent_permissions.clone(),
-                event_tx: event_tx.clone(),
-                usage_tx: usage_tx.clone(),
-                db: db.clone(),
-                session_id,
-                history_limit_percent,
-                retry_config: retry_config.clone(),
-                debug: debug.clone(),
-                depth: depth + 1,
-                subagent_depth,
-                job_registry: job_registry.clone(),
-                agent: None,
-                llm_registry: llm_registry.clone(),
-                skill_registry: skill_registry.clone(),
-                skill_names: parent_skill_names.to_vec(),
-            };
-```
-
-### Tarea 6: Usar `workspace` en `spawn_subagent_and_delegate` para renderizar system prompt
-
-**Archivos:**
-- Modificar: `src/agent/tools.rs:1552-1700`
-
-- [ ] **Paso 6.1:** Añadir los imports necesarios al inicio del archivo si no existen:
-
-```rust
-use std::collections::HashMap;
-use crate::llm::template::render_template;
-```
-
-- [ ] **Paso 6.2:** En `spawn_subagent_and_delegate`, destructure `workspace` del config y renderizar el system prompt:
-
-```rust
-pub(crate) async fn spawn_subagent_and_delegate(
-    cfg: SpawnSubagentConfig,
-) -> Result<SubagentOutcome> {
-    let SpawnSubagentConfig {
-        parent_id,
-        parent_name,
-        task_id,
-        description,
-        mode,
-        model,
-        tools,
-        workspace,
-        permissions,
-        event_tx,
-        usage_tx,
-        db,
-        session_id,
-        history_limit_percent,
-        retry_config,
-        debug,
-        depth,
-        subagent_depth,
-        job_registry,
-        agent,
-        llm_registry,
-        skill_registry,
-        skill_names,
-    } = cfg;
-```
-
-- [ ] **Paso 6.3:** Renderizar el system prompt usando `render_template` donde antes se usaba `agent.description.clone()`. Buscar el lugar donde se asigna el system prompt (aproximadamente línea 1690) y reemplazar:
-
-```rust
-                    // Render the system prompt with workspace variable
-                    let mut vars = HashMap::new();
-                    vars.insert("workspace".to_string(), workspace.to_string_lossy().to_string());
-                    let system_prompt = render_template(&agent.description, &vars);
-```
-
-Luego usar `system_prompt` en el mensaje System del subagente en lugar de `agent.description.clone()`.
-
-Ejemplo del contexto donde se usa (aproximadamente líneas 1680-1700):
-
-```rust
-                    messages.push(SystemMessage {
-                        content: system_prompt,  // antes era: agent.description.clone()
-                        ..Default::default()
-                    });
-```
-
-### Tarea 7: Actualizar el caller en `lifecycle.rs`
-
-**Archivos:**
-- Modificar: `src/agent/lifecycle.rs:814-835`
-
-- [ ] **Paso 7.1:** Localizar la llamada a `execute_task_tool` (~línea 814). El workspace ya está disponible en el `SpawnAgentConfig` que posee la función `spawn_agent`. Añadirlo como último argumento:
-
-```rust
-                                            let task_result = execute_task_tool(
-                                                &tc,
-                                                agent_permissions,
-                                                llm_registry,
-                                                skill_registry,
-                                                skill_names,
-                                                event_tx,
-                                                usage_tx,
-                                                db,
-                                                session_id,
-                                                history_limit_percent,
-                                                retry_config,
-                                                debug_mode,
-                                                depth,
-                                                subagent_depth,
-                                                agent_name,
-                                                agent_id,
-                                                model_name,
-                                                job_registry,
-                                                subagent_configs,
-                                                &workspace,   // <-- nuevo parámetro
-                                            )
-                                            .await;
-```
-
-### Tarea 8: Actualizar tests existentes
-
-**Archivos:**
-- Modificar: `src/agent/tools.rs:2218-2260` (tests)
-
-- [ ] **Paso 8.1:** En `test_task_tool_args_parse_with_agent` (~línea 2218), actualizar el JSON para incluir `"workspace":"/tmp/test"` y añadir assert:
-
-```rust
-    #[test]
-    fn test_task_tool_args_parse_with_agent() {
-        let json = r#"{
-            "task_id": "t1",
-            "description": "do something",
-            "agent": "reviewer",
-            "workspace": "/tmp/test"
-        }"#;
-        let args = TaskToolArgs::parse(json).unwrap();
-        assert_eq!(args.task_id, "t1");
-        assert_eq!(args.description, "do something");
-        assert_eq!(args.agent, Some("reviewer".to_string()));
-        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
-    }
-```
-
-- [ ] **Paso 8.2:** En `test_task_tool_args_parse_without_agent` (~línea 2228), actualizar el JSON para incluir `"workspace":"/tmp/test"` y añadir assert:
-
-```rust
-    #[test]
-    fn test_task_tool_args_parse_without_agent() {
-        let json = r#"{
-            "task_id": "t2",
-            "description": "do something else",
-            "workspace": "/tmp/test"
-        }"#;
-        let args = TaskToolArgs::parse(json).unwrap();
-        assert_eq!(args.task_id, "t2");
-        assert_eq!(args.description, "do something else");
-        assert_eq!(args.agent, None);
-        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
-    }
-```
-
-- [ ] **Paso 8.3:** En `test_task_tool_args_parse_background_with_model_and_tools` (~línea 1175), actualizar el JSON:
-
-```rust
-    #[test]
-    fn test_task_tool_args_parse_background_with_model_and_tools() {
-        let json = r#"{
-            "task_id": "t3",
-            "description": "bg task",
-            "mode": "background",
-            "model": "gpt-4",
-            "tools": ["shell", "read"],
-            "workspace": "/tmp/test"
-        }"#;
-        let args = TaskToolArgs::parse(json).unwrap();
-        assert_eq!(args.mode, TaskMode::Background);
-        assert_eq!(args.model, Some("gpt-4".to_string()));
-        assert_eq!(args.tools, vec!["shell", "read"]);
-        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
-    }
-```
-
-- [ ] **Paso 8.4:** En `test_execute_task_tool_agent_not_found` (~línea 2237), actualizar el JSON y la llamada:
-
-```rust
-    #[tokio::test]
-    async fn test_execute_task_tool_agent_not_found() {
-        let json = r#"{
-            "task_id": "t4",
-            "description": "do x",
-            "agent": "nonexistent",
-            "workspace": "/tmp/test"
-        }"#;
-        let tool_call = ToolCall {
-            id: "call_1".to_string(),
-            function: FunctionCall {
-                name: "task".to_string(),
-                arguments: json.to_string(),
-            },
-        };
-        let result = execute_task_tool(
-            &tool_call,
-            &permissions,
-            &llm_registry,
-            &skill_registry,
-            &skill_names,
-            &event_tx,
-            &None,
-            &None,
-            None,
-            0.5,
-            &retry_config,
-            &Arc::new(AtomicBool::new(false)),
-            0,
-            5,
-            "parent",
-            &AgentId("parent-id".to_string()),
-            "claude-3",
-            &None,
-            &[],
-            &Path::new("/tmp/test"),
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
-    }
-```
-
-- [ ] **Paso 8.5:** En `test_task_tool_args_parse_defaults` (~línea 1185), actualizar el JSON:
-
-```rust
-    #[test]
-    fn test_task_tool_args_parse_defaults() {
-        let json = r#"{
-            "task_id": "t5",
-            "description": "defaults test",
-            "workspace": "/tmp/test"
-        }"#;
-        let args = TaskToolArgs::parse(json).unwrap();
-        assert_eq!(args.mode, TaskMode::Foreground);
-        assert_eq!(args.model, None);
-        assert!(args.tools.is_empty());
-        assert_eq!(args.workspace, PathBuf::from("/tmp/test"));
-    }
-```
-
-### Tarea 9: Añadir test nuevo para `workspace` faltante
-
-**Archivos:**
-- Modificar: `src/agent/tools.rs` (añadir test nuevo cerca de los demás tests de parseo)
-
-- [ ] **Paso 9.1:** Añadir test `test_task_tool_args_parse_missing_workspace`:
-
-```rust
-    #[test]
-    fn test_task_tool_args_parse_missing_workspace() {
-        let json = r#"{
-            "task_id": "t6",
-            "description": "missing workspace"
-        }"#;
-        let result = TaskToolArgs::parse(json);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("workspace"));
-    }
-```
-
-## Resumen de cambios
-
-| Archivo | Cambio |
+| Archivo | Acción |
 |---|---|
-| `src/agent/tools.rs` | Añadir `workspace: PathBuf` a `TaskToolArgs`, parseo, schema, `SpawnSubagentConfig`, parámetro de `execute_task_tool`, renderizado en `spawn_subagent_and_delegate`, tests |
-| `src/agent/lifecycle.rs` | Pasar `&workspace` como argumento adicional a `execute_task_tool` |
+| `src/config/types.rs` | Modificar: eliminar PermissionConfig, ToolSettings. Cambiar AgentConfig.tools a Vec<String>. Añadir writable_paths. |
+| `src/agent/types.rs` | Modificar: eliminar permissions, tool_settings, subagent_depth. Añadir writable_paths. |
+| `src/agent/loader.rs` | Modificar: actualizar frontmatter parsing. |
+| `src/agent/tools.rs` | Modificar: eliminar task tool, permisos, approvals. Añadir is_write_allowed. |
+| `src/agent/lifecycle.rs` | Modificar: eliminar task tool, job registry, approvals, subagent_depth. |
+| `src/permissions/` | **Eliminar** módulo completo. |
+| `src/engine/orchestrator.rs` | Modificar: eliminar job_registry, pending_approvals, subagent_depth. |
+| `src/engine/events.rs` | Modificar: eliminar ApprovalRequired, SubagentFinished, ToolSettingsUpdated. |
+| `src/engine/commands.rs` | Modificar: eliminar comando /jobs. |
+| `src/engine/jobs.rs` | **Eliminar** archivo. |
+| `src/error.rs` | Modificar: eliminar PermissionDenied. |
+| `src/tui/app.rs` | Modificar: eliminar UI de approvals, jobs, tool settings. |
+| `src/tui/events.rs` | Modificar: eliminar manejo de eventos eliminados. |
+| `src/tui/state.rs` | Modificar: eliminar estado de approvals, jobs. |
+| `src/lib.rs` | Modificar: eliminar módulo permissions. |
+| `src/agent/mod.rs` | Modificar: eliminar re-export si es necesario. |
+
+---
+
+### Task 1: Actualizar tipos base (config/types.rs + agent/types.rs)
+
+**Files:**
+- Modify: `src/config/types.rs`
+- Modify: `src/agent/types.rs`
+
+**Interfaces:**
+- Consumes: tipos actuales AgentConfig, Agent, PermissionConfig, ToolSettings, ToolDefaults
+- Produces: AgentConfig con `tools: Vec<String>`, `writable_paths: Vec<PathBuf>`, sin `permissions` ni `tools: HashMap<String, ToolSettings>`
+
+- [ ] **Step 1.1: Modificar AgentConfig en config/types.rs**
+
+Cambiar:
+```rust
+pub struct AgentConfig {
+    pub name: String,
+    pub description: String,
+    pub when_to_use: String,
+    pub role: AgentRole,
+    pub model: String,
+    pub skills: Vec<PathBuf>,
+    pub mcps: Vec<String>,
+    pub permissions: PermissionConfig,         // ← ELIMINAR
+    pub subagents: Vec<String>,
+    pub system_prompt: String,
+    pub max_steps: u32,
+    pub subagent_depth: u32,                   // ← ELIMINAR
+    pub tools: HashMap<String, ToolSettings>,  // ← CAMBIAR
+}
+```
+
+A:
+```rust
+pub struct AgentConfig {
+    pub name: String,
+    pub description: String,
+    pub when_to_use: String,
+    pub role: AgentRole,
+    pub model: String,
+    pub skills: Vec<PathBuf>,
+    pub mcps: Vec<String>,
+    pub subagents: Vec<String>,
+    pub system_prompt: String,
+    pub max_steps: u32,
+    pub tools: Vec<String>,
+    pub writable_paths: Vec<PathBuf>,
+}
+```
+
+- [ ] **Step 1.2: Eliminar PermissionConfig, ToolSettings, ToolDefaults**
+
+Eliminar los structs `PermissionConfig`, `ToolSettings`, `ToolDefaults` y sus funciones auxiliares (`default_tool_enabled`, `default_tool_show`).
+
+Mantener `ToolDefaults` solo si se usa desde config.yaml para display global. Si no se usa en ningún sitio, eliminarlo también.
+
+- [ ] **Step 1.3: Modificar Agent en agent/types.rs**
+
+Cambiar:
+```rust
+pub struct Agent {
+    pub id: AgentId,
+    pub name: String,
+    pub role: AgentRole,
+    pub description: String,
+    pub model: String,
+    pub skills: Vec<PathBuf>,
+    pub mcps: Vec<String>,
+    pub permissions: Permissions,                    // ← ELIMINAR
+    pub subagent_names: Vec<String>,
+    pub parent_id: Option<AgentId>,
+    pub max_steps: u32,
+    pub subagent_depth: u32,                         // ← ELIMINAR
+    pub tool_settings: HashMap<String, ToolSettings>, // ← ELIMINAR
+}
+```
+
+A:
+```rust
+pub struct Agent {
+    pub id: AgentId,
+    pub name: String,
+    pub role: AgentRole,
+    pub description: String,
+    pub model: String,
+    pub skills: Vec<PathBuf>,
+    pub mcps: Vec<String>,
+    pub subagent_names: Vec<String>,
+    pub parent_id: Option<AgentId>,
+    pub max_steps: u32,
+    pub tools: Vec<String>,
+    pub writable_paths: Vec<PathBuf>,
+}
+```
+
+- [ ] **Step 1.4: Actualizar Agent::from_config() y Agent::create_subagent()**
+
+```rust
+impl Agent {
+    pub fn from_config(config: &AgentConfig, role: AgentRole) -> Self {
+        Self {
+            id: AgentId::new(),
+            name: config.name.clone(),
+            role,
+            description: config.system_prompt.clone(),
+            model: config.model.clone(),
+            skills: config.skills.clone(),
+            mcps: config.mcps.clone(),
+            subagent_names: config.subagents.clone(),
+            parent_id: None,
+            max_steps: config.max_steps,
+            tools: config.tools.clone(),
+            writable_paths: config.writable_paths.clone(),
+        }
+    }
+
+    pub fn create_subagent(
+        name: String,
+        description: String,
+        model: String,
+        skills: Vec<PathBuf>,
+        mcps: Vec<String>,
+        max_steps: u32,
+        parent_id: AgentId,
+        tools: Vec<String>,
+        writable_paths: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            id: AgentId::new(),
+            name,
+            role: AgentRole::SubAgent,
+            description,
+            model,
+            skills,
+            mcps,
+            subagent_names: Vec::new(),
+            parent_id: Some(parent_id),
+            max_steps,
+            tools,
+            writable_paths,
+        }
+    }
+}
+```
+
+- [ ] **Step 1.5: Compilar y verificar**
+
+```bash
+cargo check 2>&1 | head -50
+```
+
+---
+
+### Task 2: Actualizar parser de frontmatter (loader.rs)
+
+**Files:**
+- Modify: `src/agent/loader.rs`
+
+**Interfaces:**
+- Consumes: AgentConfig actualizado (tools: Vec<String>, writable_paths: Vec<PathBuf>)
+- Produces: parse_agent() que parsea el nuevo formato de frontmatter
+
+- [ ] **Step 2.1: Actualizar struct Frontmatter en loader.rs**
+
+```rust
+#[derive(serde::Deserialize)]
+struct Frontmatter {
+    name: String,
+    description: String,
+    #[serde(default)]
+    when_to_use: String,
+    #[serde(default)]
+    role: Option<AgentRole>,
+    #[serde(default = "default_model")]
+    model: String,
+    #[serde(default)]
+    skills: Vec<PathBuf>,
+    #[serde(default)]
+    mcps: Vec<String>,
+    #[serde(default)]
+    subagents: Vec<String>,
+    #[serde(default)]
+    max_steps: Option<u32>,
+    #[serde(default)]
+    tools: Vec<String>,
+    #[serde(default)]
+    writable_paths: Vec<PathBuf>,
+}
+```
+
+- [ ] **Step 2.2: Actualizar parse_agent()**
+
+```rust
+Ok(AgentConfig {
+    name: frontmatter.name,
+    description: frontmatter.description,
+    when_to_use: frontmatter.when_to_use,
+    role: frontmatter.role.unwrap_or(AgentRole::SubAgent),
+    model: frontmatter.model,
+    skills: frontmatter.skills,
+    mcps: frontmatter.mcps,
+    subagents: frontmatter.subagents,
+    system_prompt,
+    max_steps: frontmatter.max_steps.unwrap_or(default_max_steps),
+    tools: frontmatter.tools,
+    writable_paths: frontmatter.writable_paths,
+})
+```
+
+- [ ] **Step 2.3: Actualizar tests**
+
+Actualizar `test_parse_agent_full_frontmatter`, `test_merge_agents_project_overrides_global`, etc. para usar el nuevo formato.
+
+- [ ] **Step 2.4: Compilar y verificar**
+
+```bash
+cargo check 2>&1 | head -50
+```
+
+---
+
+### Task 3: Eliminar módulo de permisos
+
+**Files:**
+- Delete: `src/permissions/types.rs`
+- Delete: `src/permissions/checker.rs`
+- Delete: `src/permissions/mod.rs`
+- Modify: `src/lib.rs` (eliminar `mod permissions`)
+
+- [ ] **Step 3.1: Eliminar archivos del módulo permissions**
+
+```bash
+rm src/permissions/types.rs src/permissions/checker.rs src/permissions/mod.rs
+```
+
+- [ ] **Step 3.2: Eliminar referencia en lib.rs**
+
+```bash
+grep -n "mod permissions" src/lib.rs
+# Eliminar esa línea
+```
+
+- [ ] **Step 3.3: Compilar y verificar**
+
+```bash
+cargo check 2>&1 | head -50
+```
+
+---
+
+### Task 4: Simplificar agent/tools.rs
+
+**Files:**
+- Modify: `src/agent/tools.rs`
+
+**Interfaces:**
+- Consumes: Agent sin permissions ni tool_settings
+- Produces: tools.rs sin check_tool_permission, task tool, approvals. Con is_write_allowed().
+
+- [ ] **Step 4.1: Eliminar imports de permissions**
+
+Eliminar:
+```rust
+use crate::permissions::checker::{
+    check_command_run, check_fs_read, check_fs_write, check_mcp_use, check_net_http,
+    check_skill_use,
+};
+use crate::permissions::types::Permissions;
+```
+
+- [ ] **Step 4.2: Eliminar check_tool_permission(), classify_tool_operation(), is_sensitive_operation()**
+
+Eliminar las tres funciones completas (~180 líneas).
+
+- [ ] **Step 4.3: Eliminar task_tool_definition(), execute_task_tool(), TaskToolArgs, SpawnSubagentConfig, spawn_subagent_and_delegate()**
+
+Eliminar todo el bloque del task tool (~300 líneas).
+
+- [ ] **Step 4.4: Eliminar plan_mode_blocked()**
+
+Eliminar función (~40 líneas).
+
+- [ ] **Step 4.5: Añadir is_write_allowed()**
+
+```rust
+/// Check if a path is allowed for write operations.
+/// The workspace is always writable. Additional paths can be declared
+/// in the agent's `writable_paths`.
+pub fn is_write_allowed(path: &Path, workspace: &Path, writable_paths: &[PathBuf]) -> bool {
+    if path.starts_with(workspace) {
+        return true;
+    }
+    writable_paths.iter().any(|p| path.starts_with(p))
+}
+```
+
+- [ ] **Step 4.6: Simplificar execute_apply_patch_tool()**
+
+Eliminar el parámetro `permissions: &Permissions` y `pending_approvals`. Añadir `workspace: &Path` y `writable_paths: &[PathBuf]`. Usar `is_write_allowed()` en lugar de `check_fs_write()`.
+
+```rust
+pub(crate) async fn execute_apply_patch_tool(
+    workspace: &Path,
+    writable_paths: &[PathBuf],
+    event_tx: &mpsc::Sender<EngineEvent>,
+    agent_name: &str,
+    tool_call: &ToolCall,
+) -> std::result::Result<String, String> {
+    let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+        .map_err(|e| format!("Failed to parse apply_patch arguments: {e}"))?;
+
+    let json = args
+        .get("operations")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| tool_call.function.arguments.clone());
+
+    let batch = crate::engine::apply_patch::parse_patch_batch(&json)?;
+
+    // Validate every path: must be within workspace or writable_paths
+    for op in &batch.operations {
+        let resolved = crate::engine::apply_patch::resolve_within_workspace(workspace, &op.path)
+            .map_err(|e| format!("Path validation failed: {e}"))?;
+        if !is_write_allowed(&resolved, workspace, writable_paths) {
+            return Err(format!(
+                "Write not allowed for path: {} (not in workspace or writable_paths)",
+                op.path
+            ));
+        }
+    }
+
+    let results = crate::engine::apply_patch::apply_patch_batch(workspace, &batch, false)?;
+
+    // Emit a unified diff for the TUI diff viewer.
+    let diff_text = crate::engine::apply_patch::batch_to_unified_diff(&batch);
+    let _ = event_tx
+        .send(EngineEvent::DiffAvailable {
+            text: diff_text,
+            title: format!("apply_patch — {}", agent_name),
+        })
+        .await;
+
+    Ok(results.join("\n"))
+}
+```
+
+- [ ] **Step 4.7: Compilar y verificar**
+
+```bash
+cargo check 2>&1 | head -50
+```
+
+---
+
+### Task 5: Simplificar agent/lifecycle.rs
+
+**Files:**
+- Modify: `src/agent/lifecycle.rs`
+
+**Interfaces:**
+- Consumes: Agent sin permissions/tool_settings, tools como Vec<String>
+- Produces: lifecycle sin task tool, job registry, approvals, subagent_depth
+
+- [ ] **Step 5.1: Eliminar imports obsoletos**
+
+Eliminar imports de:
+- `execute_task_tool`, `spawn_subagent_and_delegate`, `task_tool_definition` de agent/tools
+- `JobRegistry`
+- `TaskMode`
+- `PendingApprovals`
+
+- [ ] **Step 5.2: Eliminar builtin_tool_definitions() el task tool**
+
+```rust
+pub fn builtin_tool_definitions() -> HashMap<String, ToolDefinition> {
+    let mut map = HashMap::new();
+    for def in [
+        todo_tool_definition(),
+        question_tool_definition(),
+        apply_patch_tool_definition(),
+        fs_tool_definition(),
+        execute_tool_definition(),
+        search_tool_definition(),
+        webfetch_tool_definition(),
+        websearch_tool_definition(),
+        mcp_list_resources_tool_definition(),
+        mcp_read_resource_tool_definition(),
+        mcp_list_resource_templates_tool_definition(),
+        lsp_query_tool_definition(),
+        format_document_tool_definition(),
+        search_symbol_tool_definition(),
+        // task_tool_definition() ← ELIMINAR
+    ] {
+        map.insert(def.name.clone(), def);
+    }
+    map
+}
+```
+
+- [ ] **Step 5.3: Simplificar SpawnAgentConfig**
+
+Eliminar campos:
+- `job_registry`
+- `concurrency_semaphore`
+- `pending_approvals`
+- `tool_defaults` (opcional, mantener si se usa para display global)
+
+- [ ] **Step 5.4: Simplificar spawn_agent()**
+
+La construcción de tools cambia de:
+```rust
+// ANTES: iterar sobre tool_settings HashMap
+let builtin_tools = builtin_tool_definitions();
+for (tool_name, agent_settings) in &tool_settings_clone {
+    if !agent_settings.enabled { continue; }
+    if let Some(mut def) = builtin_tools.get(tool_name).cloned() {
+        tools.push(def);
+    }
+}
+```
+
+A:
+```rust
+// DESPUÉS: iterar sobre tools Vec<String>
+let builtin_tools = builtin_tool_definitions();
+for tool_name in &agent.tools {
+    if let Some(def) = builtin_tools.get(tool_name).cloned() {
+        tools.push(def);
+    }
+}
+```
+
+- [ ] **Step 5.5: Eliminar lógica de background jobs y approvals**
+
+En el tool loop, eliminar:
+- Manejo de `PendingApprovals`
+- Spawning de background tasks
+- Referencias a `job_registry`
+
+- [ ] **Step 5.6: Simplificar should_emit_tool() y resolve_tool_preview()**
+
+Estas funciones usaban `ToolSettings`. Simplificarlas o eliminarlas.
+
+```rust
+/// Check whether tool execution should be shown in the chat.
+/// Now always returns true since per-agent show/hide is removed.
+fn should_emit_tool(_tool_name: &str) -> bool {
+    true
+}
+```
+
+```rust
+/// Resolve display template for a tool.
+/// Falls back to extract_task_preview since per-agent templates are removed.
+pub fn resolve_tool_preview(tool_name: &str, args: &str) -> String {
+    extract_task_preview(tool_name, args)
+}
+```
+
+- [ ] **Step 5.7: Compilar y verificar**
+
+```bash
+cargo check 2>&1 | head -50
+```
+
+---
+
+### Task 6: Actualizar engine
+
+**Files:**
+- Modify: `src/engine/orchestrator.rs`
+- Modify: `src/engine/events.rs`
+- Modify: `src/engine/commands.rs`
+- Delete: `src/engine/jobs.rs`
+- Modify: `src/engine/mod.rs`
+- Modify: `src/error.rs`
+
+- [ ] **Step 6.1: Eliminar JobRegistry**
+
+```bash
+rm src/engine/jobs.rs
+```
+
+Eliminar `pub mod jobs;` de `src/engine/mod.rs`.
+
+- [ ] **Step 6.2: Eliminar eventos obsoletos de EngineEvent**
+
+En `src/engine/events.rs`, eliminar variantes:
+- `ApprovalRequired`
+- `SubagentFinished`
+- `ToolSettingsUpdated`
+
+- [ ] **Step 6.3: Eliminar EngineCommand obsoletos**
+
+En `src/engine/events.rs`, eliminar variantes relacionadas con jobs y approvals.
+
+- [ ] **Step 6.4: Simplificar Engine en orchestrator.rs**
+
+Eliminar campos:
+- `job_registry: Arc<tokio::sync::Mutex<JobRegistry>>`
+- `pending_approvals: Arc<tokio::sync::Mutex<HashMap<String, oneshot::Sender<bool>>>>`
+- `concurrency_semaphore`
+
+Eliminar lógica de:
+- `/jobs` command handling
+- Approval request/response handling
+- Subagent depth enforcement
+
+- [ ] **Step 6.5: Eliminar comando /jobs de commands.rs**
+
+- [ ] **Step 6.6: Eliminar PermissionDenied de error.rs**
+
+```rust
+pub enum Error {
+    // PermissionDenied(String), ← ELIMINAR
+}
+```
+
+- [ ] **Step 6.7: Compilar y verificar**
+
+```bash
+cargo check 2>&1 | head -50
+```
+
+---
+
+### Task 7: Actualizar TUI
+
+**Files:**
+- Modify: `src/tui/app.rs`
+- Modify: `src/tui/events.rs`
+- Modify: `src/tui/state.rs`
+
+- [ ] **Step 7.1: Eliminar UI de approvals**
+
+En `src/tui/app.rs`, eliminar:
+- Renderizado de diálogo de approval
+- Manejo de eventos `ApprovalRequired`
+- Estado de approvals pendientes
+
+- [ ] **Step 7.2: Eliminar UI de jobs**
+
+Eliminar:
+- Vista de jobs en la TUI
+- Manejo de `SubagentFinished`
+- Comando `/jobs`
+
+- [ ] **Step 7.3: Eliminar ToolSettingsUpdated handling**
+
+Eliminar manejo de evento `ToolSettingsUpdated`.
+
+- [ ] **Step 7.4: Compilar y verificar**
+
+```bash
+cargo check 2>&1 | head -50
+```
+
+---
+
+### Task 8: Compilar, testear y corregir
+
+- [ ] **Step 8.1: Compilar todo el proyecto**
+
+```bash
+cargo build 2>&1
+```
+
+- [ ] **Step 8.2: Ejecutar tests**
+
+```bash
+cargo test 2>&1
+```
+
+- [ ] **Step 8.3: Ejecutar clippy**
+
+```bash
+cargo clippy 2>&1
+```
+
+- [ ] **Step 8.4: Corregir errores de compilación, tests y clippy**
+
+Iterar hasta que todo pase.
+
+- [ ] **Step 8.5: Formatear código**
+
+```bash
+cargo fmt
+```
+
+- [ ] **Step 8.6: Commit final**
+
+```bash
+git add -A && git commit -m "refactor: simplify agent model - tools as array, writable_paths, remove permissions and task tool"
+```

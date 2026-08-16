@@ -6,8 +6,6 @@
 
 use crate::llm::types::{ToolCall, ToolDefinition};
 use crate::lsp::{LspClient, LspPosition, LspQueryType, default_server_for_extension, path_to_uri};
-use crate::permissions::checker::check_command_run;
-use crate::permissions::types::Permissions;
 
 /// Tool definition for the `lsp_query` tool.
 pub fn lsp_query_tool_definition() -> ToolDefinition {
@@ -43,12 +41,7 @@ pub fn lsp_query_tool_definition() -> ToolDefinition {
 }
 
 /// Execute an `lsp_query` tool call.
-pub async fn execute_lsp_query_tool(
-    permissions: &Permissions,
-    tool_call: &ToolCall,
-) -> Result<String, String> {
-    check_command_run(permissions).map_err(|e| format!("Permission denied: {e}"))?;
-
+pub async fn execute_lsp_query_tool(tool_call: &ToolCall) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse lsp_query arguments: {e}"))?;
 
@@ -102,9 +95,7 @@ pub async fn execute_lsp_query_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionConfig;
     use crate::llm::types::ToolFunction;
-    use crate::permissions::types::Permissions;
 
     fn tool_call(args: &str) -> ToolCall {
         ToolCall {
@@ -117,45 +108,18 @@ mod tests {
         }
     }
 
-    fn deny_command() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec!["command.run".into()],
-            allow: vec![],
-        })
-    }
-
-    fn allow_all() -> Permissions {
-        Permissions::from_config(&PermissionConfig {
-            deny: vec![],
-            allow: vec![],
-        })
-    }
-
-    #[tokio::test]
-    async fn lsp_query_denied_without_command_run() {
-        let result = execute_lsp_query_tool(
-            &deny_command(),
-            &tool_call(r#"{"file_path":"/tmp/a.rs","query_type":"hover"}"#),
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Permission denied"));
-    }
-
     #[tokio::test]
     async fn lsp_query_missing_file_path_errors() {
-        let result =
-            execute_lsp_query_tool(&allow_all(), &tool_call(r#"{"query_type":"hover"}"#)).await;
+        let result = execute_lsp_query_tool(&tool_call(r#"{"query_type":"hover"}"#)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("requires 'file_path'"));
     }
 
     #[tokio::test]
     async fn lsp_query_unknown_query_type_errors() {
-        let result = execute_lsp_query_tool(
-            &allow_all(),
-            &tool_call(r#"{"file_path":"/tmp/a.rs","query_type":"bogus"}"#),
-        )
+        let result = execute_lsp_query_tool(&tool_call(
+            r#"{"file_path":"/tmp/a.rs","query_type":"bogus"}"#,
+        ))
         .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Unknown query_type"));
@@ -164,10 +128,9 @@ mod tests {
     #[tokio::test]
     async fn lsp_query_unknown_extension_and_no_server_errors() {
         // No server_command and an unknown extension -> clear error, no process spawned.
-        let result = execute_lsp_query_tool(
-            &allow_all(),
-            &tool_call(r#"{"file_path":"/tmp/a.xyz","query_type":"hover"}"#),
-        )
+        let result = execute_lsp_query_tool(&tool_call(
+            r#"{"file_path":"/tmp/a.xyz","query_type":"hover"}"#,
+        ))
         .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("No server_command provided"));

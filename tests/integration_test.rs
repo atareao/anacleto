@@ -5,7 +5,6 @@
 // LLM or MCP servers.
 
 use proptest::prelude::*;
-use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Config parsing
@@ -88,7 +87,7 @@ agents:
 #[test]
 fn test_config_merge_does_not_merge_agents() {
     use anacleto::agent::types::AgentRole;
-    use anacleto::config::{AgentConfig, Config, PermissionConfig};
+    use anacleto::config::{AgentConfig, Config};
 
     let global = Config {
         agents: vec![AgentConfig {
@@ -99,12 +98,11 @@ fn test_config_merge_does_not_merge_agents() {
             model: "llama2".into(),
             skills: vec![],
             mcps: vec![],
-            permissions: PermissionConfig::default(),
             subagents: vec![],
             system_prompt: "You are root.".into(),
             max_steps: 60,
-            subagent_depth: 3,
-            tools: HashMap::new(),
+            tools: vec![],
+            writable_paths: vec![],
         }],
         ..Default::default()
     };
@@ -118,12 +116,11 @@ fn test_config_merge_does_not_merge_agents() {
             model: "llama3.2".into(),
             skills: vec![],
             mcps: vec![],
-            permissions: PermissionConfig::default(),
             subagents: vec!["reviewer".into()],
             system_prompt: "You are the new root.".into(),
             max_steps: 60,
-            subagent_depth: 3,
-            tools: HashMap::new(),
+            tools: vec![],
+            writable_paths: vec![],
         }],
         ..Default::default()
     };
@@ -139,52 +136,6 @@ fn test_config_merge_does_not_merge_agents() {
 // ---------------------------------------------------------------------------
 // Permission checking
 // ---------------------------------------------------------------------------
-
-#[test]
-fn test_permission_allow_by_default() {
-    use anacleto::config::PermissionConfig;
-    use anacleto::permissions::{checker, types::Permissions};
-
-    let perms = Permissions::from_config(&PermissionConfig {
-        deny: vec!["command.run".into()],
-        allow: vec![],
-    });
-
-    assert!(checker::check_fs_read(&perms).is_ok());
-    assert!(checker::check_env_read(&perms).is_ok());
-    assert!(checker::check_command_run(&perms).is_err());
-}
-
-#[test]
-fn test_permission_deny_by_default() {
-    use anacleto::config::PermissionConfig;
-    use anacleto::permissions::{checker, types::Permissions};
-
-    let perms = Permissions::from_config(&PermissionConfig {
-        deny: vec![],
-        allow: vec!["fs.read".into(), "env.read".into()],
-    });
-
-    assert!(checker::check_fs_read(&perms).is_ok());
-    assert!(checker::check_env_read(&perms).is_ok());
-    assert!(checker::check_net_http(&perms).is_err());
-}
-
-#[test]
-fn test_permission_parse_enum() {
-    use anacleto::permissions::types::Permission;
-
-    assert_eq!("fs.read".parse::<Permission>().unwrap(), Permission::FsRead);
-    assert_eq!(
-        "env.read".parse::<Permission>().unwrap(),
-        Permission::EnvRead
-    );
-    assert_eq!(
-        "skill.use".parse::<Permission>().unwrap(),
-        Permission::SkillUse
-    );
-    assert!("invalid".parse::<Permission>().is_err());
-}
 
 // ---------------------------------------------------------------------------
 // Agent types
@@ -365,44 +316,7 @@ fn retry_config() -> impl Strategy<Value = anacleto::config::RetryConfig> {
     )
 }
 
-fn permission_strategy() -> impl Strategy<Value = anacleto::permissions::Permission> {
-    prop_oneof![
-        Just(anacleto::permissions::Permission::FsRead),
-        Just(anacleto::permissions::Permission::FsWrite),
-        Just(anacleto::permissions::Permission::NetHttp),
-        Just(anacleto::permissions::Permission::CommandRun),
-        Just(anacleto::permissions::Permission::McpUse),
-        Just(anacleto::permissions::Permission::EnvRead),
-        Just(anacleto::permissions::Permission::SkillUse),
-    ]
-}
-
 proptest! {
-    #[test]
-    fn permission_serde_roundtrip(perm in permission_strategy()) {
-        let yaml = serde_yaml::to_string(&perm).unwrap();
-        let deserialized: anacleto::permissions::Permission = serde_yaml::from_str(&yaml).unwrap();
-        prop_assert_eq!(perm, deserialized);
-    }
-
-    #[test]
-    fn permission_parse_roundtrip(perm in permission_strategy()) {
-        let serialized = serde_yaml::to_string(&perm).unwrap();
-        let trimmed = serialized.trim();
-        let parsed: anacleto::permissions::Permission = trimmed.parse().unwrap();
-        prop_assert_eq!(perm, parsed);
-    }
-
-    #[test]
-    fn random_strings_dont_panic(s in "\\PC*") {
-        let result = s.parse::<anacleto::permissions::Permission>();
-        if let Ok(perm) = result {
-            let yaml = serde_yaml::to_string(&perm).unwrap();
-            let reparsed: anacleto::permissions::Permission = serde_yaml::from_str(&yaml).unwrap();
-            prop_assert_eq!(perm, reparsed);
-        }
-    }
-
     #[test]
     fn retry_config_roundtrip(config in retry_config()) {
         let yaml = serde_yaml::to_string(&config).unwrap();
