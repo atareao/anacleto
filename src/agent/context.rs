@@ -258,6 +258,7 @@ pub(crate) async fn summarize_conversation(
         tools: vec![],
         max_tokens: Some(1024),
         temperature: Some(0.3),
+        top_p: None,
         stream: false,
         cache_control: None,
     };

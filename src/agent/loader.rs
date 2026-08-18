@@ -16,8 +16,6 @@ use crate::error::{Error, Result};
 /// skills:
 ///   - .agents/skills/shell/
 /// mcps: []
-/// permissions:
-///   deny: []
 /// subagents:
 ///   - reviewer
 /// ---
@@ -69,6 +67,12 @@ pub fn parse_agent(content: &str, default_max_steps: u32) -> Result<AgentConfig>
         tools: Vec<String>,
         #[serde(default)]
         writable_paths: Vec<PathBuf>,
+        #[serde(default)]
+        temperature: Option<f64>,
+        #[serde(default)]
+        max_tokens: Option<u32>,
+        #[serde(default)]
+        top_p: Option<f64>,
     }
 
     let frontmatter: Frontmatter = serde_yaml::from_str(frontmatter_str)
@@ -87,6 +91,9 @@ pub fn parse_agent(content: &str, default_max_steps: u32) -> Result<AgentConfig>
         max_steps: frontmatter.max_steps.unwrap_or(default_max_steps),
         tools: frontmatter.tools,
         writable_paths: frontmatter.writable_paths,
+        temperature: frontmatter.temperature,
+        max_tokens: frontmatter.max_tokens,
+        top_p: frontmatter.top_p,
     })
 }
 
@@ -357,6 +364,9 @@ role: root
             max_steps: 60,
             tools: vec![],
             writable_paths: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
         }];
         let project = vec![AgentConfig {
             name: "root".into(),
@@ -371,6 +381,9 @@ role: root
             max_steps: 60,
             tools: vec![],
             writable_paths: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
         }];
 
         let merged = merge_agents(global, project).unwrap();
@@ -395,6 +408,9 @@ role: root
             max_steps: 60,
             tools: vec![],
             writable_paths: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
         }];
         let project = vec![AgentConfig {
             name: "reviewer".into(),
@@ -409,6 +425,9 @@ role: root
             max_steps: 60,
             tools: vec![],
             writable_paths: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
         }];
 
         let merged = merge_agents(global, project).unwrap();
@@ -431,6 +450,9 @@ role: root
             max_steps: 60,
             tools: vec![],
             writable_paths: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
         }];
         assert!(merge_agents(no_root, vec![]).is_err());
 
@@ -449,6 +471,9 @@ role: root
                 max_steps: 60,
                 tools: vec![],
                 writable_paths: vec![],
+                temperature: None,
+                max_tokens: None,
+                top_p: None,
             },
             AgentConfig {
                 name: "b".into(),
@@ -463,6 +488,9 @@ role: root
                 max_steps: 60,
                 tools: vec![],
                 writable_paths: vec![],
+                temperature: None,
+                max_tokens: None,
+                top_p: None,
             },
         ];
         assert!(merge_agents(two_roots, vec![]).is_ok());
@@ -481,6 +509,9 @@ role: root
             max_steps: 60,
             tools: vec![],
             writable_paths: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
         }];
         assert!(merge_agents(one_root, vec![]).is_ok());
     }
