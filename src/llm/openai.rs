@@ -20,6 +20,8 @@ pub(crate) struct OpenAiChatRequest {
     pub(crate) max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) top_p: Option<f32>,
     pub(crate) stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tools: Option<Vec<OpenAiTool>>,
@@ -67,20 +69,20 @@ pub(crate) struct OpenAiFunctionCall {
     pub(crate) arguments: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct OpenAiChatResponse {
     pub(crate) choices: Vec<OpenAiChoice>,
     #[serde(default)]
     pub(crate) usage: Option<OpenAiUsage>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct OpenAiChoice {
     pub(crate) message: OpenAiResponseMessage,
     pub(crate) finish_reason: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct OpenAiResponseMessage {
     pub(crate) content: Option<String>,
     #[serde(default)]
@@ -90,7 +92,7 @@ pub(crate) struct OpenAiResponseMessage {
     pub(crate) reasoning: Option<String>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct OpenAiUsage {
     pub(crate) prompt_tokens: u32,
     pub(crate) completion_tokens: u32,
@@ -265,6 +267,7 @@ impl LlmProvider for OpenAIProvider {
             messages: into_openai_messages(request.messages),
             max_tokens: request.max_tokens,
             temperature: request.temperature,
+            top_p: request.top_p,
             stream: false,
             tools: if request.tools.is_empty() {
                 None
@@ -278,6 +281,12 @@ impl LlmProvider for OpenAIProvider {
             },
             stream_options: Some(serde_json::json!({"include_usage": true})),
         };
+
+        tracing::debug!(
+            target: "anacleto::llm::openai",
+            request_body = %serde_json::to_string_pretty(&body).unwrap_or_default(),
+            "OpenAI LLM request"
+        );
 
         let url = format!("{}/chat/completions", self.base_url());
         let resp = self
@@ -299,6 +308,12 @@ impl LlmProvider for OpenAIProvider {
             .json()
             .await
             .map_err(|e| Error::Provider(format!("OpenAI parse failed: {e}")))?;
+
+        tracing::debug!(
+            target: "anacleto::llm::openai",
+            response_body = %serde_json::to_string_pretty(&data).unwrap_or_default(),
+            "OpenAI LLM response"
+        );
 
         let choice = data
             .choices
@@ -348,6 +363,7 @@ impl LlmProvider for OpenAIProvider {
             messages: into_openai_messages(request.messages),
             max_tokens: request.max_tokens,
             temperature: request.temperature,
+            top_p: request.top_p,
             stream: true,
             tools: if request.tools.is_empty() {
                 None
@@ -369,6 +385,12 @@ impl LlmProvider for OpenAIProvider {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
         tokio::spawn(async move {
+            tracing::debug!(
+                target: "anacleto::llm::openai",
+                request_body = %serde_json::to_string_pretty(&body).unwrap_or_default(),
+                "OpenAI LLM stream request"
+            );
+
             let resp = match client
                 .post(&url)
                 .header("Authorization", format!("Bearer {api_key}"))

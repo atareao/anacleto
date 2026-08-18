@@ -305,6 +305,7 @@ impl LlmProvider for OpenRouterProvider {
             messages: into_openai_messages(request.messages),
             max_tokens: request.max_tokens,
             temperature: request.temperature,
+            top_p: request.top_p,
             stream: false,
             tools: if request.tools.is_empty() {
                 None
@@ -318,6 +319,12 @@ impl LlmProvider for OpenRouterProvider {
             },
             stream_options: Some(serde_json::json!({"include_usage": true})),
         };
+
+        tracing::debug!(
+            target: "anacleto::llm::openrouter",
+            request_body = %serde_json::to_string_pretty(&body).unwrap_or_default(),
+            "OpenRouter LLM request"
+        );
 
         let url = format!("{}/chat/completions", self.base_url());
         let resp = self
@@ -344,6 +351,12 @@ impl LlmProvider for OpenRouterProvider {
             .json()
             .await
             .map_err(|e| Error::Provider(format!("OpenRouter parse failed: {e}")))?;
+
+        tracing::debug!(
+            target: "anacleto::llm::openrouter",
+            response_body = %serde_json::to_string_pretty(&data).unwrap_or_default(),
+            "OpenRouter LLM response"
+        );
 
         let choice = data
             .choices
@@ -388,6 +401,7 @@ impl LlmProvider for OpenRouterProvider {
             messages: into_openai_messages(request.messages),
             max_tokens: request.max_tokens,
             temperature: request.temperature,
+            top_p: request.top_p,
             stream: true,
             tools: if request.tools.is_empty() {
                 None
@@ -408,6 +422,12 @@ impl LlmProvider for OpenRouterProvider {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
         tokio::spawn(async move {
+            tracing::debug!(
+                target: "anacleto::llm::openrouter",
+                request_body = %serde_json::to_string_pretty(&body).unwrap_or_default(),
+                "OpenRouter LLM stream request"
+            );
+
             let resp = match client
                 .post(&url)
                 .header("Authorization", format!("Bearer {api_key}"))
@@ -738,6 +758,7 @@ mod tests {
             system: None,
             max_tokens: 4096,
             temperature: None,
+            top_p: None,
             stream: false,
             tools: None,
             thinking: None,

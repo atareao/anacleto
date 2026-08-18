@@ -17,6 +17,8 @@ pub(crate) struct AnthropicRequest {
     pub(crate) max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) top_p: Option<f32>,
     pub(crate) stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tools: Option<Vec<AnthropicTool>>,
@@ -71,14 +73,14 @@ pub(crate) struct AnthropicTool {
     pub(crate) input_schema: serde_json::Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct AnthropicResponse {
     pub(crate) content: Vec<AnthropicContentBlock>,
     pub(crate) stop_reason: Option<String>,
     pub(crate) usage: Option<AnthropicUsage>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct AnthropicContentBlock {
     #[serde(rename = "type")]
     pub(crate) type_: String,
@@ -89,14 +91,14 @@ pub(crate) struct AnthropicContentBlock {
     pub(crate) tool_use: Option<AnthropicToolUse>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct AnthropicToolUse {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) input: serde_json::Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct AnthropicUsage {
     pub(crate) input_tokens: u32,
     pub(crate) output_tokens: u32,
@@ -192,6 +194,7 @@ impl LlmProvider for AnthropicProvider {
             system,
             max_tokens,
             temperature: request.temperature,
+            top_p: request.top_p,
             stream: false,
             tools: if request.tools.is_empty() {
                 None
@@ -208,6 +211,12 @@ impl LlmProvider for AnthropicProvider {
                 None
             },
         };
+
+        tracing::debug!(
+            target: "anacleto::llm::anthropic",
+            request_body = %serde_json::to_string_pretty(&body).unwrap_or_default(),
+            "Anthropic LLM request"
+        );
 
         let resp = self
             .client
@@ -231,6 +240,12 @@ impl LlmProvider for AnthropicProvider {
             .json()
             .await
             .map_err(|e| Error::Provider(format!("Anthropic parse failed: {e}")))?;
+
+        tracing::debug!(
+            target: "anacleto::llm::anthropic",
+            response_body = %serde_json::to_string_pretty(&data).unwrap_or_default(),
+            "Anthropic LLM response"
+        );
 
         let mut content = String::new();
         let mut tool_calls = Vec::new();

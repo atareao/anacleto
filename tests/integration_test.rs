@@ -103,6 +103,9 @@ fn test_config_merge_does_not_merge_agents() {
             max_steps: 60,
             tools: vec![],
             writable_paths: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
         }],
         ..Default::default()
     };
@@ -121,6 +124,9 @@ fn test_config_merge_does_not_merge_agents() {
             max_steps: 60,
             tools: vec![],
             writable_paths: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
         }],
         ..Default::default()
     };

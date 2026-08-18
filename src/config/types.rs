@@ -429,6 +429,20 @@ pub struct AgentConfig {
     /// Additional paths where this agent can write (workspace is always writable).
     #[serde(default)]
     pub writable_paths: Vec<PathBuf>,
+
+    /// Temperature for LLM sampling (0.0–2.0). Lower values = more deterministic,
+    /// higher = more creative. `None` means use the provider's default.
+    #[serde(default)]
+    pub temperature: Option<f64>,
+
+    /// Maximum output tokens for this agent. `None` = use the provider's default.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+
+    /// Top-p nucleus sampling (0.0–1.0). Lower values = more focused output.
+    /// `None` means use the provider's default.
+    #[serde(default)]
+    pub top_p: Option<f64>,
 }
 
 /// Default values for a built-in tool's display properties, defined in config.yaml.
