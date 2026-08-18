@@ -8,7 +8,6 @@ use std::path::PathBuf;
 
 use uuid::Uuid;
 
-use crate::agent::types::AgentMessage;
 use crate::engine::events::{EngineEvent, ExportFormat};
 use crate::engine::orchestrator::Engine;
 use crate::error::{Error, Result};
@@ -24,7 +23,7 @@ impl Engine {
             self.clear_undo_redo();
 
             // Clear active agent's conversation
-            self.send_to_active(AgentMessage::ClearHistory).await?;
+            self.with_active_session(|s| s.conversation.clear()).await?;
 
             self.event_tx
                 .send(EngineEvent::SessionSwitched {
@@ -70,8 +69,10 @@ impl Engine {
             self.clear_undo_redo();
 
             // Send history to active agent
-            self.send_to_active(AgentMessage::LoadHistory(history))
-                .await?;
+            self.with_active_session(move |s| {
+                s.conversation = history;
+            })
+            .await?;
 
             // Get session name for the event
             let sessions = db.list_sessions().await?;
@@ -185,8 +186,10 @@ impl Engine {
         if !self.agents.contains_key(&self.active_agent) {
             return Ok(());
         }
-        self.send_to_active(AgentMessage::LoadHistory(history))
-            .await?;
+        self.with_active_session(move |s| {
+            s.conversation = history;
+        })
+        .await?;
         Ok(())
     }
 

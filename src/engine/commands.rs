@@ -11,7 +11,6 @@ use std::sync::atomic::Ordering;
 
 use uuid::Uuid;
 
-use crate::agent::types::AgentMessage;
 use crate::db::models::StoredMessage;
 use crate::engine::events::{
     EngineEvent, InitAnswers, McpStatus, SkillInfo, StatusInfo, TimelineEntry,
@@ -165,8 +164,7 @@ impl Engine {
                 diff
             )
         };
-        self.send_to_active(AgentMessage::UserInput { content: prompt })
-            .await?;
+        self.handle_user_input(prompt).await?;
         self.event_tx
             .send(EngineEvent::ReviewResult(diff))
             .await
@@ -311,8 +309,7 @@ impl Engine {
             "Execute the following plan. Implement it fully, then report what was done.\n\n{}",
             content
         );
-        self.send_to_active(AgentMessage::UserInput { content: prompt })
-            .await?;
+        self.handle_user_input(prompt).await?;
         self.event_tx.send(EngineEvent::BuildDone).await.ok();
         Ok(())
     }

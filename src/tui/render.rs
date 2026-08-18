@@ -1771,12 +1771,13 @@ fn render_sectioned_block(
         if let Some(cname) = marker
             .strip_prefix("[tool-color:")
             .and_then(|m| m.strip_suffix(']'))
-            && section == "tool" {
-                if let Some(color) = parse_color_name(cname) {
-                    tool_style = Style::default().fg(color);
-                }
-                continue;
+            && section == "tool"
+        {
+            if let Some(color) = parse_color_name(cname) {
+                tool_style = Style::default().fg(color);
             }
+            continue;
+        }
 
         // ── [normal] / [/normal] markers ──
         if marker == "[normal]" {

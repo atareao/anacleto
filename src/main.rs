@@ -57,14 +57,14 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging: stdout + file with daily rotation
+    // Initialize logging: file only (daily rotation).
+    // Logs NEVER go to stdout — that would corrupt the TUI.
     let log_filter = if cli.verbose {
         "anacleto=debug"
     } else {
-        "anacleto=info"
+        "anacleto=info,anacleto::llm=debug,anacleto::agent::session=debug,anacleto::tools=debug,anacleto::engine=debug"
     };
 
-    // File appender with daily rotation
     let log_dir = dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("anacleto")
@@ -77,13 +77,9 @@ async fn main() -> anyhow::Result<()> {
     let file_layer = tracing_subscriber::fmt::layer()
         .with_writer(non_blocking)
         .with_ansi(false)
-        .with_filter(filter.clone());
-    let stdout_layer = tracing_subscriber::fmt::layer().with_filter(filter);
+        .with_filter(filter);
 
-    tracing_subscriber::registry()
-        .with(file_layer)
-        .with(stdout_layer)
-        .init();
+    tracing_subscriber::registry().with(file_layer).init();
 
     // Load configuration
     let mut config = loader::load_config(cli.config.as_deref().map(std::path::Path::new))?;
