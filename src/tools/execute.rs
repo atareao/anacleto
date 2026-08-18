@@ -84,6 +84,15 @@ pub async fn execute_execute_tool(
         .unwrap_or(DEFAULT_TIMEOUT_MS);
     let is_async = args.get("async").and_then(|v| v.as_bool()).unwrap_or(false);
 
+    tracing::debug!(
+        target: "anacleto::tools::execute",
+        command = %command,
+        workdir = ?workdir,
+        timeout_ms = %timeout_ms,
+        is_async = %is_async,
+        "execute tool"
+    );
+
     if is_async {
         execute_async(command, workdir).await
     } else {

@@ -110,27 +110,25 @@ pub fn fs_tool_definition() -> ToolDefinition {
 fn resolve_fs_path(
     workspace: &Path,
     path: &str,
-    external_granted: bool,
 ) -> Result<PathBuf, String> {
     if path.is_empty() || path == "." {
         return Ok(workspace.to_path_buf());
     }
     let p = Path::new(path);
     if p.is_absolute() {
-        if external_granted {
-            Ok(p.to_path_buf())
-        } else {
-            Err(
-                "Accessing paths outside the workspace requires the 'fs.external' permission"
-                    .to_string(),
-            )
+        // Allow absolute paths that are within the workspace
+        let workspace_canon = workspace
+            .canonicalize()
+            .map_err(|e| format!("Invalid workspace '{}': {e}", workspace.display()))?;
+
+        match p.canonicalize() {
+            Ok(canon) if canon.starts_with(&workspace_canon) => Ok(p.to_path_buf()),
+            Ok(_) => Err("Accessing paths outside the workspace is not allowed"
+                .to_string()),
+            Err(e) => Err(format!("Path does not exist: {e}")),
         }
     } else {
-        match crate::engine::apply_patch::resolve_within_workspace(workspace, path) {
-            Ok(full) => Ok(full),
-            Err(_) if external_granted => Ok(workspace.join(p)),
-            Err(e) => Err(e),
-        }
+        crate::engine::apply_patch::resolve_within_workspace(workspace, path)
     }
 }
 
@@ -390,8 +388,15 @@ pub async fn execute_fs_tool(workspace: &Path, tool_call: &ToolCall) -> Result<S
         .and_then(|v| v.as_str())
         .ok_or_else(|| "fs requires 'path'".to_string())?;
 
-    let external_granted = false;
-    let full = resolve_fs_path(workspace, path, external_granted)?;
+    let full = resolve_fs_path(workspace, path)?;
+
+    tracing::debug!(
+        target: "anacleto::tools::fs",
+        op = %op,
+        path = %path,
+        resolved = %full.display(),
+        "fs tool"
+    );
 
     match op {
         "read" => {
@@ -807,12 +812,12 @@ mod tests {
             execute_fs_tool(&ws, &tool_call(r#"{"op":"read","path":"../secret.txt"}"#)).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("escapes workspace") || err.contains("fs.external"));
+        assert!(err.contains("escapes workspace") || err.contains("is not allowed"));
         std::fs::remove_dir_all(&ws).unwrap();
     }
 
     #[tokio::test]
-    async fn test_external_requires_fs_external() {
+    async fn test_external_is_denied() {
         let ws = temp_workspace();
         let outside =
             std::env::temp_dir().join(format!("anacleto_fs_outside_{}", uuid::Uuid::new_v4()));
@@ -828,7 +833,7 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("fs.external"));
+        assert!(result.unwrap_err().contains("is not allowed"));
 
         std::fs::remove_dir_all(&ws).unwrap();
         std::fs::remove_file(&outside).unwrap();
@@ -844,7 +849,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_external_requires_fs_external() {
+    async fn test_write_external_is_denied() {
         let ws = temp_workspace();
         let outside = std::env::temp_dir().join(format!(
             "anacleto_fs_write_outside_{}",
@@ -861,7 +866,7 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("fs.external"));
+        assert!(result.unwrap_err().contains("is not allowed"));
 
         std::fs::remove_dir_all(&ws).unwrap();
     }

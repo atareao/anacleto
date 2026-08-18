@@ -50,10 +50,7 @@ fn rg_available() -> bool {
 }
 
 /// Execute a `grep` tool call.
-pub async fn execute_grep_tool(
-    workspace: &Path,
-    tool_call: &ToolCall,
-) -> Result<String, String> {
+pub async fn execute_grep_tool(workspace: &Path, tool_call: &ToolCall) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse grep arguments: {e}"))?;
     let pattern = args
@@ -62,6 +59,14 @@ pub async fn execute_grep_tool(
         .ok_or_else(|| "grep requires 'pattern'".to_string())?;
     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
     let include = args.get("include").and_then(|v| v.as_str());
+
+    tracing::debug!(
+        target: "anacleto::tools::grep",
+        pattern = %pattern,
+        path = %path,
+        include = ?include,
+        "grep tool"
+    );
 
     // Resolve the search target within the workspace.
     let target = if path.is_empty() {
@@ -239,12 +244,9 @@ mod tests {
     async fn grep_no_matches() {
         let ws = temp_workspace();
         std::fs::write(ws.join("a.txt"), "hello\n").unwrap();
-        let result = execute_grep_tool(
-            &ws,
-            &tool_call(r#"{"pattern":"zzz_nonexistent"}"#),
-        )
-        .await
-        .unwrap();
+        let result = execute_grep_tool(&ws, &tool_call(r#"{"pattern":"zzz_nonexistent"}"#))
+            .await
+            .unwrap();
         assert!(result.contains("No matches"));
         std::fs::remove_dir_all(&ws).unwrap();
     }
@@ -254,12 +256,9 @@ mod tests {
         let ws = temp_workspace();
         std::fs::write(ws.join("a.rs"), "needle\n").unwrap();
         std::fs::write(ws.join("b.txt"), "needle\n").unwrap();
-        let result = execute_grep_tool(
-            &ws,
-            &tool_call(r#"{"pattern":"needle","include":"*.rs"}"#),
-        )
-        .await
-        .unwrap();
+        let result = execute_grep_tool(&ws, &tool_call(r#"{"pattern":"needle","include":"*.rs"}"#))
+            .await
+            .unwrap();
         assert!(result.contains("a.rs"));
         assert!(!result.contains("b.txt"));
         std::fs::remove_dir_all(&ws).unwrap();
@@ -268,11 +267,7 @@ mod tests {
     #[tokio::test]
     async fn grep_rejects_path_traversal() {
         let ws = temp_workspace();
-        let result = execute_grep_tool(
-            &ws,
-            &tool_call(r#"{"pattern":"x","path":"../etc"}"#),
-        )
-        .await;
+        let result = execute_grep_tool(&ws, &tool_call(r#"{"pattern":"x","path":"../etc"}"#)).await;
         assert!(result.is_err());
         std::fs::remove_dir_all(&ws).unwrap();
     }

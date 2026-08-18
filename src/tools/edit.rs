@@ -110,21 +110,21 @@ pub fn delete_lines_tool_definition() -> ToolDefinition {
 fn resolve_edit_path(
     workspace: &Path,
     path: &str,
-    external_granted: bool,
 ) -> Result<PathBuf, String> {
     let p = Path::new(path);
     if p.is_absolute() {
-        if external_granted {
-            Ok(p.to_path_buf())
-        } else {
-            Err("Writing outside the workspace requires the 'fs.external' permission".to_string())
+        // Allow absolute paths that are within the workspace
+        let workspace_canon = workspace
+            .canonicalize()
+            .map_err(|e| format!("Invalid workspace '{}': {e}", workspace.display()))?;
+
+        match p.canonicalize() {
+            Ok(canon) if canon.starts_with(&workspace_canon) => Ok(p.to_path_buf()),
+            Ok(_) => Err("Writing outside the workspace is not allowed".to_string()),
+            Err(e) => Err(format!("Path does not exist: {e}")),
         }
     } else {
-        match crate::engine::apply_patch::resolve_within_workspace(workspace, path) {
-            Ok(full) => Ok(full),
-            Err(_) if external_granted => Ok(workspace.join(p)),
-            Err(e) => Err(e),
-        }
+        crate::engine::apply_patch::resolve_within_workspace(workspace, path)
     }
 }
 
@@ -172,8 +172,7 @@ pub async fn execute_insert_lines_tool(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "insert_lines requires 'content'".to_string())?;
 
-    let external_granted = false;
-    let full = resolve_edit_path(workspace, path, external_granted)?;
+    let full = resolve_edit_path(workspace, path)?;
 
     let mut lines = read_lines(&full)?;
     let total = lines.len();
@@ -238,8 +237,7 @@ pub async fn execute_replace_lines_tool(
         ));
     }
 
-    let external_granted = false;
-    let full = resolve_edit_path(workspace, path, external_granted)?;
+    let full = resolve_edit_path(workspace, path)?;
 
     let mut lines = read_lines(&full)?;
     let total = lines.len();
@@ -324,8 +322,7 @@ pub async fn execute_delete_lines_tool(
         ));
     }
 
-    let external_granted = false;
-    let full = resolve_edit_path(workspace, path, external_granted)?;
+    let full = resolve_edit_path(workspace, path)?;
 
     let mut lines = read_lines(&full)?;
     let total = lines.len();
@@ -672,7 +669,7 @@ mod tests {
         .await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("escapes workspace") || err.contains("fs.external"));
+        assert!(err.contains("escapes workspace") || err.contains("is not allowed"));
 
         // replace_lines
         let result = execute_replace_lines_tool(
@@ -727,7 +724,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_edit_external_requires_fs_external() {
+    async fn test_edit_external_is_denied() {
         let ws = temp_workspace();
         let outside =
             std::env::temp_dir().join(format!("anacleto_edit_outside_{}", uuid::Uuid::new_v4()));
@@ -743,7 +740,7 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("fs.external"));
+        assert!(result.unwrap_err().contains("is not allowed"));
 
         std::fs::remove_dir_all(&ws).unwrap();
         std::fs::remove_file(&outside).unwrap();
