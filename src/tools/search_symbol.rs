@@ -98,6 +98,14 @@ pub async fn execute_search_symbol_tool(
         .map(|n| n.clamp(1, 50))
         .unwrap_or(10);
 
+    tracing::debug!(
+        target: "anacleto::tools::search_symbol",
+        query = %query,
+        kind = ?kind,
+        max_results = %max_results,
+        "search_symbol tool"
+    );
+
     // Build the arguments for CodeGraph's codegraph_search tool -------------
     let mut cg_args = serde_json::json!({
         "query": query,

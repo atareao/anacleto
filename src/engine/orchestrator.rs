@@ -7,8 +7,10 @@ use uuid::Uuid;
 
 use chrono::Local;
 
-use crate::agent::lifecycle::{AgentHandle, SpawnAgentConfig, spawn_agent};
-use crate::agent::types::{Agent, AgentId, AgentMessage, AgentMode, AgentRole, AgentStatus};
+use crate::agent::session::{AgentSession, AgentSharedState};
+use crate::agent::types::{
+    Agent, AgentId, AgentMode, AgentRole, AgentStatus, BackgroundTaskManager,
+};
 use crate::config::Config;
 use crate::config::types::{CacheMode, OllamaConfig, ProviderConfig, RetryConfig};
 use crate::db::models::{Snapshot, StoredMessage};
@@ -35,8 +37,10 @@ pub struct Engine {
     pub(crate) config: Config,
     /// Registered agents (name -> id lookup).
     pub(crate) agents: HashMap<String, AgentId>,
-    /// Active agent handles (id -> handle).
-    pub(crate) handles: HashMap<AgentId, AgentHandle>,
+    /// Active agent sessions (name -> session).
+    pub(crate) sessions: HashMap<String, Arc<tokio::sync::Mutex<AgentSession>>>,
+    /// Tokio handles for running session tasks.
+    pub(crate) session_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
     /// LLM provider registry.
     pub(crate) llm_registry: LlmProviderRegistry,
     /// MCP server registry.
@@ -89,6 +93,8 @@ pub struct Engine {
     pub(crate) hook_registry: HookRegistry,
     /// Cancel flags for active agents (agent_name -> flag). Set directly to stop agents.
     pub(crate) cancel_flags: HashMap<String, Arc<AtomicBool>>,
+    /// Background task manager, shared across all agent sessions.
+    pub(crate) background_tasks: Arc<tokio::sync::Mutex<BackgroundTaskManager>>,
 }
 impl Engine {
     pub fn new(
@@ -100,7 +106,8 @@ impl Engine {
         Self {
             config: config.clone(),
             agents: HashMap::new(),
-            handles: HashMap::new(),
+            sessions: HashMap::new(),
+            session_tasks: HashMap::new(),
             llm_registry: LlmProviderRegistry::new(),
             mcp_registry: Arc::new(tokio::sync::Mutex::new(McpRegistry::new())),
             pending_approvals: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -135,6 +142,7 @@ impl Engine {
             skill_registry: Arc::new(tokio::sync::RwLock::new(SkillRegistry::new())),
             hook_registry: HookRegistry::from(&config),
             cancel_flags: HashMap::new(),
+            background_tasks: Arc::new(tokio::sync::Mutex::new(BackgroundTaskManager::new())),
         }
     }
 
@@ -145,6 +153,7 @@ impl Engine {
     }
 
     pub async fn initialize(&mut self, resume_session_id: Option<Uuid>) -> Result<()> {
+        tracing::debug!(target: "anacleto::engine", "Engine initializing");
         // Sync debug flag from config (--debug CLI flag sets this)
         self.debug
             .store(self.config.session.debug, Ordering::Relaxed);
@@ -337,6 +346,11 @@ impl Engine {
 
         self.llm_registry = llm_registry;
 
+        tracing::debug!(
+            target: "anacleto::engine",
+            "LLM providers registered"
+        );
+
         // Connect MCP servers before spawning agents so tools are available
         {
             let mut mcp = self.mcp_registry.lock().await;
@@ -520,38 +534,56 @@ impl Engine {
             let cancel_flag = Arc::new(AtomicBool::new(false));
             self.cancel_flags.insert(name.clone(), cancel_flag.clone());
 
-            // Spawn the agent as a real tokio task
             let history_limit = self.config.session.history_limit_percent;
             let retry_cfg = self.config.session.retry.clone();
-            let handle = spawn_agent(SpawnAgentConfig {
-                agent,
-                provider,
-                skill_registry: self.skill_registry.clone(),
-                skill_names,
-                subagent_configs: my_subagent_configs,
-                llm_registry: self.llm_registry.clone(),
-                mcp_registry: Some(self.mcp_registry.clone()),
-                mcp_enabled: Some(self.mcp_enabled.clone()),
+
+            // Create shared state for this agent
+            let shared = Arc::new(AgentSharedState {
                 event_tx: self.event_tx.clone(),
+                llm_registry: self.llm_registry.clone(),
                 usage_tx: Some(self.usage_tx.clone()),
-                retry_config: retry_cfg,
-                db: self.database.clone(),
-                session_id: self.active_session_id,
+                skill_registry: self.skill_registry.clone(),
+                retry_config: retry_cfg.clone(),
                 pending_questions: Some(self.pending_questions.clone()),
-                history_limit_percent: history_limit,
                 debug: self.debug.clone(),
+                history_limit_percent: history_limit,
+                session_id: self.active_session_id,
+                db: self.database.clone(),
                 workspace: self.workspace.clone(),
-                task_id: None,
-                depth: 0,
-                mode: AgentMode::Build,
                 plugins: Some(self.plugins.clone()),
                 hook_registry: self.hook_registry.clone(),
-                cancel_flag: Some(cancel_flag),
-            })
-            .await;
+                compact_requested: Arc::new(AtomicBool::new(false)),
+                background_tasks: self.background_tasks.clone(),
+            });
 
-            self.agents.insert(name, id.clone());
-            self.handles.insert(id, handle);
+            let mut session = AgentSession::new(
+                agent,
+                shared,
+                my_subagent_configs,
+                skill_names,
+                Some(cancel_flag.clone()),
+                AgentMode::Build,
+            );
+            session
+                .initialize(
+                    &provider,
+                    Some(self.mcp_registry.clone()),
+                    Some(self.mcp_enabled.clone()),
+                    Some(&self.plugins),
+                    &self.workspace,
+                )
+                .await?;
+
+            self.sessions
+                .insert(name.clone(), Arc::new(tokio::sync::Mutex::new(session)));
+            self.agents.insert(name.clone(), id.clone());
+
+            tracing::debug!(
+                target: "anacleto::engine",
+                agent = %name,
+                model = %agent_config.model,
+                "Root agent spawned"
+            );
         }
 
         // If resuming a session, load its history into the root agent
@@ -579,6 +611,8 @@ impl Engine {
                 })
                 .await;
         }
+
+        tracing::debug!(target: "anacleto::engine", "Engine initialized");
 
         Ok(())
     }
@@ -613,271 +647,312 @@ impl Engine {
 
     pub async fn run(&mut self) -> Result<()> {
         loop {
+            tracing::debug!(target: "anacleto::engine", "Engine loop iteration");
             tokio::select! {
-                command = self.command_rx.recv() => {
-                    let Some(command) = command else { break; };
-                    // Shutdown is handled outside the error-catching block so it always
-                    // terminates the loop even if a prior handler failed.
-                    if matches!(command, EngineCommand::Shutdown) {
-                        self.event_tx.send(EngineEvent::ShuttingDown).await.ok();
-                        break;
-                    }
+                            command = self.command_rx.recv() => {
+                                let Some(command) = command else { break; };
+                                // Shutdown is handled outside the error-catching block so it always
+                                // terminates the loop even if a prior handler failed.
+                                if matches!(command, EngineCommand::Shutdown) {
+                                    self.event_tx.send(EngineEvent::ShuttingDown).await.ok();
+                                    break;
+                                }
 
-                    // Dispatch the command inside an async block so a handler error is
-                    // reported to the TUI instead of killing the engine event loop.
-                    let result: Result<()> = async {
-                        match command {
-                            EngineCommand::UserInput(input) => {
-                                self.handle_user_input(input).await?;
-                            }
-                            EngineCommand::NewSession(name) => {
-                                self.handle_new_session(&name).await?;
-                            }
-                            EngineCommand::ResumeSession(id) => {
-                                self.handle_resume_session(&id).await?;
-                            }
-                            EngineCommand::ListSessions => {
-                                self.handle_list_sessions().await?;
-                            }
-                            EngineCommand::DeleteSession(id) => {
-                                self.handle_delete_session(&id).await?;
-                            }
-                            EngineCommand::RenameSession(id, name) => {
-                                self.handle_rename_session(&id, &name).await?;
-                            }
-                            EngineCommand::ApprovalResponse { id, approved } => {
-                                self.handle_approval_response(&id, approved).await;
-                            }
-                            EngineCommand::QuestionAnswer { id, answer } => {
-                                self.handle_question_answer(&id, answer).await;
-                            }
-                            EngineCommand::SetDebug(debug) => {
-                                self.debug.store(debug, Ordering::Relaxed);
-                            }
-                            EngineCommand::SetModel(model) => {
-                                self.handle_set_model(model).await?;
-                            }
-                            EngineCommand::SwitchAgent(name) => {
-                                self.handle_switch_agent(&name).await?;
-                            }
-                            EngineCommand::RecordModelUsage(model) => {
-                                self.handle_record_model_usage(&model).await?;
-                            }
-                            EngineCommand::ListModelFrecency => {
-                                self.handle_list_model_frecency().await?;
-                            }
-                            EngineCommand::Compact => {
-                                self.send_to_active(AgentMessage::Compact).await?;
-                            }
-                            EngineCommand::Undo => {
-                                self.handle_undo().await?;
-                            }
-                            EngineCommand::Redo => {
-                                self.handle_redo().await?;
-                            }
-                            EngineCommand::Fork => {
-                                self.handle_fork().await?;
-                            }
-                            EngineCommand::Export { path, format } => {
-                                self.handle_export(path, format).await?;
-                            }
-                            EngineCommand::Import { path } => {
-                                self.handle_import(path).await?;
-                            }
-                            EngineCommand::Share => {
-                                self.handle_share().await?;
-                            }
-                            EngineCommand::Unshare => {
-                                self.handle_unshare().await?;
-                            }
-                            EngineCommand::ListSkills => {
-                                self.handle_list_skills().await?;
-                            }
-                            EngineCommand::ListMcps => {
-                                self.handle_list_mcps().await?;
-                            }
-                            EngineCommand::ToggleMcp { name, enabled } => {
-                                self.handle_toggle_mcp(&name, enabled).await?;
-                            }
-                            EngineCommand::Status => {
-                                self.handle_status().await?;
-                            }
-                            EngineCommand::Init { answers } => {
-                                self.handle_init(answers).await?;
-                            }
-                            EngineCommand::Review { target } => {
-                                self.handle_review(target).await?;
-                            }
-                            EngineCommand::Warp { dir } => {
-                                self.handle_warp(dir).await?;
-                            }
-                            EngineCommand::ListWorkspaces => {
-                                self.handle_list_workspaces().await?;
-                            }
-                            EngineCommand::MoveSession { workspace } => {
-                                self.handle_move_session(&workspace).await?;
-                            }
-                            EngineCommand::WorktreeAdd { path, branch } => {
-                                self.handle_worktree_add(&path, branch.as_deref()).await?;
-                            }
-                            EngineCommand::WorktreeList => {
-                                self.handle_worktree_list().await?;
-                            }
-                            EngineCommand::WorktreeRemove { path } => {
-                                self.handle_worktree_remove(&path).await?;
-                            }
-                            EngineCommand::Timeline => {
-                                self.handle_timeline().await?;
-                            }
-                            EngineCommand::SetSessionPinned { id, pinned } => {
-                                self.handle_set_session_pinned(&id, pinned).await?;
-                            }
-                            EngineCommand::Build => {
-                                self.handle_build().await?;
-                            }
-                            EngineCommand::Parent => {
-                                self.handle_parent().await?;
-                            }
-                            EngineCommand::Children => {
-                                self.handle_children().await?;
-                            }
-                            EngineCommand::Snapshot { name } => {
-                                self.handle_snapshot(name.as_deref()).await?;
-                            }
-                            EngineCommand::Revert { snapshot_id } => {
-                                self.handle_revert(snapshot_id).await?;
-                            }
-                            EngineCommand::ListSnapshots => {
-                                self.handle_list_snapshots().await?;
-                            }
-                            EngineCommand::Stage { name } => {
-                                self.handle_stage(name.as_deref()).await?;
-                            }
-                            EngineCommand::Clear => {
-                                self.handle_clear().await?;
-                            }
-                            EngineCommand::Commit { name } => {
-                                self.handle_commit(name.as_deref()).await?;
-                            }
-                            EngineCommand::ReloadAgent => {
-                                // First stop any in-flight work
-                                if let Some(flag) = self.cancel_flags.get(&self.active_agent) {
-                                    flag.store(true, Ordering::Relaxed);
-                                }
-                                let _ = self.send_to_active(AgentMessage::Cancel).await;
-                                // Then respawn the agent (reuses existing method, picks up fresh config)
-                                self.respawn_active_agent().await?;
-                                self.event_tx
-                                    .send(EngineEvent::AgentStatusChanged {
-                                        agent_id: AgentId::new(),
-                                        agent_name: self.active_agent.clone(),
-                                        status: AgentStatus::Idle,
-                                    })
-                                    .await
-                                    .ok();
-                            }
-                            EngineCommand::StopAgent => {
-                                // Cancel ALL agents (not just the active one), so subagents
-                                // stop working and their spinners disappear from the TUI.
-                                for (name, flag) in &self.cancel_flags {
-                                    flag.store(true, Ordering::Relaxed);
-                                    // Also send Cancel through the channel for agents that
-                                    // are in the message loop waiting for the next message.
-                                    if let Some(id) = self.agents.get(name)
-                                        && let Some(handle) = self.handles.get(id) {
-                                            let _ = handle.sender
-                                                .try_send(AgentMessage::Cancel);
+                                // Dispatch the command inside an async block so a handler error is
+                                // reported to the TUI instead of killing the engine event loop.
+                                let result: Result<()> = async {
+                                    match command {
+                                        EngineCommand::UserInput(input) => {
+                                            self.handle_user_input(input).await?;
+                                        }
+                                        EngineCommand::NewSession(name) => {
+                                            self.handle_new_session(&name).await?;
+                                        }
+                                        EngineCommand::ResumeSession(id) => {
+                                            self.handle_resume_session(&id).await?;
+                                        }
+                                        EngineCommand::ListSessions => {
+                                            self.handle_list_sessions().await?;
+                                        }
+                                        EngineCommand::DeleteSession(id) => {
+                                            self.handle_delete_session(&id).await?;
+                                        }
+                                        EngineCommand::RenameSession(id, name) => {
+                                            self.handle_rename_session(&id, &name).await?;
+                                        }
+                                        EngineCommand::ApprovalResponse { id, approved } => {
+                                            self.handle_approval_response(&id, approved).await;
+                                        }
+                                        EngineCommand::QuestionAnswer { id, answer } => {
+                                            self.handle_question_answer(&id, answer).await;
+                                        }
+                                        EngineCommand::SetDebug(debug) => {
+                                            self.debug.store(debug, Ordering::Relaxed);
+                                        }
+                                        EngineCommand::SetModel(model) => {
+                                            self.handle_set_model(model).await?;
+                                        }
+                                        EngineCommand::SwitchAgent(name) => {
+                                            self.handle_switch_agent(&name).await?;
+                                        }
+                                        EngineCommand::RecordModelUsage(model) => {
+                                            self.handle_record_model_usage(&model).await?;
+                                        }
+                                        EngineCommand::ListModelFrecency => {
+                                            self.handle_list_model_frecency().await?;
+                                        }
+                                        EngineCommand::Compact => {
+                                            // Set compact_requested on the active session's shared state
+                                            if let Some(session_arc) = self.sessions.get(&self.active_agent) {
+                                                let session = session_arc.lock().await;
+                                                session.shared.compact_requested.store(true, Ordering::Relaxed);
+                                            }
+                                        }
+                                        EngineCommand::Undo => {
+                                            self.handle_undo().await?;
+                                        }
+                                        EngineCommand::Redo => {
+                                            self.handle_redo().await?;
+                                        }
+                                        EngineCommand::Fork => {
+                                            self.handle_fork().await?;
+                                        }
+                                        EngineCommand::Export { path, format } => {
+                                            self.handle_export(path, format).await?;
+                                        }
+                                        EngineCommand::Import { path } => {
+                                            self.handle_import(path).await?;
+                                        }
+                                        EngineCommand::Share => {
+                                            self.handle_share().await?;
+                                        }
+                                        EngineCommand::Unshare => {
+                                            self.handle_unshare().await?;
+                                        }
+                                        EngineCommand::ListSkills => {
+                                            self.handle_list_skills().await?;
+                                        }
+                                        EngineCommand::ListMcps => {
+                                            self.handle_list_mcps().await?;
+                                        }
+                                        EngineCommand::ToggleMcp { name, enabled } => {
+                                            self.handle_toggle_mcp(&name, enabled).await?;
+                                        }
+                                        EngineCommand::Status => {
+                                            self.handle_status().await?;
+                                        }
+                                        EngineCommand::Init { answers } => {
+                                            self.handle_init(answers).await?;
+                                        }
+                                        EngineCommand::Review { target } => {
+                                            self.handle_review(target).await?;
+                                        }
+                                        EngineCommand::Warp { dir } => {
+                                            self.handle_warp(dir).await?;
+                                        }
+                                        EngineCommand::ListWorkspaces => {
+                                            self.handle_list_workspaces().await?;
+                                        }
+                                        EngineCommand::MoveSession { workspace } => {
+                                            self.handle_move_session(&workspace).await?;
+                                        }
+                                        EngineCommand::WorktreeAdd { path, branch } => {
+                                            self.handle_worktree_add(&path, branch.as_deref()).await?;
+                                        }
+                                        EngineCommand::WorktreeList => {
+                                            self.handle_worktree_list().await?;
+                                        }
+                                        EngineCommand::WorktreeRemove { path } => {
+                                            self.handle_worktree_remove(&path).await?;
+                                        }
+                                        EngineCommand::Timeline => {
+                                            self.handle_timeline().await?;
+                                        }
+                                        EngineCommand::SetSessionPinned { id, pinned } => {
+                                            self.handle_set_session_pinned(&id, pinned).await?;
+                                        }
+                                        EngineCommand::Build => {
+                                            self.handle_build().await?;
+                                        }
+                                        EngineCommand::Parent => {
+                                            self.handle_parent().await?;
+                                        }
+                                        EngineCommand::Children => {
+                                            self.handle_children().await?;
+                                        }
+                                        EngineCommand::Snapshot { name } => {
+                                            self.handle_snapshot(name.as_deref()).await?;
+                                        }
+                                        EngineCommand::Revert { snapshot_id } => {
+                                            self.handle_revert(snapshot_id).await?;
+                                        }
+                                        EngineCommand::ListSnapshots => {
+                                            self.handle_list_snapshots().await?;
+                                        }
+                                        EngineCommand::Stage { name } => {
+                                            self.handle_stage(name.as_deref()).await?;
+                                        }
+                                        EngineCommand::Clear => {
+                                            self.handle_clear().await?;
+                                        }
+                                        EngineCommand::Commit { name } => {
+                                            self.handle_commit(name.as_deref()).await?;
+                                        }
+                                        EngineCommand::ReloadAgent => {
+                                            // First stop any in-flight work
+                                            if let Some(flag) = self.cancel_flags.get(&self.active_agent) {
+                                                flag.store(true, Ordering::Relaxed);
+                                            }
+                                            if let Some(handle) = self.session_tasks.remove(&self.active_agent) {
+                                                handle.abort();
+                                            }
+                                            // Then respawn the agent (reuses existing method, picks up fresh config)
+                                            self.respawn_active_agent().await?;
+                                            self.event_tx
+                                                .send(EngineEvent::AgentStatusChanged {
+                                                    agent_id: AgentId::new(),
+                                                    agent_name: self.active_agent.clone(),
+                                                    status: AgentStatus::Idle,
+                                                })
+                                                .await
+                                                .ok();
+                                        }
+                                        EngineCommand::StopAgent => {
+                                            // Cancel ALL agents (not just the active one), so subagents
+                                            // stop working and their spinners disappear from the TUI.
+            for (name, flag) in &self.cancel_flags {
+                                                flag.store(true, Ordering::Relaxed);
+                                                // Abort any running session task
+                                                if let Some(handle) = self.session_tasks.remove(name) {
+                                                    handle.abort();
+                                                }
+                                                // Emit Idle status so TUI knows immediately
+                                                let _ = self
+                                                    .event_tx
+                                                    .send(EngineEvent::AgentStatusChanged {
+                                                        agent_id: AgentId::new(),
+                                                        agent_name: name.clone(),
+                                                        status: AgentStatus::Idle,
+                                                    })
+                                                    .await;
+                                            }
+                                            // Also cancel all background tasks (spawn_background)
+                                            {
+                                                let mut bt = self.background_tasks.lock().await;
+                                                let ids: Vec<String> = bt
+                                                    .tasks
+                                                    .values()
+                                                    .map(|t| t.agent_name.clone())
+                                                    .collect();
+                                                for id in ids {
+                                                    if let Some(task) = bt.remove(&id) {
+                                                        task.cancel_flag.store(true, Ordering::Relaxed);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        EngineCommand::Shutdown => unreachable!(),
+                                        EngineCommand::UpdateAgentConfig {
+                                            name,
+                                            skills,
+                                            mcps,
+                                            subagents,
+                                        } => {
+                                            self.handle_update_agent_config(name, skills, mcps, subagents)
+                                                .await?;
+                                        }
+                                        EngineCommand::ReloadConfig => {
+                                            match crate::config::loader::load_config(None) {
+                                                Ok(new_config) => {
+                                                    self.reload_config(new_config);
+                                                    let _ = self.event_tx
+                                                        .send(EngineEvent::ConfigReloaded)
+                                                        .await;
+                                                    tracing::info!("Configuration reloaded successfully");
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!("Failed to reload config: {}", e);
+                                                    let _ = self.event_tx
+                                                        .send(EngineEvent::CommandError(
+                                                            format!("Failed to reload config: {}", e),
+                                                        ))
+                                                        .await;
+                                                }
+                                            }
+                                        }
+                                        EngineCommand::ScanSkills => {
+                                            self.handle_scan_skills().await;
+                                        }
                                     }
-                                    // Emit Idle status so TUI knows immediately
-                                    let _ = self
-                                        .event_tx
-                                        .send(EngineEvent::AgentStatusChanged {
-                                            agent_id: AgentId::new(),
-                                            agent_name: name.clone(),
-                                            status: AgentStatus::Idle,
-                                        })
-                                        .await;
+                                    Ok(())
+                                }
+                                .await;
+
+                                if let Err(e) = result {
+                                    self.event_tx
+                                        .send(EngineEvent::CommandError(e.to_string()))
+                                        .await
+                                        .ok();
                                 }
                             }
-                            EngineCommand::Shutdown => unreachable!(),
-                            EngineCommand::UpdateAgentConfig {
-                                name,
-                                skills,
-                                mcps,
-                                subagents,
-                            } => {
-                                self.handle_update_agent_config(name, skills, mcps, subagents)
-                                    .await?;
-                            }
-                            EngineCommand::ReloadConfig => {
-                                match crate::config::loader::load_config(None) {
-                                    Ok(new_config) => {
-                                        self.reload_config(new_config);
-                                        let _ = self.event_tx
-                                            .send(EngineEvent::ConfigReloaded)
-                                            .await;
-                                        tracing::info!("Configuration reloaded successfully");
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to reload config: {}", e);
-                                        let _ = self.event_tx
-                                            .send(EngineEvent::CommandError(
-                                                format!("Failed to reload config: {}", e),
-                                            ))
-                                            .await;
-                                    }
+                            usage = self.usage_rx.recv() => {
+                                if let Some(usage) = usage {
+                                    self.total_tokens = self.total_tokens.saturating_add(usage.total_tokens);
+                                    self.total_cost += usage.cost;
                                 }
-                            }
-                            EngineCommand::ScanSkills => {
-                                self.handle_scan_skills().await;
                             }
                         }
-                        Ok(())
-                    }
-                    .await;
-
-                    if let Err(e) = result {
-                        self.event_tx
-                            .send(EngineEvent::CommandError(e.to_string()))
-                            .await
-                            .ok();
-                    }
-                }
-                usage = self.usage_rx.recv() => {
-                    if let Some(usage) = usage {
-                        self.total_tokens = self.total_tokens.saturating_add(usage.total_tokens);
-                        self.total_cost += usage.cost;
-                    }
-                }
-            }
         }
         // Run shutdown to cancel all agent tasks, disconnect MCPs, and close DB.
         self.shutdown().await?;
         Ok(())
     }
 
-    async fn handle_user_input(&mut self, input: String) -> Result<()> {
+    pub(crate) async fn handle_user_input(&mut self, input: String) -> Result<()> {
         // A new turn invalidates any pending redo history.
         self.redo_stack.clear();
-        // Find the active root agent
-        let root_name = &self.active_agent;
 
-        let root_id = self
-            .agents
-            .get(root_name)
-            .ok_or_else(|| Error::Agent(format!("Agent '{root_name}' not found")))?;
+        let agent_id = self.active_agent.clone();
 
-        let handle = self
-            .handles
-            .get(root_id)
-            .ok_or_else(|| Error::Agent("Root agent not initialized".into()))?;
+        let session_arc = self
+            .sessions
+            .get(&agent_id)
+            .cloned()
+            .ok_or_else(|| Error::Agent(format!("Agent '{agent_id}' not found")))?;
+        let cancel = self
+            .cancel_flags
+            .get(&agent_id)
+            .cloned()
+            .ok_or_else(|| Error::Agent(format!("Cancel flag for '{agent_id}' not found")))?;
 
-        handle
-            .send(AgentMessage::UserInput { content: input })
-            .await
+        cancel.store(false, Ordering::SeqCst);
+
+        tracing::info!(
+            agent = %agent_id,
+            input_len = %input.len(),
+            "User input received"
+        );
+
+        let input_len = input.len();
+
+        let handle = tokio::spawn(async move {
+            let mut session = session_arc.lock().await;
+            let _ = session.process(&input).await;
+        });
+        self.session_tasks.insert(agent_id.clone(), handle);
+
+        tracing::debug!(
+            target: "anacleto::engine",
+            agent = %agent_id,
+            input_len = %input_len,
+            "User input dispatched to agent"
+        );
+
+        Ok(())
     }
 
     async fn handle_set_model(&mut self, model: String) -> Result<()> {
+        tracing::debug!(target: "anacleto::engine", model = %model, "Setting model");
         // Update the config in memory for the active agent
         if let Some(ref mut agent) = self
             .config
@@ -900,6 +975,7 @@ impl Engine {
     }
 
     async fn handle_switch_agent(&mut self, name: &str) -> Result<()> {
+        tracing::debug!(target: "anacleto::engine", name = %name, "Switching agent");
         // Validate that the target agent exists and is a root agent.
         let agent = self
             .config
@@ -960,6 +1036,11 @@ impl Engine {
     }
 
     async fn respawn_active_agent(&mut self) -> Result<()> {
+        tracing::debug!(
+            target: "anacleto::engine",
+            agent = %self.active_agent,
+            "Respawning active agent"
+        );
         let agent_config = self
             .config
             .agents
@@ -1003,58 +1084,69 @@ impl Engine {
             .filter_map(|name| config_by_name.get(name).map(|c| (*c).clone()))
             .collect();
 
-        // Kill the old root agent handle
-        if let Some(old_id) = self.agents.get(&name) {
-            if let Some(old_handle) = self.handles.remove(old_id) {
-                // Send shutdown to the old agent task
-                let _ = old_handle.sender.send(AgentMessage::Shutdown).await;
-            }
-            self.agents.remove(&name);
+        // Kill the old root agent session
+        if let Some(old_handle) = self.session_tasks.remove(&name) {
+            old_handle.abort();
         }
+        if let Some(old_flag) = self.cancel_flags.remove(&name) {
+            old_flag.store(true, Ordering::Relaxed);
+        }
+        self.sessions.remove(&name);
+        self.agents.remove(&name);
 
         // Create an external cancel flag for this agent
         let cancel_flag = Arc::new(AtomicBool::new(false));
         self.cancel_flags.insert(name.clone(), cancel_flag.clone());
 
-        // Spawn new agent
         let history_limit = self.config.session.history_limit_percent;
         let retry_cfg = self.config.session.retry.clone();
-        let _concurrency_semaphore = if self.config.session.max_concurrency > 0 {
-            Some(Arc::new(tokio::sync::Semaphore::new(
-                self.config.session.max_concurrency as usize,
-            )))
-        } else {
-            None
-        };
-        let handle = spawn_agent(SpawnAgentConfig {
-            agent,
-            provider,
-            skill_registry: self.skill_registry.clone(),
-            skill_names,
-            subagent_configs: my_subagent_configs,
-            llm_registry: self.llm_registry.clone(),
-            mcp_registry: Some(self.mcp_registry.clone()),
-            mcp_enabled: Some(self.mcp_enabled.clone()),
+
+        // Create shared state
+        let shared = Arc::new(AgentSharedState {
             event_tx: self.event_tx.clone(),
+            llm_registry: self.llm_registry.clone(),
             usage_tx: Some(self.usage_tx.clone()),
-            retry_config: retry_cfg,
-            db: self.database.clone(),
-            session_id: self.active_session_id,
+            skill_registry: self.skill_registry.clone(),
+            retry_config: retry_cfg.clone(),
             pending_questions: Some(self.pending_questions.clone()),
-            history_limit_percent: history_limit,
             debug: self.debug.clone(),
+            history_limit_percent: history_limit,
+            session_id: self.active_session_id,
+            db: self.database.clone(),
             workspace: self.workspace.clone(),
-            task_id: None,
-            depth: 0,
-            mode: AgentMode::Build,
             plugins: Some(self.plugins.clone()),
             hook_registry: self.hook_registry.clone(),
-            cancel_flag: Some(cancel_flag),
-        })
-        .await;
+            compact_requested: Arc::new(AtomicBool::new(false)),
+            background_tasks: self.background_tasks.clone(),
+        });
 
+        let mut session = AgentSession::new(
+            agent,
+            shared,
+            my_subagent_configs,
+            skill_names,
+            Some(cancel_flag.clone()),
+            AgentMode::Build,
+        );
+        session
+            .initialize(
+                &provider,
+                Some(self.mcp_registry.clone()),
+                Some(self.mcp_enabled.clone()),
+                Some(&self.plugins),
+                &self.workspace,
+            )
+            .await?;
+
+        self.sessions
+            .insert(name.clone(), Arc::new(tokio::sync::Mutex::new(session)));
         self.agents.insert(name.clone(), id.clone());
-        self.handles.insert(id, handle);
+
+        tracing::debug!(
+            target: "anacleto::engine",
+            agent = %name,
+            "Active agent respawned"
+        );
 
         Ok(())
     }
@@ -1066,43 +1158,32 @@ impl Engine {
         }
     }
 
-    pub(crate) async fn send_to_active(&self, msg: AgentMessage) -> Result<()> {
-        let root_name = &self.active_agent;
-
-        let root_id = self
-            .agents
-            .get(root_name)
-            .ok_or_else(|| Error::Agent(format!("Agent '{root_name}' not found")))?;
-
-        let handle = self
-            .handles
-            .get(root_id)
-            .ok_or_else(|| Error::Agent("Root agent not initialized".into()))?;
-
-        handle.send(msg).await
+    pub(crate) async fn with_active_session<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut AgentSession) -> R,
+    {
+        let active = &self.active_agent;
+        if let Some(session_arc) = self.sessions.get(active) {
+            let mut guard = session_arc.lock().await;
+            Ok(f(&mut guard))
+        } else {
+            Err(Error::Agent("No active session".into()))
+        }
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
+        tracing::debug!(target: "anacleto::engine", "Engine shutting down");
         // Cancel ALL running agent tasks first, so they stop processing
         // immediately instead of continuing in the background after shutdown.
-        for (name, flag) in &self.cancel_flags {
+        for flag in self.cancel_flags.values() {
             flag.store(true, Ordering::Relaxed);
-            if let Some(id) = self.agents.get(name)
-                && let Some(handle) = self.handles.remove(id)
-            {
-                let _ = handle.sender.try_send(AgentMessage::Shutdown);
-            }
-            let _ = self
-                .event_tx
-                .send(EngineEvent::AgentStatusChanged {
-                    agent_id: AgentId::new(),
-                    agent_name: name.clone(),
-                    status: AgentStatus::Completed,
-                })
-                .await;
+        }
+        // Abort all session tasks
+        for (_name, handle) in self.session_tasks.drain() {
+            handle.abort();
         }
         self.agents.clear();
-        self.handles.clear();
+        self.sessions.clear();
         self.cancel_flags.clear();
 
         // Fire OnShutdown hooks and emit events
@@ -1174,11 +1255,14 @@ impl Engine {
                 self.respawn_active_agent().await?;
             } else {
                 // For non-active running agents, kill and respawn them
-                if let Some(old_id) = self.agents.remove(&name)
-                    && let Some(old_handle) = self.handles.remove(&old_id)
-                {
-                    let _ = old_handle.sender.send(AgentMessage::Shutdown).await;
+                if let Some(old_handle) = self.session_tasks.remove(&name) {
+                    old_handle.abort();
                 }
+                if let Some(old_flag) = self.cancel_flags.remove(&name) {
+                    old_flag.store(true, Ordering::Relaxed);
+                }
+                self.sessions.remove(&name);
+                self.agents.remove(&name);
                 // Re-spawn from updated config
                 if let Some(agent_config) = self.config.agents.iter().find(|a| a.name == name) {
                     let agent = Agent::from_config(agent_config, AgentRole::Root);
@@ -1225,35 +1309,45 @@ impl Engine {
                         None
                     };
 
-                    let handle = spawn_agent(SpawnAgentConfig {
-                        agent,
-                        provider,
-                        skill_registry: self.skill_registry.clone(),
-                        skill_names,
-                        subagent_configs: my_subagent_configs,
-                        llm_registry: self.llm_registry.clone(),
-                        mcp_registry: Some(self.mcp_registry.clone()),
-                        mcp_enabled: Some(self.mcp_enabled.clone()),
+                    let shared = Arc::new(AgentSharedState {
                         event_tx: self.event_tx.clone(),
+                        llm_registry: self.llm_registry.clone(),
                         usage_tx: Some(self.usage_tx.clone()),
-                        retry_config: retry_cfg,
-                        db: self.database.clone(),
-                        session_id: self.active_session_id,
+                        skill_registry: self.skill_registry.clone(),
+                        retry_config: retry_cfg.clone(),
                         pending_questions: Some(self.pending_questions.clone()),
-                        history_limit_percent: history_limit,
                         debug: self.debug.clone(),
+                        history_limit_percent: history_limit,
+                        session_id: self.active_session_id,
+                        db: self.database.clone(),
                         workspace: self.workspace.clone(),
-                        task_id: None,
-                        depth: 0,
-                        mode: AgentMode::Build,
                         plugins: Some(self.plugins.clone()),
                         hook_registry: self.hook_registry.clone(),
-                        cancel_flag: Some(cancel_flag),
-                    })
-                    .await;
+                        compact_requested: Arc::new(AtomicBool::new(false)),
+                        background_tasks: self.background_tasks.clone(),
+                    });
 
+                    let mut session = AgentSession::new(
+                        agent,
+                        shared,
+                        my_subagent_configs,
+                        skill_names,
+                        Some(cancel_flag.clone()),
+                        AgentMode::Build,
+                    );
+                    session
+                        .initialize(
+                            &provider,
+                            Some(self.mcp_registry.clone()),
+                            Some(self.mcp_enabled.clone()),
+                            Some(&self.plugins),
+                            &self.workspace,
+                        )
+                        .await?;
+
+                    self.sessions
+                        .insert(new_name.clone(), Arc::new(tokio::sync::Mutex::new(session)));
                     self.agents.insert(new_name, new_id.clone());
-                    self.handles.insert(new_id, handle);
                 }
             }
         }
@@ -1450,6 +1544,9 @@ mod tests {
                 max_steps: 90,
                 tools: vec![],
                 writable_paths: vec![],
+                temperature: None,
+                max_tokens: None,
+                top_p: None,
             },
             AgentConfig {
                 name: "tech-writer".into(),
@@ -1464,6 +1561,9 @@ mod tests {
                 max_steps: 90,
                 tools: vec![],
                 writable_paths: vec![],
+                temperature: None,
+                max_tokens: None,
+                top_p: None,
             },
         ];
 
@@ -1557,6 +1657,9 @@ mod tests {
             AgentId::new(),
             vec![],
             vec![],
+            None,
+            None,
+            None,
         );
         let result = engine.resolve_agent_provider(&agent);
         assert!(result.is_ok());
@@ -1752,6 +1855,9 @@ mod tests {
                 max_steps: 90,
                 tools: vec![],
                 writable_paths: vec![],
+                temperature: None,
+                max_tokens: None,
+                top_p: None,
             },
             AgentConfig {
                 name: "writer".into(),
@@ -1766,6 +1872,9 @@ mod tests {
                 max_steps: 90,
                 tools: vec![],
                 writable_paths: vec![],
+                temperature: None,
+                max_tokens: None,
+                top_p: None,
             },
             AgentConfig {
                 name: "helper".into(),
@@ -1780,6 +1889,9 @@ mod tests {
                 max_steps: 90,
                 tools: vec![],
                 writable_paths: vec![],
+                temperature: None,
+                max_tokens: None,
+                top_p: None,
             },
         ];
         let mut engine = Engine::new(config, event_tx, cmd_rx);
@@ -1845,6 +1957,9 @@ mod tests {
             max_steps: 90,
             tools: vec![],
             writable_paths: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
         });
         // `orphan` is NOT in `self.agents` (not spawned).
         let err = engine.handle_switch_agent("orphan").await.unwrap_err();
@@ -1886,6 +2001,9 @@ mod tests {
             max_steps: 90,
             tools: vec![],
             writable_paths: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
         }];
 
         engine.reload_config(new_config);

@@ -39,16 +39,19 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Execute a `glob` tool call.
-pub async fn execute_glob_tool(
-    workspace: &Path,
-    tool_call: &ToolCall,
-) -> Result<String, String> {
+pub async fn execute_glob_tool(workspace: &Path, tool_call: &ToolCall) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse glob arguments: {e}"))?;
     let pattern = args
         .get("pattern")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "glob requires 'pattern'".to_string())?;
+
+    tracing::debug!(
+        target: "anacleto::tools::glob",
+        pattern = %pattern,
+        "glob tool"
+    );
 
     let workspace_canon = workspace
         .canonicalize()

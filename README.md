@@ -207,9 +207,10 @@ subprocesses — identity is decoupled from OS processes.
 ```
 src/
 ├── main.rs            # Entrypoint, CLI argument parsing (clap)
-├── lib.rs             # Module declarations
+├── lib.rs             # Crate root — re-exports all modules
 ├── agent/             # Agent model
 │   ├── lifecycle.rs   #   AgentHandle, spawn_agent (main loop)
+│   ├── session.rs     #   AgentSession, process, LLM loop
 │   ├── tools.rs       #   Tool definitions & execution
 │   ├── context.rs     #   Context compaction / summarization
 │   ├── loader.rs      #   Markdown frontmatter loading
@@ -231,7 +232,7 @@ src/
 │   ├── apply_patch.rs #   apply_patch tool
 │   └── template.rs    #   Templates
 ├── error.rs           # Global error types (thiserror)
-├── filesystem/        # Filesystem access helpers
+├── hook/              # Hook system — configurable shell commands at lifecycle points
 ├── llm/               # LLM providers
 │   ├── provider.rs    #   LlmProvider trait + factory
 │   ├── openai.rs      #   OpenAI / OpenRouter
@@ -250,11 +251,10 @@ src/
 │   ├── registry.rs    #   McpRegistry
 │   ├── parse.rs       #   Response parsing
 │   └── types.rs       #   Types
-├── permissions/       # Permission rules per agent/subagent
-├── plugin/            # Plugin system with hooks and custom tools
+├── plugin/            # Plugin system with hooks and custom tool registration
 ├── shell/             # Shell command execution + modern CLI tool inventory
 ├── skill/             # Skill loading (Anthropic Markdown format), execution
-├── tools/             # Structured agent tools (read, grep, glob, web, lsp, mcp)
+├── tools/             # Structured agent tools (read, grep, glob, web, lsp, mcp, search_symbol)
 └── tui/               # ratatui + crossterm interface
     ├── app.rs         #   App state + run loop
     ├── events.rs      #   Event handling
@@ -565,7 +565,7 @@ schema may change.
 
 Evolution phases ([`PLAN.md`](PLAN.md)), with phases 1–12 now complete:
 
-- [x] **FASE 1** — orchestration (`task` tool, background jobs, session tree)
+- [x] **FASE 1** — orchestration (`delegate` tool, background jobs, session tree)
 - [x] **FASE 2** — context & memory (compaction, truncation)
 - [x] **FASE 3** — structured tools (`apply_patch`, `read`, `grep`, `glob`) & MCP
 - [x] **FASE 4** — TUI/UX (keymap, which-key, toasts, diff viewer)

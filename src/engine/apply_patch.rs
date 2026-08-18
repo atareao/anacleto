@@ -169,8 +169,7 @@ pub fn encode_content(content: &str, enc: &FileEncoding) -> Vec<u8> {
 ///
 /// When `allow_external` is `false`, paths must stay within the workspace
 /// (absolute paths and `..` traversal are rejected). When `allow_external` is
-/// `true`, absolute paths and traversal are permitted, so the caller must have
-/// already verified the `fs.external` permission.
+/// `true`, absolute paths and traversal are permitted.
 pub fn resolve_patch_path(
     workspace: &Path,
     rel: &str,
@@ -192,8 +191,7 @@ pub fn resolve_patch_path(
 ///
 /// All paths are validated before any change is made; if any path escapes the
 /// workspace the whole batch is rejected without touching the filesystem.
-/// When `allow_external` is `true`, paths may escape the workspace (the caller
-/// is responsible for having granted the `fs.external` permission).
+/// When `allow_external` is `true`, paths may escape the workspace.
 pub fn apply_patch_batch(
     workspace: &Path,
     batch: &PatchBatch,

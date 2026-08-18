@@ -77,6 +77,12 @@ pub async fn execute_mcp_list_resources_tool(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "mcp_list_resources requires 'server'".to_string())?;
 
+    tracing::debug!(
+        target: "anacleto::tools::mcp",
+        server = %server,
+        "mcp_list_resources tool"
+    );
+
     let registry = mcp_registry.lock().await;
     let resources = registry
         .list_resources(server)
@@ -112,6 +118,13 @@ pub async fn execute_mcp_read_resource_tool(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "mcp_read_resource requires 'uri'".to_string())?;
 
+    tracing::debug!(
+        target: "anacleto::tools::mcp",
+        server = %server,
+        uri = %uri,
+        "mcp_read_resource tool"
+    );
+
     let registry = mcp_registry.lock().await;
     let content = registry
         .read_resource(server, uri)
@@ -132,6 +145,12 @@ pub async fn execute_mcp_list_resource_templates_tool(
         .get("server")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "mcp_list_resource_templates requires 'server'".to_string())?;
+
+    tracing::debug!(
+        target: "anacleto::tools::mcp",
+        server = %server,
+        "mcp_list_resource_templates tool"
+    );
 
     let registry = mcp_registry.lock().await;
     let templates = registry

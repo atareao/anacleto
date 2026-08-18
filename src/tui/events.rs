@@ -102,20 +102,18 @@ impl App {
                     thinking.push_str(&content);
                 }
             }
-            EngineEvent::AgentOutput {
-                content,
-                agent_name,
-                ..
-            } => {
-                // Commit any pending stream first (it arrived chronologically
-                // before any pending thinking block), then commit thinking.
+            EngineEvent::AgentOutput { content, .. } => {
+                // Content was already streamed via AgentStreamChunk events
+                // and committed by commit_stream_block (which calls push_msg,
+                // which writes to both display AND log via log_msg).
+                // Skip if we already streamed — don't push_msg or append_to_log.
+                let was_streamed = self.current_stream.is_some();
                 if self.current_stream.is_some() {
                     commit_stream_block(self);
                 }
                 commit_thinking_block(self);
-                if !content.is_empty() {
+                if !content.is_empty() && !was_streamed {
                     self.push_msg(content.clone());
-                    self.append_to_log(&format!("## {} \n\n{}\n\n", agent_name, content));
                 }
                 self.chat_scroll = 0;
             }
@@ -151,7 +149,14 @@ impl App {
                 if let Some(parent) = self.agents.iter_mut().find(|a| a.id == parent_id) {
                     parent.subagent_count += 1;
                 }
-                // Add subagent to list (if not already present)
+                // Mark any previous subagents with the same name as completed
+                // (handles re-delegation to the same subagent name)
+                for agent in self.agents.iter_mut() {
+                    if agent.name == subagent_name && agent.id != subagent_id {
+                        agent.status = AgentStatus::Completed;
+                    }
+                }
+                // Add subagent to list (if not already present by ID)
                 if !self.agents.iter().any(|a| a.id == subagent_id) {
                     self.agents.push(AgentInfo {
                         id: subagent_id,
@@ -626,7 +631,7 @@ fn tool_icon_and_label(name: &str) -> (&'static str, String) {
         "question" => ("\u{2753}", "question".to_string()),
         "apply_patch" => ("\u{1f527}", "apply_patch".to_string()),
         "lsp_query" => ("\u{1f52c}", "lsp_query".to_string()),
-        "task" => ("\u{1f916}", "task".to_string()),
+        "delegate" => ("\u{1f916}", "delegate".to_string()),
         _ if name.starts_with("mcp_") => ("\u{1f50c}", name.to_string()),
         // Passive skills (loaded instructions)
         _ => ("\u{1f4d6}", name.to_string()),

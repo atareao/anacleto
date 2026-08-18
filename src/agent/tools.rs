@@ -1,14 +1,29 @@
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
-use crate::agent::lifecycle::PendingQuestions;
 use crate::agent::tool_store::truncate_output;
 use crate::config::types::AgentConfig;
 use crate::engine::orchestrator::EngineEvent;
 use crate::hook::HookRegistry;
 use crate::llm::types::{ToolCall, ToolDefinition};
 use crate::skill::types::Skill;
+use crate::tools::delete::delete_tool_definition;
+use crate::tools::execute::execute_tool_definition;
+use crate::tools::format::format_document_tool_definition;
+use crate::tools::glob::glob_tool_definition;
+use crate::tools::grep::grep_tool_definition;
+use crate::tools::insert::insert_tool_definition;
+use crate::tools::list::list_tool_definition;
+use crate::tools::lsp::lsp_query_tool_definition;
+use crate::tools::mcp::{
+    mcp_list_resource_templates_tool_definition, mcp_list_resources_tool_definition,
+    mcp_read_resource_tool_definition,
+};
+use crate::tools::read::read_tool_definition;
+use crate::tools::replace::replace_tool_definition;
+use crate::tools::search_symbol::search_symbol_tool_definition;
+use crate::tools::web::{webfetch_tool_definition, websearch_tool_definition};
+use crate::tools::write::write_tool_definition;
 
 // ---------------------------------------------------------------------------
 // Subagent outcome type
@@ -88,257 +103,6 @@ pub(crate) fn todo_tool_definition() -> ToolDefinition {
 }
 
 /// Execute a `todo` tool call against the database.
-pub(crate) async fn execute_todo_tool(
-    db: &Option<crate::db::Database>,
-    session_id: Option<Uuid>,
-    tool_call: &ToolCall,
-    event_tx: &mpsc::Sender<EngineEvent>,
-) -> std::result::Result<String, String> {
-    let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
-        .map_err(|e| format!("Failed to parse todo arguments: {e}"))?;
-    let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-
-    let Some(db) = db else {
-        return Err("No database available for todo tool".to_string());
-    };
-    let Some(session_id) = session_id else {
-        return Err("No active session for todo tool".to_string());
-    };
-
-    let result = match action {
-        "add" => {
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "todo add requires 'content'".to_string())?;
-            let priority = args.get("priority").and_then(|v| v.as_str());
-            let todo = db
-                .add_todo(session_id, content, "pending", priority)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(format!("Added todo [{}]: {}", todo.id, todo.content))
-        }
-        "update" => {
-            let id = args
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "todo update requires 'id'".to_string())?;
-            let id = Uuid::parse_str(id).map_err(|e| format!("Invalid todo id: {e}"))?;
-            let content = args.get("content").and_then(|v| v.as_str());
-            let status = args.get("status").and_then(|v| v.as_str());
-            let priority = args.get("priority").and_then(|v| v.as_str());
-            db.update_todo(id, content, status, priority)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(format!("Updated todo {id}"))
-        }
-        "delete" => {
-            let id = args
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "todo delete requires 'id'".to_string())?;
-            let id = Uuid::parse_str(id).map_err(|e| format!("Invalid todo id: {e}"))?;
-            db.delete_todo(id).await.map_err(|e| e.to_string())?;
-            Ok(format!("Deleted todo {id}"))
-        }
-        "list" => {
-            let todos = db.list_todos(session_id).await.map_err(|e| e.to_string())?;
-            if todos.is_empty() {
-                Ok("No todos for this session.".to_string())
-            } else {
-                let mut out = String::from("Todos:\n");
-                for t in &todos {
-                    let prio = t.priority.as_deref().unwrap_or("-");
-                    out.push_str(&format!(
-                        "- [{}] ({}) {} — {}\n",
-                        t.status, prio, t.id, t.content
-                    ));
-                }
-                Ok(out)
-            }
-        }
-        _ => Err(format!("Unknown todo action: {action}")),
-    };
-
-    // Emit the updated todo list so the TUI can refresh its sidebar.
-    if let Ok(list) = db.list_todos(session_id).await {
-        let _ = event_tx.send(EngineEvent::TodosUpdated(list)).await;
-    }
-
-    result
-}
-
-/// Tool definition for the inline `question` tool.
-pub(crate) fn question_tool_definition() -> ToolDefinition {
-    ToolDefinition {
-        name: "question".to_string(),
-        description: "Ask the user a question mid-turn to resolve ambiguity. \
-                       Optionally provide options and a recommended default."
-            .to_string(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string"
-                },
-                "options": {
-                    "type": "array",
-                    "items": { "type": "string" }
-                },
-                "recommended": {
-                    "type": "string"
-                }
-            },
-            "required": ["question"]
-        }),
-    }
-}
-
-/// Execute a `question` tool call: register a pending question, emit an event
-/// for the TUI to display, and await the user's answer.
-pub(crate) async fn execute_question_tool(
-    pending_questions: &Option<PendingQuestions>,
-    tool_call: &ToolCall,
-    event_tx: &mpsc::Sender<EngineEvent>,
-) -> std::result::Result<String, String> {
-    let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
-        .map_err(|e| format!("Failed to parse question arguments: {e}"))?;
-    let question = args
-        .get("question")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "question requires 'question'".to_string())?;
-    let options: Vec<String> = args
-        .get("options")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-    let recommended = args
-        .get("recommended")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
-    let Some(pending) = pending_questions else {
-        return Err("No question handler available".to_string());
-    };
-
-    let id = Uuid::new_v4().to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
-    pending.lock().await.insert(id.clone(), tx);
-
-    let _ = event_tx
-        .send(EngineEvent::Question {
-            id: id.clone(),
-            question: question.to_string(),
-            options,
-            recommended,
-        })
-        .await;
-
-    // Await the user's answer (with a generous timeout so the turn can resume).
-    match tokio::time::timeout(std::time::Duration::from_secs(600), rx).await {
-        Ok(Ok(answer)) => Ok(format!("User answered: {answer}")),
-        Ok(Err(_)) => Err("Question channel closed without an answer".to_string()),
-        Err(_) => Err("Question timed out waiting for user answer".to_string()),
-    }
-}
-
-/// Tool definition for the `apply_patch` tool: applies a batch of file
-/// operations (add/update/delete) with a single approval.
-pub(crate) fn apply_patch_tool_definition() -> ToolDefinition {
-    ToolDefinition {
-        name: "apply_patch".to_string(),
-        description: "Apply a batch of file changes (add/update/delete) with a single approval."
-            .to_string(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "operations": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "op": {
-                                "type": "string",
-                                "enum": ["add", "update", "delete"]
-                            },
-                            "path": {
-                                "type": "string"
-                            },
-                            "content": {
-                                "type": "string"
-                            }
-                        },
-                        "required": ["op", "path"]
-                    }
-                }
-            },
-            "required": ["operations"]
-        }),
-    }
-}
-
-/// Check if a path is allowed for write operations.
-/// The workspace is always writable. Additional paths can be declared
-/// in the agent's `writable_paths`.
-pub fn is_write_allowed(path: &Path, workspace: &Path, writable_paths: &[PathBuf]) -> bool {
-    if path.starts_with(workspace) {
-        return true;
-    }
-    writable_paths.iter().any(|p| path.starts_with(p))
-}
-
-/// Execute an `apply_patch` tool call.
-///
-/// Parses the batch, validates every path (rejecting traversal), checks
-/// write permissions against workspace and writable_paths, and applies
-/// the changes.
-pub(crate) async fn execute_apply_patch_tool(
-    workspace: &Path,
-    writable_paths: &[PathBuf],
-    event_tx: &mpsc::Sender<EngineEvent>,
-    agent_name: &str,
-    tool_call: &ToolCall,
-) -> std::result::Result<String, String> {
-    let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
-        .map_err(|e| format!("Failed to parse apply_patch arguments: {e}"))?;
-
-    let json = args
-        .get("operations")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| tool_call.function.arguments.clone());
-
-    let batch = crate::engine::apply_patch::parse_patch_batch(&json)?;
-
-    // Validate every path: must be within workspace or writable_paths
-    for op in &batch.operations {
-        let resolved = crate::engine::apply_patch::resolve_within_workspace(workspace, &op.path)
-            .map_err(|e| format!("Path validation failed: {e}"))?;
-        if !is_write_allowed(&resolved, workspace, writable_paths) {
-            return Err(format!(
-                "Write not allowed for path: {} (not in workspace or writable_paths)",
-                op.path
-            ));
-        }
-    }
-
-    let results = crate::engine::apply_patch::apply_patch_batch(workspace, &batch, false)?;
-
-    // Emit a unified diff for the TUI diff viewer.
-    let diff_text = crate::engine::apply_patch::batch_to_unified_diff(&batch);
-    let _ = event_tx
-        .send(EngineEvent::DiffAvailable {
-            text: diff_text,
-            title: format!("apply_patch — {}", agent_name),
-        })
-        .await;
-
-    Ok(results.join("\n"))
-}
-
 /// Execute a tool call against a matching skill and return the result as a string.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_skill_tool(
@@ -350,7 +114,14 @@ pub(crate) async fn execute_skill_tool(
     _hook_registry: Option<&HookRegistry>,
     show: bool,
     task_preview: &str,
+    already_loaded: bool,
 ) -> std::result::Result<String, String> {
+    tracing::info!(
+        agent = %agent_name,
+        skill = %tool_call.function.name,
+        "Skill tool execution started"
+    );
+
     // Find the skill by name
     let skill = registry.get(&tool_call.function.name).ok_or_else(|| {
         format!(
@@ -363,6 +134,14 @@ pub(crate) async fn execute_skill_tool(
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse tool call arguments: {e}"))?;
     let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
+
+    tracing::debug!(
+        target: "anacleto::tools",
+        agent = %agent_name,
+        skill = %tool_call.function.name,
+        task = %task,
+        "Skill tool execution"
+    );
 
     // Emit tool execution tracing event
     if show {
@@ -379,7 +158,20 @@ pub(crate) async fn execute_skill_tool(
     // Execute the tool and capture result
     let skill_name_lower = skill.name.to_lowercase();
     let result = if skill_name_lower.contains("web") || skill_name_lower.contains("research") {
+        // Dynamic skills (web fetch/search) must run on every call: each
+        // invocation produces new data, so there is nothing to deduplicate.
         execute_web_fetch(task).await
+    } else if already_loaded {
+        // The skill instructions were already delivered to the LLM on a
+        // previous call in this session. Re-sending them would duplicate
+        // tokens in the conversation history, so just acknowledge and pass
+        // the new task through.
+        Ok(format!(
+            r#"✅ Skill "{}" ya cargada previamente. Nueva tarea: {}.
+
+Ejecuta la tarea siguiendo las instrucciones de la skill ya presentes en la conversación."#,
+            skill.name, task
+        ))
     } else {
         Ok(format!(
             r#"📋 Loaded skill "{}".
@@ -407,6 +199,28 @@ Original task: {}"#,
             })
             .await;
     }
+
+    match &result {
+        Ok(_) => tracing::info!(
+            agent = %agent_name,
+            skill = %tool_call.function.name,
+            "Skill tool execution succeeded"
+        ),
+        Err(e) => tracing::warn!(
+            agent = %agent_name,
+            skill = %tool_call.function.name,
+            error = %e,
+            "Skill tool execution failed"
+        ),
+    }
+
+    tracing::debug!(
+        target: "anacleto::tools",
+        agent = %agent_name,
+        skill = %tool_call.function.name,
+        success = %result.is_ok(),
+        "Skill tool result"
+    );
 
     result
 }
@@ -452,35 +266,223 @@ async fn execute_web_fetch(task: &str) -> std::result::Result<String, String> {
     Ok(result)
 }
 
-/// Convert an `AgentConfig` to a `ToolDefinition` so the LLM can invoke a subagent.
-pub(crate) fn subagent_config_to_tool_definition(config: &AgentConfig) -> ToolDefinition {
-    let input_schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "task": {
-                "type": "string",
-                "description": format!(
-                    "The task to delegate to the '{}' subagent",
-                    config.name
-                )
+/// Build one `ToolDefinition` per subagent, named `delegate_to_<name>`.
+///
+/// Each subagent gets its own tool with a `task`-only schema (no `name` enum),
+/// so the LLM sees each subagent as an independent capability.
+pub(crate) fn subagent_tool_definitions(subagent_configs: &[AgentConfig]) -> Vec<ToolDefinition> {
+    subagent_configs
+        .iter()
+        .map(|sc| {
+            let tool_name = format!("delegate_to_{}", sc.name);
+            let mut description = format!(
+                "Delegate a task to **{}** — {}",
+                sc.name, sc.description
+            );
+            if !sc.when_to_use.is_empty() {
+                description.push_str(&format!(" ({})", sc.when_to_use));
             }
-        },
-        "required": ["task"]
-    });
+            let tools_list = if sc.tools.is_empty() {
+                "none".to_string()
+            } else {
+                sc.tools.join(", ")
+            };
+            let skills_list = if sc.skills.is_empty() {
+                "none".to_string()
+            } else {
+                sc.skills
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let mcps_list = if sc.mcps.is_empty() {
+                "none".to_string()
+            } else {
+                sc.mcps.join(", ")
+            };
+            description.push_str(&format!(
+                "\n  - Tools: {tools_list}\n  - Skills: {skills_list}\n  - MCPs: {mcps_list}\n  - Max steps: {}\n  - Model: {}",
+                sc.max_steps, sc.model
+            ));
 
-    let mut desc = format!(
-        "Delegate a task to the '{}' subagent. What it does: {}",
-        config.name, config.description
-    );
-    if !config.when_to_use.is_empty() {
-        desc.push_str(&format!(" When to use: {}", config.when_to_use));
-    }
+            ToolDefinition {
+                name: tool_name,
+                description,
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": format!("Task to delegate to {}", sc.name)
+                        }
+                    },
+                    "required": ["task"]
+                }),
+            }
+        })
+        .collect()
+}
 
+/// Build the map of built-in tool definitions (name → ToolDefinition).
+/// These are the tools available to every agent regardless of skills.
+/// Tool definition for `get_tool_result`: retrieves a full tool result from ToolOutputStore.
+pub fn get_tool_result_tool_definition() -> ToolDefinition {
     ToolDefinition {
-        name: config.name.clone(),
-        description: desc,
-        input_schema,
+        name: "get_tool_result".to_string(),
+        description: "Retrieve the full stored output of a previous tool call by its ID.\
+                       Use this when a tool result was too large and was summarized in \
+                       the conversation. The tool_call_id is shown in the summary (e.g., \
+                       'call_abc123' or similar). Call this tool with that exact ID to \
+                       retrieve the complete content."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tool_call_id": {
+                    "type": "string",
+                    "description": "The tool_call_id shown in the summarized result. Pass it exactly as displayed."
+                }
+            },
+            "required": ["tool_call_id"]
+        }),
     }
+}
+pub(crate) fn question_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "question".to_string(),
+        description: "Ask the user a question and wait for their answer. Use this when you need \
+             clarification, confirmation, or additional information from the user."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question to ask the user"
+                },
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of answer options"
+                },
+                "recommended": {
+                    "type": "string",
+                    "description": "Optional recommended answer"
+                }
+            },
+            "required": ["question"]
+        }),
+    }
+}
+
+/// Tool definition for `apply_patch`: applies file patches.
+pub(crate) fn apply_patch_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "apply_patch".to_string(),
+        description: "Apply a batch of file operations (create, update, rename, delete) \
+                       to the workspace. Each operation specifies a file path and the \
+                       content or changes to apply."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": {"type": "string", "enum": ["create", "update", "rename", "delete"]},
+                            "path": {"type": "string"},
+                            "content": {"type": "string"},
+                            "old_path": {"type": "string"},
+                            "start": {"type": "integer"},
+                            "end": {"type": "integer"}
+                        },
+                        "required": ["op", "path"]
+                    }
+                }
+            },
+            "required": ["operations"]
+        }),
+    }
+}
+
+/// Tool definition for `spawn_background`: launches a subagent in the background.
+pub(crate) fn spawn_background_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "spawn_background".to_string(),
+        description: "Launch a subagent task that runs in the background. \
+                       Returns a task_id that can be queried with check_task. \
+                       The task continues even while the calling agent does other work."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "A descriptive name for the background task"
+                },
+                "task": {
+                    "type": "string",
+                    "description": "The task description for the background agent"
+                }
+            },
+            "required": ["name", "task"]
+        }),
+    }
+}
+
+/// Tool definition for `check_task`: queries the status of a background task.
+pub(crate) fn check_task_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "check_task".to_string(),
+        description: "Check the status of a previously spawned background task. \
+                       Returns 'running', 'completed: <result>', or 'failed: <error>'."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The task_id returned by spawn_background"
+                }
+            },
+            "required": ["task_id"]
+        }),
+    }
+}
+
+pub fn builtin_tool_definitions() -> HashMap<String, ToolDefinition> {
+    let mut map = HashMap::new();
+    for def in [
+        todo_tool_definition(),
+        question_tool_definition(),
+        apply_patch_tool_definition(),
+        spawn_background_tool_definition(),
+        check_task_tool_definition(),
+        get_tool_result_tool_definition(),
+        read_tool_definition(),
+        write_tool_definition(),
+        insert_tool_definition(),
+        replace_tool_definition(),
+        delete_tool_definition(),
+        list_tool_definition(),
+        grep_tool_definition(),
+        glob_tool_definition(),
+        webfetch_tool_definition(),
+        websearch_tool_definition(),
+        mcp_list_resources_tool_definition(),
+        mcp_read_resource_tool_definition(),
+        mcp_list_resource_templates_tool_definition(),
+        lsp_query_tool_definition(),
+        format_document_tool_definition(),
+        search_symbol_tool_definition(),
+        execute_tool_definition(),
+    ] {
+        map.insert(def.name.clone(), def);
+    }
+    map
 }
 
 #[cfg(test)]
@@ -529,8 +531,10 @@ mod tests {
         };
         let (tx, _) = mpsc::channel(64);
         let id = crate::agent::types::AgentId::new();
-        let result =
-            execute_skill_tool(&registry, "agent", &tool_call, &tx, &id, None, true, "").await;
+        let result = execute_skill_tool(
+            &registry, "agent", &tool_call, &tx, &id, None, true, "", false,
+        )
+        .await;
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("test-skill"));
@@ -551,53 +555,75 @@ mod tests {
         };
         let (tx, _) = mpsc::channel(64);
         let id = crate::agent::types::AgentId::new();
-        let result =
-            execute_skill_tool(&registry, "agent", &tool_call, &tx, &id, None, true, "").await;
+        let result = execute_skill_tool(
+            &registry, "agent", &tool_call, &tx, &id, None, true, "", false,
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("nonexistent"));
     }
 
     #[test]
-    fn test_subagent_config_to_tool_definition_with_when_to_use() {
-        let config = AgentConfig {
-            name: "documenter".into(),
-            description: "Documenta acciones".into(),
-            when_to_use: "Tras cada tool call".into(),
-            role: AgentRole::SubAgent,
-            model: "m".into(),
-            skills: vec![],
-            mcps: vec![],
-            subagents: vec![],
-            system_prompt: "".into(),
-            max_steps: 60,
-            tools: vec![],
-            writable_paths: vec![],
-        };
-        let def = subagent_config_to_tool_definition(&config);
-        assert!(def.description.contains("Documenta acciones"));
-        assert!(def.description.contains("Tras cada tool call"));
-        assert_eq!(def.name, "documenter");
-    }
+    fn test_delegate_tool_definition_lists_subagents() {
+        let configs = vec![
+            AgentConfig {
+                name: "reviewer".into(),
+                description: "Revisa código".into(),
+                when_to_use: "Después de escribir".into(),
+                role: AgentRole::SubAgent,
+                model: "m".into(),
+                skills: vec![],
+                mcps: vec![],
+                subagents: vec![],
+                system_prompt: "".into(),
+                max_steps: 60,
+                tools: vec![],
+                writable_paths: vec![],
+                temperature: None,
+                max_tokens: None,
+                top_p: None,
+            },
+            AgentConfig {
+                name: "writer".into(),
+                description: "Escribe código".into(),
+                when_to_use: "".into(),
+                role: AgentRole::SubAgent,
+                model: "m".into(),
+                skills: vec![],
+                mcps: vec![],
+                subagents: vec![],
+                system_prompt: "".into(),
+                max_steps: 60,
+                tools: vec![],
+                writable_paths: vec![],
+                temperature: None,
+                max_tokens: None,
+                top_p: None,
+            },
+        ];
+        let defs = subagent_tool_definitions(&configs);
+        assert_eq!(defs.len(), 2);
 
-    #[test]
-    fn test_subagent_config_to_tool_definition_without_when_to_use() {
-        let config = AgentConfig {
-            name: "reviewer".into(),
-            description: "Revisa código".into(),
-            when_to_use: "".into(),
-            role: AgentRole::SubAgent,
-            model: "m".into(),
-            skills: vec![],
-            mcps: vec![],
-            subagents: vec![],
-            system_prompt: "".into(),
-            max_steps: 60,
-            tools: vec![],
-            writable_paths: vec![],
-        };
-        let def = subagent_config_to_tool_definition(&config);
-        assert!(def.description.contains("Revisa código"));
-        assert!(!def.description.contains("When to use"));
-        assert_eq!(def.name, "reviewer");
+        // Verify each tool definition
+        for def in &defs {
+            assert!(def.name.starts_with("delegate_to_"));
+            assert!(def.input_schema["properties"]["task"].is_object());
+            // No "name" property — the subagent is identified by the tool name
+            assert!(def.input_schema["properties"]["name"].is_null());
+        }
+
+        // Check specific subagent tools
+        let reviewer_def = defs
+            .iter()
+            .find(|d| d.name == "delegate_to_reviewer")
+            .unwrap();
+        assert!(reviewer_def.description.contains("Revisa código"));
+        assert!(reviewer_def.description.contains("Después de escribir"));
+
+        let writer_def = defs
+            .iter()
+            .find(|d| d.name == "delegate_to_writer")
+            .unwrap();
+        assert!(writer_def.description.contains("Escribe código"));
     }
 }

@@ -29,9 +29,11 @@ pub(crate) struct OllamaMessage {
 pub(crate) struct OllamaOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) top_p: Option<f32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct OllamaChatResponse {
     pub(crate) message: OllamaResponseMessage,
     pub(crate) done: bool,
@@ -41,7 +43,7 @@ pub(crate) struct OllamaChatResponse {
     pub(crate) prompt_eval_count: Option<u32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct OllamaResponseMessage {
     pub(crate) content: String,
     #[serde(default)]
@@ -132,10 +134,17 @@ impl LlmProvider for OllamaProvider {
             model: model.clone(),
             messages: into_ollama_messages(request.messages),
             stream: false,
-            options: request.temperature.map(|t| OllamaOptions {
-                temperature: Some(t),
+            options: Some(OllamaOptions {
+                temperature: request.temperature,
+                top_p: request.top_p,
             }),
         };
+
+        tracing::debug!(
+            target: "anacleto::llm::ollama",
+            request_body = %serde_json::to_string_pretty(&body).unwrap_or_default(),
+            "Ollama LLM request"
+        );
 
         let resp = self
             .client
@@ -155,6 +164,12 @@ impl LlmProvider for OllamaProvider {
             .json()
             .await
             .map_err(|e| Error::Provider(format!("Ollama parse failed: {e}")))?;
+
+        tracing::debug!(
+            target: "anacleto::llm::ollama",
+            response_body = %serde_json::to_string_pretty(&data).unwrap_or_default(),
+            "Ollama LLM response"
+        );
 
         Ok(LlmResponse {
             content: data.message.content,
@@ -197,8 +212,9 @@ impl LlmProvider for OllamaProvider {
             model: model.clone(),
             messages: into_ollama_messages(request.messages),
             stream: true,
-            options: request.temperature.map(|t| OllamaOptions {
-                temperature: Some(t),
+            options: Some(OllamaOptions {
+                temperature: request.temperature,
+                top_p: request.top_p,
             }),
         };
 
@@ -207,6 +223,12 @@ impl LlmProvider for OllamaProvider {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
         tokio::spawn(async move {
+            tracing::debug!(
+                target: "anacleto::llm::ollama",
+                request_body = %serde_json::to_string_pretty(&body).unwrap_or_default(),
+                "Ollama LLM stream request"
+            );
+
             let resp = match client.post(&url).json(&body).send().await {
                 Ok(r) => r,
                 Err(e) => {

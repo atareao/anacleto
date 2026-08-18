@@ -57,6 +57,12 @@ pub async fn execute_webfetch_tool(tool_call: &ToolCall) -> Result<String, Strin
         .and_then(|v| v.as_str())
         .ok_or_else(|| "webfetch requires 'url'".to_string())?;
 
+    tracing::debug!(
+        target: "anacleto::tools::web",
+        url = %url,
+        "webfetch tool"
+    );
+
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(format!(
             "Invalid URL '{url}': must start with http:// or https://"
@@ -99,6 +105,13 @@ pub async fn execute_websearch_tool(tool_call: &ToolCall) -> Result<String, Stri
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse websearch arguments: {e}"))?;
     let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+
+    tracing::debug!(
+        target: "anacleto::tools::web",
+        query = %query,
+        "websearch tool"
+    );
+
     if query.trim().is_empty() {
         return Err("websearch requires a non-empty 'query'".to_string());
     }

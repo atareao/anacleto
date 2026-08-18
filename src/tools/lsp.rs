@@ -59,6 +59,15 @@ pub async fn execute_lsp_query_tool(tool_call: &ToolCall) -> Result<String, Stri
     let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     let character = args.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
+    tracing::debug!(
+        target: "anacleto::tools::lsp",
+        file_path = %file_path,
+        query_type = ?query_type,
+        line = %line,
+        character = %character,
+        "lsp_query tool"
+    );
+
     // Resolve the server command: explicit, or inferred from the extension.
     let server_command = args
         .get("server_command")

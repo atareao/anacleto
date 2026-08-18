@@ -41,32 +41,28 @@ pub fn read_tool_definition() -> ToolDefinition {
 }
 
 /// Resolve a read path, enforcing workspace containment.
-fn resolve_read_path(
-    workspace: &Path,
-    path: &str,
-    external_granted: bool,
-) -> Result<PathBuf, String> {
+///
+/// Absolute paths are allowed if they point within the workspace.
+fn resolve_read_path(workspace: &Path, path: &str) -> Result<PathBuf, String> {
     let p = Path::new(path);
     if p.is_absolute() {
-        if external_granted {
-            Ok(p.to_path_buf())
-        } else {
-            Err("Reading outside the workspace requires the 'fs.external' permission".to_string())
+        // Allow absolute paths that are within the workspace
+        let workspace_canon = workspace
+            .canonicalize()
+            .map_err(|e| format!("Invalid workspace '{}': {e}", workspace.display()))?;
+
+        match p.canonicalize() {
+            Ok(canon) if canon.starts_with(&workspace_canon) => Ok(p.to_path_buf()),
+            Ok(_) => Err("Reading outside the workspace is not allowed".to_string()),
+            Err(e) => Err(format!("Path does not exist: {e}")),
         }
     } else {
-        match crate::engine::apply_patch::resolve_within_workspace(workspace, path) {
-            Ok(full) => Ok(full),
-            Err(_) if external_granted => Ok(workspace.join(p)),
-            Err(e) => Err(e),
-        }
+        crate::engine::apply_patch::resolve_within_workspace(workspace, path)
     }
 }
 
 /// Execute a `read` tool call.
-pub async fn execute_read_tool(
-    workspace: &Path,
-    tool_call: &ToolCall,
-) -> Result<String, String> {
+pub async fn execute_read_tool(workspace: &Path, tool_call: &ToolCall) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .map_err(|e| format!("Failed to parse read arguments: {e}"))?;
     let path = args
@@ -85,9 +81,16 @@ pub async fn execute_read_tool(
         .unwrap_or(MAX_LINES)
         .clamp(1, MAX_LINES);
 
+    tracing::debug!(
+        target: "anacleto::tools::read",
+        path = %path,
+        offset = %offset,
+        limit = %limit,
+        "read tool"
+    );
+
     // If the path is outside the workspace, it is denied.
-    let external_granted = false;
-    let full = resolve_read_path(workspace, path, external_granted)?;
+    let full = resolve_read_path(workspace, path)?;
 
     let bytes =
         std::fs::read(&full).map_err(|e| format!("Failed to read '{}': {e}", full.display()))?;
@@ -165,12 +168,9 @@ mod tests {
         let ws = temp_workspace();
         let content: String = (1..=10).map(|i| format!("line{i}\n")).collect();
         std::fs::write(ws.join("b.txt"), content).unwrap();
-        let result = execute_read_tool(
-            &ws,
-            &tool_call(r#"{"path":"b.txt","offset":3,"limit":2}"#),
-        )
-        .await
-        .unwrap();
+        let result = execute_read_tool(&ws, &tool_call(r#"{"path":"b.txt","offset":3,"limit":2}"#))
+            .await
+            .unwrap();
         assert!(result.contains("3 | line3"));
         assert!(result.contains("4 | line4"));
         assert!(!result.contains("5 | line5"));
@@ -181,16 +181,15 @@ mod tests {
     #[tokio::test]
     async fn read_rejects_path_traversal() {
         let ws = temp_workspace();
-        let result =
-            execute_read_tool(&ws, &tool_call(r#"{"path":"../secret.txt"}"#)).await;
+        let result = execute_read_tool(&ws, &tool_call(r#"{"path":"../secret.txt"}"#)).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("escapes workspace") || err.contains("fs.external"));
+        assert!(err.contains("escapes workspace") || err.contains("is not allowed"));
         std::fs::remove_dir_all(&ws).unwrap();
     }
 
     #[tokio::test]
-    async fn read_external_requires_fs_external() {
+    async fn read_external_is_denied() {
         let ws = temp_workspace();
         let outside =
             std::env::temp_dir().join(format!("anacleto_outside_{}", uuid::Uuid::new_v4()));
@@ -203,7 +202,7 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("fs.external"));
+        assert!(result.unwrap_err().contains("is not allowed"));
 
         std::fs::remove_dir_all(&ws).unwrap();
         std::fs::remove_file(&outside).unwrap();
@@ -212,8 +211,7 @@ mod tests {
     #[tokio::test]
     async fn read_missing_file_errors() {
         let ws = temp_workspace();
-        let result =
-            execute_read_tool(&ws, &tool_call(r#"{"path":"nope.txt"}"#)).await;
+        let result = execute_read_tool(&ws, &tool_call(r#"{"path":"nope.txt"}"#)).await;
         assert!(result.is_err());
         std::fs::remove_dir_all(&ws).unwrap();
     }

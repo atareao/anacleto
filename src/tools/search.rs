@@ -305,6 +305,14 @@ pub async fn execute_search_tool(workspace: &Path, tool_call: &ToolCall) -> Resu
         .unwrap_or(MAX_MATCHES)
         .clamp(1, 1000);
 
+    tracing::debug!(
+        target: "anacleto::tools::search",
+        mode = %mode,
+        pattern = %pattern,
+        max_results = %max_results,
+        "search tool"
+    );
+
     match mode {
         "content" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");

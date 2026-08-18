@@ -42,6 +42,12 @@ pub async fn execute_format_document_tool(tool_call: &ToolCall) -> Result<String
         .and_then(|v| v.as_str())
         .ok_or_else(|| "format_document requires 'path'".to_string())?;
 
+    tracing::debug!(
+        target: "anacleto::tools::format",
+        file_path = %file_path,
+        "format_document tool"
+    );
+
     // Detect extension and look up the LSP server.
     let ext = std::path::Path::new(file_path)
         .extension()

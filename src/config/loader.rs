@@ -203,8 +203,6 @@ agents:
     skills:
       - "skills/shell/"
     mcps: [filesystem]
-    permissions:
-      deny: []
     subagents: [reviewer]
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();

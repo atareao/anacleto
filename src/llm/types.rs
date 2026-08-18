@@ -68,6 +68,9 @@ pub struct LlmRequest {
     pub tools: Vec<ToolDefinition>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    /// Top-p nucleus sampling (0.0–1.0). Lower = more focused. `None` = provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
     pub stream: bool,
     /// Per-request prompt caching policy override. When `None`, the provider's
     /// configured default is used.
