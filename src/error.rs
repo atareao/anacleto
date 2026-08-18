@@ -22,9 +22,6 @@ pub enum Error {
     #[error("Provider error: {0}")]
     Provider(String),
 
-    #[error("Permission denied: {0}")]
-    PermissionDenied(String),
-
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 

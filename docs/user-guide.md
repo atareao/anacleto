@@ -399,7 +399,7 @@ tools:
     color: yellow
 ```
 
-Las herramientas disponibles son: `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `todo`, `question`, `task`, `compress`, `skill`, `apply_patch`, `mcp_list_resources`, `mcp_read_resource`, `mcp_list_resource_templates`, `lsp_query`.
+Las herramientas disponibles son: `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `todo`, `question`, `delegate`, `compress`, `skill`, `apply_patch`, `mcp_list_resources`, `mcp_read_resource`, `mcp_list_resource_templates`, `lsp_query`.
 
 Los valores por defecto (description, show, display, color) se pueden configurar globalmente en `~/.config/anacleto/config.yaml` bajo la clave `tools:`.
 

@@ -330,7 +330,7 @@ Anacleto tiene un sistema de tools configurable. Cada agente declara explícitam
 | `websearch` | Buscar en la web |
 | `todo` | Gestionar lista de tareas |
 | `question` | Preguntar al usuario |
-| `task` | Delegar a un subagente |
+| `delegate` | Delegar a un subagente |
 | `compress` | Compactar contexto |
 | `skill` | Cargar un skill |
 | `apply_patch` | Aplicar parches de código |
