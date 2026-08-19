@@ -28,7 +28,7 @@ use crate::skill::registry::{SharedSkillRegistry, SkillRegistry};
 // `crate::engine::orchestrator`.
 pub use crate::engine::events::{
     EngineCommand, EngineEvent, ExportFormat, InitAnswers, McpStatus, SkillInfo, StatusInfo,
-    TimelineEntry, UsageEvent,
+    TaskStatus, TimelineEntry, UsageEvent,
 };
 
 /// The core orchestration engine.
