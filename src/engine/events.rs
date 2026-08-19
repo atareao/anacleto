@@ -13,6 +13,22 @@ use uuid::Uuid;
 use crate::agent::types::{AgentId, AgentRole, AgentStatus};
 use crate::db::models::{SessionSummary, Snapshot};
 
+/// Status of a completed task, emitted automatically by the engine when
+/// an agent finishes its lifecycle (success, error, max steps, or cancelled).
+/// This replaces the old LLM-facing `task_complete` tool — the engine now
+/// handles termination detection and status reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskStatus {
+    /// The agent completed its task successfully.
+    Success,
+    /// The agent encountered an error (e.g. LLM failure).
+    Error,
+    /// The agent reached its maximum step limit without finishing.
+    MaxStepsReached,
+    /// The agent was cancelled by the user or the engine.
+    Cancelled,
+}
+
 /// Events emitted by the engine for the TUI to display.
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
@@ -189,6 +205,15 @@ pub enum EngineEvent {
     ModelsFrecency(Vec<(String, usize)>),
     /// Result of a git worktree operation (via `/worktree`).
     WorktreeResult(String),
+    /// A task (agent or subagent) completed, emitted automatically by the
+    /// engine at the end of every agent lifecycle regardless of exit path.
+    /// The `status` field distinguishes success, error, max-steps, and cancelled.
+    TaskComplete {
+        agent_id: AgentId,
+        agent_name: String,
+        status: TaskStatus,
+        result: String,
+    },
     /// A background task (dynamic `task` tool delegation) finished.
     SubagentFinished { task_id: String, summary: String },
     /// The active session's plan was handed off to build mode (via `/build`).
