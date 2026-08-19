@@ -18,7 +18,7 @@ use crate::agent::types::{Agent, AgentId, AgentMode, AgentStatus, BackgroundTask
 use crate::config::types::AgentConfig;
 use crate::config::types::RetryConfig;
 use crate::db::session::Database;
-use crate::engine::orchestrator::{EngineEvent, UsageEvent};
+use crate::engine::orchestrator::{EngineEvent, TaskStatus, UsageEvent};
 use crate::error::{Error, Result};
 use crate::hook::{HookContext, HookPoint, HookRegistry};
 use crate::llm::provider::LlmProvider;
@@ -367,6 +367,40 @@ impl AgentSession {
         Ok(system_prompt)
     }
 
+    /// Emit final events and return the appropriate `AgentOutcome` when the
+    /// agent finishes its lifecycle. This is called by every exit path in
+    /// [`process()`] so that `EngineEvent::TaskComplete` is always emitted
+    /// regardless of how the agent terminated (success, error, max steps, or
+    /// cancelled).
+    async fn finalize(&mut self, status: TaskStatus, result: String) -> Result<AgentOutcome> {
+        self.emit_event(EngineEvent::AgentOutput {
+            agent_id: self.agent.id.clone(),
+            agent_name: self.agent.name.clone(),
+            content: result.clone(),
+        })
+        .await;
+        self.emit_event(EngineEvent::AgentStatusChanged {
+            agent_id: self.agent.id.clone(),
+            agent_name: self.agent.name.clone(),
+            status: AgentStatus::Idle,
+        })
+        .await;
+        self.emit_event(EngineEvent::TaskComplete {
+            agent_id: self.agent.id.clone(),
+            agent_name: self.agent.name.clone(),
+            status,
+            result: result.clone(),
+        })
+        .await;
+
+        Ok(match status {
+            TaskStatus::Success => AgentOutcome::Completed(result),
+            TaskStatus::Error => AgentOutcome::Completed(result),
+            TaskStatus::MaxStepsReached => AgentOutcome::OutOfSteps { partial: result },
+            TaskStatus::Cancelled => AgentOutcome::Cancelled,
+        })
+    }
+
     /// Run the agent loop: LLM → tools → LLM → … until done, blocked, or cancelled.
     pub async fn process(&mut self, input: &str) -> Result<AgentOutcome> {
         self.steps_used = 0;
@@ -433,6 +467,13 @@ impl AgentSession {
                     status: AgentStatus::Idle,
                 })
                 .await;
+                self.emit_event(EngineEvent::TaskComplete {
+                    agent_id: self.agent.id.clone(),
+                    agent_name: self.agent.name.clone(),
+                    status: TaskStatus::Cancelled,
+                    result: String::new(),
+                })
+                .await;
                 return Ok(AgentOutcome::Cancelled);
             }
 
@@ -441,24 +482,12 @@ impl AgentSession {
                     "[Incomplete task] Reached the limit of {} steps without completing the task.",
                     self.max_steps
                 );
-                self.emit_event(EngineEvent::AgentOutput {
-                    agent_id: self.agent.id.clone(),
-                    agent_name: self.agent.name.clone(),
-                    content: partial.clone(),
-                })
-                .await;
-                self.emit_event(EngineEvent::AgentStatusChanged {
-                    agent_id: self.agent.id.clone(),
-                    agent_name: self.agent.name.clone(),
-                    status: AgentStatus::Idle,
-                })
-                .await;
                 tracing::warn!(
                     agent = %self.agent.name,
                     max_steps = %self.max_steps,
                     "Agent ran out of steps"
                 );
-                return Ok(AgentOutcome::OutOfSteps { partial });
+                return self.finalize(TaskStatus::MaxStepsReached, partial).await;
             }
 
             self.emit_event(EngineEvent::LocalTokenEstimate {
@@ -654,13 +683,21 @@ impl AgentSession {
                         error = %e,
                         "LLM request failed"
                     );
+                    let result = format!("[Error en LLM] {e}");
                     self.emit_event(EngineEvent::AgentStatusChanged {
                         agent_id: self.agent.id.clone(),
                         agent_name: self.agent.name.clone(),
                         status: AgentStatus::Idle,
                     })
                     .await;
-                    return Ok(AgentOutcome::Completed(format!("[Error en LLM] {e}")));
+                    self.emit_event(EngineEvent::TaskComplete {
+                        agent_id: self.agent.id.clone(),
+                        agent_name: self.agent.name.clone(),
+                        status: TaskStatus::Error,
+                        result: result.clone(),
+                    })
+                    .await;
+                    return Ok(AgentOutcome::Completed(result));
                 }
             };
 
@@ -673,24 +710,12 @@ impl AgentSession {
                     tool_calls: None,
                     tool_call_id: None,
                 });
-                self.emit_event(EngineEvent::AgentOutput {
-                    agent_id: self.agent.id.clone(),
-                    agent_name: self.agent.name.clone(),
-                    content: output.clone(),
-                })
-                .await;
-                self.emit_event(EngineEvent::AgentStatusChanged {
-                    agent_id: self.agent.id.clone(),
-                    agent_name: self.agent.name.clone(),
-                    status: AgentStatus::Idle,
-                })
-                .await;
                 tracing::info!(
                     agent = %self.agent.name,
                     output_len = %output.len(),
                     "Agent completed successfully"
                 );
-                return Ok(AgentOutcome::Completed(output));
+                return self.finalize(TaskStatus::Success, output).await;
             }
 
             // Execute tool calls: delegate calls (prefixed with `delegate_to_`)

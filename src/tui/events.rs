@@ -215,6 +215,28 @@ impl App {
                 self.messages_generation = self.messages_generation.wrapping_add(1);
                 self.chat_scroll = 0;
             }
+            EngineEvent::TaskComplete {
+                agent_name,
+                status,
+                result,
+                ..
+            } => {
+                let status_label = match status {
+                    crate::engine::orchestrator::TaskStatus::Success => "completada",
+                    crate::engine::orchestrator::TaskStatus::Error => "con error",
+                    crate::engine::orchestrator::TaskStatus::MaxStepsReached => {
+                        "sin pasos (máximo alcanzado)"
+                    }
+                    crate::engine::orchestrator::TaskStatus::Cancelled => "cancelada",
+                };
+                self.push_msg(format!(
+                    "Tarea '{}' {} — {} caracteres.",
+                    agent_name,
+                    status_label,
+                    result.len()
+                ));
+                self.chat_scroll = 0;
+            }
             EngineEvent::SessionList(sessions) => {
                 self.session_list = sessions;
                 self.show_session_list = true;
