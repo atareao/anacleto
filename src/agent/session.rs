@@ -244,7 +244,11 @@ impl AgentSession {
              and are destroyed after returning their result. Subagents do NOT inherit any \
              tools, skills, MCPs, or configuration from the parent agent.\n\
              Use the 'delegate' tool to assign work to a subagent. Use 'spawn_background' \
-             for tasks that should continue running while you do other work.",
+             for tasks that should continue running while you do other work.\n\
+             IMPORTANT — partial subagent results: if a subagent returns a result that starts \
+             with '[Partial]', it ran out of steps and was destroyed. Do NOT re-delegate the \
+             same task to that subagent again — doing so only repeats work already done. \
+             Instead, accept the partial result and continue with whatever remains.",
             self.max_steps
         );
 
@@ -1781,7 +1785,10 @@ async fn run_delegate_task(
                     })
                     .await;
                 format!(
-                    "[Partial] Subagent {} out of steps.\n{partial}",
+                    "[Partial] Subagent '{}' ran out of steps and was destroyed. \
+                     Do NOT delegate to it again — the subagent no longer exists and \
+                     re-delegating will only repeat work already done.\n\
+                     Accept the partial result below and continue:\n\n{partial}",
                     sub_session.agent.name
                 )
             }
