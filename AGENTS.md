@@ -37,6 +37,14 @@ cargo doc --no-deps      # local docs
 - Unit tests live next to the code (`#[cfg(test)] mod tests` in each file); integration tests go in `tests/` at the crate root.
 - Skill tests must not access the network unless the test is marked `#[ignore]`. Run full suite: `cargo test`
 
+## Git Flow
+
+Este proyecto sigue **Git Flow** estricto. Ver [GIT_FLOW.md](./GIT_FLOW.md):
+
+- Estructura de ramas: `main`, `development`, `feature/*`, `hotfix/*`.
+- Conventional commits con **gitmoji**.
+- Cómo crear features, hotfixes y releases.
+
 ## Dónde está el resto
 
 | Tema | Fichero |
